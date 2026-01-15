@@ -672,26 +672,12 @@ def main():
         logger.warning(f"Received signal {signum}, shutting down gracefully...")
         app.is_running = False
 
-        # ✅ 兜底：无论当前卡在哪个阶段，都尽量取消所有任务，让流程进入 finally
-        def _do_cancel_all():
-            # 1) 取消 run_until_all_task_finish 的主阻塞 task
-            if exec_task and not exec_task.done():
-                exec_task.cancel()
-
-            # 2) 取消 event loop 内所有任务（覆盖 start_server / start_bot 等阶段）
+        # 只取消主阻塞 task，让主流程回到 finally
+        if exec_task and not exec_task.done():
             try:
-                for t in asyncio.all_tasks(loop=app.loop):
-                    t.cancel()
-            except TypeError:
-                # 兼容某些 Python 版本/loop 实现
-                for t in asyncio.all_tasks():
-                    t.cancel()
-
-        try:
-            app.loop.call_soon_threadsafe(_do_cancel_all)
-        except Exception:
-            # 如果 loop 还没起来或不可用，就只能靠 finally 兜底
-            pass
+                app.loop.call_soon_threadsafe(lambda: exec_task.cancel())
+            except Exception:
+                pass
 
     # 同时处理 Ctrl+C (SIGINT) 和 systemd stop/restart (SIGTERM)
     signal.signal(signal.SIGINT, _handle_stop_signal)
