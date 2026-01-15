@@ -32,6 +32,9 @@ from utils.format import truncate_filename, validate_title
 from utils.log import LogFilter
 from utils.meta import print_meta
 from utils.meta_data import MetaData
+# ---- stall watchdog state ----
+DOWNLOAD_LAST_PROGRESS_TS: dict[int, float] = {}
+DOWNLOAD_LAST_PROGRESS_BYTES: dict[int, int] = {}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +50,7 @@ app = Application(CONFIG_NAME, DATA_FILE_NAME, APPLICATION_NAME)
 
 queue: asyncio.Queue = asyncio.Queue()
 RETRY_TIME_OUT = 3
-
+STALL_TIMEOUT = 600  # 10分钟无进度就判定卡死
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
 logging.getLogger("pyrogram.client").addFilter(LogFilter())
 
@@ -55,29 +58,23 @@ logging.getLogger("pyrogram").setLevel(logging.WARNING)
 
 
 def _check_download_finish(media_size: int, download_path: str, ui_file_name: str):
-    """Check download task if finish
-
-    Parameters
-    ----------
-    media_size: int
-        The size of the downloaded resource
-    download_path: str
-        Resource download hold path
-    ui_file_name: str
-        Really show file name
-
-    """
+    """Check download task if finish"""
     download_size = os.path.getsize(download_path)
     if media_size == download_size:
         logger.success(f"{_t('Successfully downloaded')} - {ui_file_name}")
-    else:
-        logger.warning(
-            f"{_t('Media downloaded with wrong size')}: "
-            f"{download_size}, {_t('actual')}: "
-            f"{media_size}, {_t('file name')}: {ui_file_name}"
-        )
+        return
+
+    logger.warning(
+        f"{_t('Media downloaded with wrong size')}: "
+        f"{download_size}, {_t('actual')}: "
+        f"{media_size}, {_t('file name')}: {ui_file_name}"
+    )
+    try:
         os.remove(download_path)
-        raise pyrogram.errors.exceptions.bad_request_400.BadRequest()
+    except Exception:
+        pass
+    # 用 ValueError 更稳：不会依赖 pyrogram 的异常构造参数
+    raise ValueError(f"size mismatch: {download_size} != {media_size}")
 
 
 def _move_to_download_path(temp_download_path: str, download_path: str):
@@ -347,7 +344,26 @@ async def download_task(
 
 # pylint: disable = R0915,R0914
 
+async def _stall_watchdog(message_id: int, timeout_s: int, target_task: asyncio.Task, ui_file_name: str):
+    """
+    If no progress for timeout_s seconds, cancel target_task.
+    """
+    # 初始化：认为刚开始时有“心跳”
+    DOWNLOAD_LAST_PROGRESS_TS[message_id] = time.time()
+    DOWNLOAD_LAST_PROGRESS_BYTES.setdefault(message_id, -1)
 
+    while not target_task.done():
+        await asyncio.sleep(5)  # 检查频率：5秒一次即可
+        last_ts = DOWNLOAD_LAST_PROGRESS_TS.get(message_id)
+        if last_ts is None:
+            # 没有记录就保守一点，不杀
+            continue
+        if time.time() - last_ts > timeout_s:
+            logger.warning(
+                f"Message[{message_id}] {ui_file_name}: stalled for > {timeout_s}s, cancelling download..."
+            )
+            target_task.cancel()
+            return
 @record_download_status
 async def download_media(
     client: pyrogram.client.Client,
@@ -413,13 +429,17 @@ async def download_media(
             if _can_download(_type, file_formats, file_format):
                 if _is_exist(file_name):
                     file_size = os.path.getsize(file_name)
-                    if file_size or file_size == media_size:
+                    if file_size == media_size:
                         logger.info(
                             f"id={message.id} {ui_file_name} "
                             f"{_t('already download,download skipped')}.\n"
                         )
-
                         return DownloadStatus.SkipDownload, None
+                    else:
+                        logger.warning(
+                            f"id={message.id} {ui_file_name} local size {file_size} != {media_size}, remove and redownload."
+                        )
+                        os.remove(file_name)
             else:
                 return DownloadStatus.SkipDownload, None
 
@@ -437,61 +457,101 @@ async def download_media(
     message_id = message.id
 
     for retry in range(3):
+        download_task = None
+        watchdog_task = None
         try:
-            temp_download_path = await client.download_media(
-                message,
-                file_name=temp_file_name,
-                progress=update_download_status,
-                progress_args=(
-                    message_id,
-                    ui_file_name,
-                    task_start_time,
-                    node,
-                    client,
-                ),
+            # 每次 retry 前重置心跳：避免上一次残留时间戳误杀
+            DOWNLOAD_LAST_PROGRESS_TS[message_id] = time.time()
+            DOWNLOAD_LAST_PROGRESS_BYTES.pop(message_id, None)
+
+            download_task = app.loop.create_task(
+                client.download_media(
+                    message,
+                    file_name=temp_file_name,
+                    progress=update_download_status,
+                    progress_args=(
+                        message_id,
+                        ui_file_name,
+                        task_start_time,
+                        node,
+                        client,
+                    ),
+                )
             )
+
+            watchdog_task = app.loop.create_task(
+                _stall_watchdog(message_id, STALL_TIMEOUT, download_task, ui_file_name)
+            )
+
+            temp_download_path = await download_task
 
             if temp_download_path and isinstance(temp_download_path, str):
                 _check_download_finish(media_size, temp_download_path, ui_file_name)
                 await asyncio.sleep(0.5)
                 _move_to_download_path(temp_download_path, file_name)
-                # TODO: if not exist file size or media
+
+                # ✅ 成功后清理心跳记录，防止字典膨胀
+                DOWNLOAD_LAST_PROGRESS_TS.pop(message_id, None)
+                DOWNLOAD_LAST_PROGRESS_BYTES.pop(message_id, None)
+
                 return DownloadStatus.SuccessDownload, file_name
-        except pyrogram.errors.exceptions.bad_request_400.BadRequest:
+
+            # download_media 正常不该返回 None/非 str，这里当失败走重试
+            raise ValueError("download_media returned empty path")
+
+        except asyncio.CancelledError:
+            # ✅ watchdog cancel 会走这里
             logger.warning(
-                f"Message[{message.id}]: {_t('file reference expired, refetching')}..."
+                f"Message[{message.id}]: stalled >{STALL_TIMEOUT}s (no progress), cancelled and retrying... ({retry + 1}/3)"
+            )
+            await asyncio.sleep(1)
+
+        except pyrogram.errors.exceptions.bad_request_400.BadRequest:
+            # file reference expired / 或者别的 400
+            logger.warning(
+                f"Message[{message.id}]: {_t('file reference expired, refetching')}... ({retry + 1}/3)"
             )
             await asyncio.sleep(RETRY_TIME_OUT)
             message = await fetch_message(client, message)
-            if _check_timeout(retry, message.id):
-                # pylint: disable = C0301
-                logger.error(
-                    f"Message[{message.id}]: "
-                    f"{_t('file reference expired for 3 retries, download skipped.')}"
-                )
+
         except pyrogram.errors.exceptions.flood_420.FloodWait as wait_err:
+            # FloodWait 必须等够时间
+            logger.warning(f"Message[{message.id}]: FloodWait {wait_err.value}s")
             await asyncio.sleep(wait_err.value)
-            logger.warning("Message[{}]: FlowWait {}", message.id, wait_err.value)
-            _check_timeout(retry, message.id)
+
         except TypeError:
-            # pylint: disable = C0301
+            # 旧逻辑保留：pyrogram 内部某些情况下会抛 TypeError 当 timeout
             logger.warning(
                 f"{_t('Timeout Error occurred when downloading Message')}[{message.id}], "
-                f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')}"
+                f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')} ({retry + 1}/3)"
             )
             await asyncio.sleep(RETRY_TIME_OUT)
-            if _check_timeout(retry, message.id):
-                logger.error(
-                    f"Message[{message.id}]: {_t('Timing out after 3 reties, download skipped.')}"
-                )
+
+        except ValueError as e:
+            # ✅ 包括 size mismatch / 空路径等
+            logger.warning(f"Message[{message.id}]: {e}, retrying... ({retry + 1}/3)")
+            await asyncio.sleep(1)
+
         except Exception as e:
-            # pylint: disable = C0301
             logger.error(
                 f"Message[{message.id}]: "
                 f"{_t('could not be downloaded due to following exception')}:\n[{e}].",
                 exc_info=True,
             )
             break
+
+        finally:
+            # ✅ 无论成功/失败都停止 watchdog，避免后台悬挂
+            if watchdog_task:
+                watchdog_task.cancel()
+
+            # ✅ 如果 download_task 还活着（例如异常提前跳出），也确保 cancel
+            if download_task and not download_task.done():
+                download_task.cancel()
+
+    # 失败后也清理，防止字典膨胀
+    DOWNLOAD_LAST_PROGRESS_TS.pop(message_id, None)
+    DOWNLOAD_LAST_PROGRESS_BYTES.pop(message_id, None)
 
     return DownloadStatus.FailedDownload, None
 

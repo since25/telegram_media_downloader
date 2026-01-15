@@ -7,6 +7,8 @@ from pyrogram import Client
 
 from module.app import TaskNode
 
+DOWNLOAD_LAST_PROGRESS_TS: dict[int, float] = {}
+DOWNLOAD_LAST_PROGRESS_BYTES: dict[int, int] = {}
 
 class DownloadState(Enum):
     """Download state"""
@@ -55,6 +57,18 @@ async def update_download_status(
 ):
     """update_download_status"""
     cur_time = time.time()
+    # ---- stall watchdog heartbeat (推荐加在这里) ----
+    chat_id = node.chat_id
+    if not _download_result.get(chat_id):
+        _download_result[chat_id] = {}
+
+    prev = _download_result[chat_id].get(message_id)
+    prev_down = prev["down_byte"] if prev else -1
+    # 只有 down_byte 真增长才更新时间戳（避免重复回调但进度不动）
+    if down_byte > prev_down:
+        DOWNLOAD_LAST_PROGRESS_TS[message_id] = cur_time
+        DOWNLOAD_LAST_PROGRESS_BYTES[message_id] = down_byte
+    # ---- end heartbeat ----
     # pylint: disable = W0603
     global _total_download_speed
     global _total_download_size
