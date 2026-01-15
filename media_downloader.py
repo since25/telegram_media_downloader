@@ -1,6 +1,7 @@
 """Downloads media from telegram."""
 import asyncio
 import logging
+import signal
 import os
 import shutil
 import time
@@ -32,6 +33,7 @@ from utils.format import truncate_filename, validate_title
 from utils.log import LogFilter
 from utils.meta import print_meta
 from utils.meta_data import MetaData
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -629,7 +631,7 @@ async def run_until_all_task_finish():
 def _exec_loop():
     """Exec loop"""
 
-    app.loop.run_until_complete(run_until_all_task_finish())
+    return app.loop.create_task(run_until_all_task_finish())
 
 
 async def start_server(client: pyrogram.Client):
@@ -657,6 +659,20 @@ def main():
         workdir=app.session_file_path,
         start_timeout=app.start_timeout,
     )
+
+    exec_task: asyncio.Task | None = None
+
+    def _handle_stop_signal(signum, frame=None):
+        logger.warning(f"Received signal {signum}, shutting down gracefully...")
+        app.is_running = False
+        if exec_task and not exec_task.done():
+            # 确保在 loop 线程里取消 task
+            app.loop.call_soon_threadsafe(lambda: exec_task.cancel())
+
+    # 同时处理 Ctrl+C 和 systemd stop/restart
+    signal.signal(signal.SIGINT, _handle_stop_signal)
+    signal.signal(signal.SIGTERM, _handle_stop_signal)
+
     try:
         app.pre_run()
         init_web(app)
@@ -668,27 +684,34 @@ def main():
 
         app.loop.create_task(download_all_chat(client))
         for _ in range(app.max_download_task):
-            task = app.loop.create_task(worker(client))
-            tasks.append(task)
+            tasks.append(app.loop.create_task(worker(client)))
 
         if app.bot_token:
             app.loop.run_until_complete(
                 start_download_bot(app, client, add_download_task, download_chat_task)
             )
-        _exec_loop()
-    except KeyboardInterrupt:
-        logger.info(_t("KeyboardInterrupt"))
+
+        exec_task = app.loop.create_task(run_until_all_task_finish())
+        app.loop.run_until_complete(exec_task)
+
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        # SIGTERM/SIGINT 触发 cancel 或 Ctrl+C
+        logger.info("Stopped by signal/keyboard interrupt")
     except Exception as e:
         logger.exception("{}", e)
     finally:
         app.is_running = False
+
+        # 先停 bot / server，再清 worker
         if app.bot_token:
             app.loop.run_until_complete(stop_download_bot())
+
         app.loop.run_until_complete(stop_server(client))
-        for task in tasks:
-            task.cancel()
+
+        for t in tasks:
+            t.cancel()
+
         logger.info(_t("Stopped!"))
-        # check_for_updates(app.proxy)
         logger.info(f"{_t('update config')}......")
         app.update_config()
         logger.success(
