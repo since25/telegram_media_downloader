@@ -661,15 +661,39 @@ def main():
     )
 
     exec_task: asyncio.Task | None = None
+    stopping = False  # 防止重复处理信号
 
     def _handle_stop_signal(signum, frame=None):
+        nonlocal stopping
+        if stopping:
+            return
+        stopping = True
+
         logger.warning(f"Received signal {signum}, shutting down gracefully...")
         app.is_running = False
-        if exec_task and not exec_task.done():
-            # 确保在 loop 线程里取消 task
-            app.loop.call_soon_threadsafe(lambda: exec_task.cancel())
 
-    # 同时处理 Ctrl+C 和 systemd stop/restart
+        # ✅ 兜底：无论当前卡在哪个阶段，都尽量取消所有任务，让流程进入 finally
+        def _do_cancel_all():
+            # 1) 取消 run_until_all_task_finish 的主阻塞 task
+            if exec_task and not exec_task.done():
+                exec_task.cancel()
+
+            # 2) 取消 event loop 内所有任务（覆盖 start_server / start_bot 等阶段）
+            try:
+                for t in asyncio.all_tasks(loop=app.loop):
+                    t.cancel()
+            except TypeError:
+                # 兼容某些 Python 版本/loop 实现
+                for t in asyncio.all_tasks():
+                    t.cancel()
+
+        try:
+            app.loop.call_soon_threadsafe(_do_cancel_all)
+        except Exception:
+            # 如果 loop 还没起来或不可用，就只能靠 finally 兜底
+            pass
+
+    # 同时处理 Ctrl+C (SIGINT) 和 systemd stop/restart (SIGTERM)
     signal.signal(signal.SIGINT, _handle_stop_signal)
     signal.signal(signal.SIGTERM, _handle_stop_signal)
 
@@ -679,35 +703,48 @@ def main():
 
         set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)
 
+        # 启动 server（若在此阶段收到 SIGTERM，会通过 cancel all_tasks 退出）
         app.loop.run_until_complete(start_server(client))
         logger.success(_t("Successfully started (Press Ctrl+C to stop)"))
 
+        # 启动下载任务
         app.loop.create_task(download_all_chat(client))
         for _ in range(app.max_download_task):
             tasks.append(app.loop.create_task(worker(client)))
 
+        # 启动 bot（若配置了）
         if app.bot_token:
             app.loop.run_until_complete(
                 start_download_bot(app, client, add_download_task, download_chat_task)
             )
 
+        # ✅ 主阻塞点：用 task 包住，便于信号时 cancel
         exec_task = app.loop.create_task(run_until_all_task_finish())
         app.loop.run_until_complete(exec_task)
 
     except (asyncio.CancelledError, KeyboardInterrupt):
-        # SIGTERM/SIGINT 触发 cancel 或 Ctrl+C
         logger.info("Stopped by signal/keyboard interrupt")
+    except RuntimeError as e:
+        # stop/cancel 在某些时机会让 run_until_complete 抛 RuntimeError，属于正常退出路径
+        logger.info(f"RuntimeError during shutdown: {e}")
     except Exception as e:
         logger.exception("{}", e)
     finally:
         app.is_running = False
 
-        # 先停 bot / server，再清 worker
-        if app.bot_token:
-            app.loop.run_until_complete(stop_download_bot())
+        # 停 bot / server（这里尽量不要再抛异常导致保存逻辑跳过）
+        try:
+            if app.bot_token:
+                app.loop.run_until_complete(stop_download_bot())
+        except Exception as e:
+            logger.warning(f"stop_download_bot error: {e}")
 
-        app.loop.run_until_complete(stop_server(client))
+        try:
+            app.loop.run_until_complete(stop_server(client))
+        except Exception as e:
+            logger.warning(f"stop_server error: {e}")
 
+        # 取消 worker
         for t in tasks:
             t.cancel()
 
