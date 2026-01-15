@@ -10,4 +10,4 @@ if [ -d ".venv" ]; then
 fi
 
 # 启动 tg downloader
-exec python3 media_downloader.py
+exec python3 -m media_downloader.py
