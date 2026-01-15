@@ -1,7 +1,6 @@
 """Downloads media from telegram."""
 import asyncio
 import logging
-import signal
 import os
 import shutil
 import time
@@ -33,7 +32,6 @@ from utils.format import truncate_filename, validate_title
 from utils.log import LogFilter
 from utils.meta import print_meta
 from utils.meta_data import MetaData
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -631,7 +629,7 @@ async def run_until_all_task_finish():
 def _exec_loop():
     """Exec loop"""
 
-    return app.loop.create_task(run_until_all_task_finish())
+    app.loop.run_until_complete(run_until_all_task_finish())
 
 
 async def start_server(client: pyrogram.Client):
@@ -659,82 +657,38 @@ def main():
         workdir=app.session_file_path,
         start_timeout=app.start_timeout,
     )
-
-    exec_task: asyncio.Task | None = None
-    stopping = False  # 防止重复处理信号
-
-    def _handle_stop_signal(signum, frame=None):
-        nonlocal stopping
-        if stopping:
-            return
-        stopping = True
-
-        logger.warning(f"Received signal {signum}, shutting down gracefully...")
-        app.is_running = False
-
-        # 只取消主阻塞 task，让主流程回到 finally
-        if exec_task and not exec_task.done():
-            try:
-                app.loop.call_soon_threadsafe(lambda: exec_task.cancel())
-            except Exception:
-                pass
-
-    # 同时处理 Ctrl+C (SIGINT) 和 systemd stop/restart (SIGTERM)
-    signal.signal(signal.SIGINT, _handle_stop_signal)
-    signal.signal(signal.SIGTERM, _handle_stop_signal)
-
     try:
         app.pre_run()
         init_web(app)
 
         set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)
 
-        # 启动 server（若在此阶段收到 SIGTERM，会通过 cancel all_tasks 退出）
         app.loop.run_until_complete(start_server(client))
         logger.success(_t("Successfully started (Press Ctrl+C to stop)"))
 
-        # 启动下载任务
         app.loop.create_task(download_all_chat(client))
         for _ in range(app.max_download_task):
-            tasks.append(app.loop.create_task(worker(client)))
+            task = app.loop.create_task(worker(client))
+            tasks.append(task)
 
-        # 启动 bot（若配置了）
         if app.bot_token:
             app.loop.run_until_complete(
                 start_download_bot(app, client, add_download_task, download_chat_task)
             )
-
-        # ✅ 主阻塞点：用 task 包住，便于信号时 cancel
-        exec_task = app.loop.create_task(run_until_all_task_finish())
-        app.loop.run_until_complete(exec_task)
-
-    except (asyncio.CancelledError, KeyboardInterrupt):
-        logger.info("Stopped by signal/keyboard interrupt")
-    except RuntimeError as e:
-        # stop/cancel 在某些时机会让 run_until_complete 抛 RuntimeError，属于正常退出路径
-        logger.info(f"RuntimeError during shutdown: {e}")
+        _exec_loop()
+    except KeyboardInterrupt:
+        logger.info(_t("KeyboardInterrupt"))
     except Exception as e:
         logger.exception("{}", e)
     finally:
         app.is_running = False
-
-        # 停 bot / server（这里尽量不要再抛异常导致保存逻辑跳过）
-        try:
-            if app.bot_token:
-                app.loop.run_until_complete(stop_download_bot())
-        except Exception as e:
-            logger.warning(f"stop_download_bot error: {e}")
-
-        try:
-            app.loop.run_until_complete(stop_server(client))
-        except Exception as e:
-            logger.warning(f"stop_server error: {e}")
-
-        # 取消 worker
-        for t in tasks:
-            t.cancel()
-
+        if app.bot_token:
+            app.loop.run_until_complete(stop_download_bot())
+        app.loop.run_until_complete(stop_server(client))
+        for task in tasks:
+            task.cancel()
         logger.info(_t("Stopped!"))
+        # check_for_updates(app.proxy)
         logger.info(f"{_t('update config')}......")
         app.update_config()
         logger.success(
