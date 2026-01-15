@@ -683,8 +683,15 @@ def main():
     finally:
         app.is_running = False
         if app.bot_token:
-            app.loop.run_until_complete(stop_download_bot())
-        app.loop.run_until_complete(stop_server(client))
+            try:
+                app.loop.run_until_complete(stop_download_bot())
+            except Exception as e:
+                logger.warning(f"stop_download_bot ignore: {e}")
+
+        try:
+            app.loop.run_until_complete(stop_server(client))
+        except Exception as e:
+            logger.warning(f"stop_server ignore: {e}")
         for task in tasks:
             task.cancel()
         logger.info(_t("Stopped!"))
