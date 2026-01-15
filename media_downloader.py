@@ -240,9 +240,33 @@ async def _get_media_meta(
         if not file_name and message.photo:
             file_name = f"{message.photo.file_unique_id}"
 
+        # DEBUG: 看看 caption 到底有没有拿到、media_group_id 是不是同一组
+        logger.debug(
+            "meta: chat_id={} msg_id={} group_id={} raw_caption={!r} final_caption={!r} base_name={!r} suffix={!r}",
+            chat_id,
+            getattr(message, "id", None),
+            getattr(message, "media_group_id", None),
+            getattr(message, "caption", None),
+            caption,
+            file_name,
+            file_name_suffix,
+        )
+
         gen_file_name = (
             app.get_file_name(message.id, file_name, caption) + file_name_suffix
         )
+
+        if caption:
+            safe_caption = validate_title(caption)
+            max_cap_len = 60
+            if len(safe_caption) > max_cap_len:
+                safe_caption = safe_caption[:max_cap_len]
+
+            prefix = f"{message.id} - "
+            if gen_file_name.startswith(prefix):
+                gen_file_name = prefix + safe_caption + " - " + gen_file_name[len(prefix):]
+            else:
+                gen_file_name = f"{message.id} - {safe_caption} - {gen_file_name}"
 
         file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
 
@@ -463,7 +487,12 @@ async def download_media(
             # 每次 retry 前重置心跳：避免上一次残留时间戳误杀
             DOWNLOAD_LAST_PROGRESS_TS[message_id] = time.time()
             DOWNLOAD_LAST_PROGRESS_BYTES.pop(message_id, None)
-
+            # ✅ 关键：retry 前清理临时文件（cancel/中断很容易留下半截 temp）
+            try:
+                if temp_file_name and os.path.exists(temp_file_name):
+                    os.remove(temp_file_name)
+            except Exception as e:
+                logger.debug(f"Message[{message_id}] remove temp ignore: {e}")
             download_task = app.loop.create_task(
                 client.download_media(
                     message,
