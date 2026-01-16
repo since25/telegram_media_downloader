@@ -838,6 +838,8 @@ async def report_bot_status(
     
     try:
         node.last_report_time = current_time
+        # 同时更新last_reply_time以确保can_reply()方法正常工作
+        node.last_reply_time = current_time
         return await _report_bot_status(client, node, immediate_reply)
     except Exception as e:
         logger.debug(f"{e}")
@@ -890,7 +892,7 @@ async def _report_bot_status(
         new_msg_str = (
             f"`\n"
             f"🆔 task id: {node.task_id}\n"
-            f"� {_t('Downloaded')}: {format_byte(node.total_download_byte)}\n"
+            f"📥 {_t('Downloaded')}: {format_byte(node.total_download_byte)}\n"
             f"├─ 📁 {_t('Total')}: {node.total_download_task}\n"
             f"├─ ✅ {_t('Success')}: {node.success_download_task}\n"
             f"├─ ❌ {_t('Failed')}: {node.failed_download_task}\n"
@@ -1237,6 +1239,9 @@ async def update_cloud_upload_stat(
         eta=eta,
     )
 
+    # Report cloud upload status to bot
+    await report_bot_status(client=node.bot, node=node)
+
 
 async def update_upload_stat(
     upload_size: int,
@@ -1280,6 +1285,9 @@ async def update_upload_stat(
             upload_speed=upload_size / (cur_time - start_time),
         )
         node.upload_stat_dict[message_id] = upload_stat
+
+    # Report upload status to bot
+    await report_bot_status(client, node)
 
 
 # pylint: enable=W0201

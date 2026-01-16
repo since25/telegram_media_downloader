@@ -134,3 +134,7 @@ async def update_download_status(
         _total_download_speed = max(_total_download_speed, 0)
         _total_download_size = 0
         _last_download_time = cur_time
+
+    # Report download status to bot
+    from module.pyrogram_extension import report_bot_status
+    await report_bot_status(client=client, node=node)
