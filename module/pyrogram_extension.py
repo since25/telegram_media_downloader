@@ -815,7 +815,13 @@ async def report_bot_status(
     immediate_reply=False,
 ):
     """see _report_bot_status"""
+    # 添加节流机制：限制状态更新频率为5秒一次
+    current_time = time.time()
+    if not immediate_reply and current_time - node.last_report_time < 10.0:
+        return
+    
     try:
+        node.last_report_time = current_time
         return await _report_bot_status(client, node, immediate_reply)
     except Exception as e:
         logger.debug(f"{e}")
@@ -864,101 +870,50 @@ async def _report_bot_status(
         return
 
     if immediate_reply or node.can_reply():
-        if node.upload_telegram_chat_id:
-            node.forward_msg_detail_str = (
-                f"\n🔄 {_t('Forward')}\n"
-                f"├─ 📁 {_t('Total')}: {node.total_forward_task}\n"
-                f"├─ ✅ {_t('Success')}: {node.success_forward_task}\n"
-                f"├─ ❌ {_t('Failed')}: {node.failed_forward_task}\n"
-                f"└─ ⏩ {_t('Skipped')}: {node.skip_forward_task}\n"
-            )
-
-        upload_msg_detail_str: str = ""
-
-        if node.upload_success_count:
-            upload_msg_detail_str = (
-                f"\n☁️ {_t('Upload')}\n"
-                f"└─ ✅ {_t('Success')}: {node.upload_success_count}\n"
-            )
-
-        for idx, value in node.cloud_drive_upload_stat_dict.items():
-            if value.transferred == value.total:
-                continue
-
-            temp_file_name = truncate_filename(os.path.basename(value.file_name), 10)
-            upload_msg_detail_str += (
-                f" ├─ 🆔 {_t('Message ID')}: {idx}\n"
-                f" │   ├─ 📁 : {temp_file_name}\n"
-                f" │   ├─ 📏 : {value.total}\n"
-                f" │   ├─ ⏫ : {value.speed}\n"
-                f" │   └─ 📊 : ["
-                f'{create_progress_bar(int(value.percentage.split("%")[0]))}]'
-                f" ({value.percentage})%\n"
-            )
-
-        download_result_str = ""
-        active_downloads = []
-
-        download_result = get_download_result()
-        if node.chat_id in download_result:
-            messages = download_result[node.chat_id]
-            for idx, value in messages.items():
-                if value["task_id"] != node.task_id:
-                    continue
-                if value["down_byte"] == value["total_size"]:
-                    continue
-                active_downloads.append((idx, value))
-
-        for idx, value in active_downloads[:MAX_ACTIVE_ITEMS]:
-            progress = int(value["down_byte"] / value["total_size"] * 100)
-            download_result_str += (
-                f" ├─ 🆔 {idx}: {progress}% "
-                f"({format_byte(value['download_speed'])}/s)\n"
-            )
-
-        if active_downloads:
-            download_result_str = (
-                    f"\n📥 {_t('Downloading')} "
-                    f"({len(active_downloads)} active):\n"
-                    + download_result_str
-            )
-
-        upload_result_str = ""
-        active_uploads = []
-
-        for idx, value in node.upload_stat_dict.items():
-            if value.total_size == value.upload_size:
-                continue
-            active_uploads.append((idx, value))
-
-        for idx, value in active_uploads[:MAX_ACTIVE_ITEMS]:
-            progress = int(value.upload_size / value.total_size * 100)
-            upload_result_str += (
-                f" ├─ 🆔 {idx}: {progress}% "
-                f"({format_byte(value.upload_speed)}/s)\n"
-            )
-
-        if active_uploads:
-            upload_result_str = (
-                    f"\n📤 {_t('Uploading')} "
-                    f"({len(active_uploads)} active):\n"
-                    + upload_result_str
-            )
-
+        # 简化消息格式，只显示核心信息
         new_msg_str = (
             f"`\n"
             f"🆔 task id: {node.task_id}\n"
-            f"📥 {_t('Downloaded')}: {format_byte(node.total_download_byte)}\n"
+            f"� {_t('Downloaded')}: {format_byte(node.total_download_byte)}\n"
             f"├─ 📁 {_t('Total')}: {node.total_download_task}\n"
             f"├─ ✅ {_t('Success')}: {node.success_download_task}\n"
             f"├─ ❌ {_t('Failed')}: {node.failed_download_task}\n"
             f"└─ ⏩ {_t('Skipped')}: {node.skip_download_task}\n"
-            f"{node.forward_msg_detail_str}"
-            f"{upload_msg_detail_str}"
-            f"{upload_result_str}"
-            f"{download_result_str}\n"
-            f"`"
         )
+
+        # 只添加必要的转发统计
+        if node.upload_telegram_chat_id and (node.total_forward_task > 0 or node.success_forward_task > 0):
+            new_msg_str += (
+                f"🔄 {_t('Forward')}: {node.success_forward_task}/{node.total_forward_task}\n"
+            )
+
+        # 只添加必要的上传统计
+        if node.upload_success_count > 0:
+            new_msg_str += (
+                f"☁️ {_t('Upload Success')}: {node.upload_success_count}\n"
+            )
+
+        # 简化活跃任务显示，只显示数量
+        download_result = get_download_result()
+        active_downloads_count = 0
+        if node.chat_id in download_result:
+            messages = download_result[node.chat_id]
+            for idx, value in messages.items():
+                if value["task_id"] == node.task_id and value["down_byte"] < value["total_size"]:
+                    active_downloads_count += 1
+        
+        active_uploads_count = 0
+        for idx, value in node.upload_stat_dict.items():
+            if value.total_size > value.upload_size:
+                active_uploads_count += 1
+        
+        # 只显示活跃任务数量，不显示详细列表
+        if active_downloads_count > 0:
+            new_msg_str += f"📥 {_t('Active Downloads')}: {active_downloads_count}\n"
+        if active_uploads_count > 0:
+            new_msg_str += f"📤 {_t('Active Uploads')}: {active_uploads_count}\n"
+        
+        new_msg_str += "`"
 
         if new_msg_str != node.last_edit_msg:
             node.last_edit_msg = new_msg_str
