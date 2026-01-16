@@ -809,8 +809,19 @@ async def report_bot_forward_status(
     node.stat_forward(status)
     await report_bot_status(client, node)
 
-MAX_TG_TEXT = 3800  # 留余量避免 markdown/转义贴边
+async def report_bot_status(
+    client: pyrogram.Client,
+    node: TaskNode,
+    immediate_reply=False,
+):
+    """see _report_bot_status"""
+    try:
+        return await _report_bot_status(client, node, immediate_reply)
+    except Exception as e:
+        logger.debug(f"{e}")
 
+
+MAX_TG_TEXT = 3800  # 留余量避免 markdown/转义贴边
 def _split_text_chunks(text: str, limit: int = MAX_TG_TEXT) -> list[str]:
     """
     按行切分，保证每段 <= limit
