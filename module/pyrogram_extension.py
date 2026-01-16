@@ -48,6 +48,7 @@ from utils.meta_data import MetaData
 _mimetypes = MimeTypes()
 _mimetypes.readfp(StringIO(mime_types))
 _download_cache = Cache(1024 * 1024 * 1024)
+MAX_ACTIVE_ITEMS = 5   # 状态页最多显示 5 个进行中任务
 
 
 def reset_download_cache():
@@ -808,17 +809,53 @@ async def report_bot_forward_status(
     node.stat_forward(status)
     await report_bot_status(client, node)
 
+MAX_TG_TEXT = 3800  # 留余量避免 markdown/转义贴边
 
-async def report_bot_status(
+def _split_text_chunks(text: str, limit: int = MAX_TG_TEXT) -> list[str]:
+    """
+    按行切分，保证每段 <= limit
+    """
+    lines = text.splitlines(True)  # 保留换行
+    chunks = []
+    buf = ""
+    for ln in lines:
+        if len(buf) + len(ln) > limit:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            # 单行就超长则硬切（极少）
+            while len(ln) > limit:
+                chunks.append(ln[:limit])
+                ln = ln[limit:]
+        buf += ln
+    if buf:
+        chunks.append(buf)
+    return chunks
+async def _report_bot_status(
     client: pyrogram.Client,
     node: TaskNode,
     immediate_reply=False,
 ):
-    """see _report_bot_status"""
-    try:
-        return await _report_bot_status(client, node, immediate_reply)
-    except Exception as e:
-        logger.debug(f"{e}")
+    """
+    Sends a message with the current status of the download bot.
+    """
+    if not node.reply_message_id or not node.bot:
+        return
+
+    if immediate_reply or node.can_reply():
+        # 发送实时进度
+        await client.edit_message_text(
+            node.from_user_id,
+            node.reply_message_id,
+            new_msg_str,
+            parse_mode=pyrogram.enums.ParseMode.MARKDOWN,
+        )
+
+        # 如果任务完成，发送一次汇总
+        try:
+            await _send_finish_summary(client, node)
+        except Exception as e:
+            logger.debug(f"send_finish_summary failed: {e}")
 
 
 async def _report_bot_status(
@@ -874,55 +911,58 @@ async def _report_bot_status(
             )
 
         download_result_str = ""
+        active_downloads = []
+
         download_result = get_download_result()
         if node.chat_id in download_result:
             messages = download_result[node.chat_id]
             for idx, value in messages.items():
-                task_id = value["task_id"]
-                if task_id != node.task_id or value["down_byte"] == value["total_size"]:
+                if value["task_id"] != node.task_id:
                     continue
+                if value["down_byte"] == value["total_size"]:
+                    continue
+                active_downloads.append((idx, value))
 
-                temp_file_name = truncate_filename(
-                    os.path.basename(value["file_name"]), 10
-                )
-                progress = int(value["down_byte"] / value["total_size"] * 100)
-                download_result_str += (
-                    f" ├─ 🆔 {_t('Message ID')}: {idx}\n"
-                    f" │   ├─ 📁 : {temp_file_name}\n"
-                    f" │   ├─ 📏 : {format_byte(value['total_size'])}\n"
-                    f" │   ├─ ⏬ : {format_byte(value['download_speed'])}/s\n"
-                    f" │   └─ 📊 : [{create_progress_bar(progress)}]"
-                    f" ({progress}%)\n"
-                )
+        for idx, value in active_downloads[:MAX_ACTIVE_ITEMS]:
+            progress = int(value["down_byte"] / value["total_size"] * 100)
+            download_result_str += (
+                f" ├─ 🆔 {idx}: {progress}% "
+                f"({format_byte(value['download_speed'])}/s)\n"
+            )
 
-            if download_result_str:
-                download_result_str = (
-                    f"\n📥 {_t('Download Progresses')}:\n" + download_result_str
-                )
+        if active_downloads:
+            download_result_str = (
+                    f"\n📥 {_t('Downloading')} "
+                    f"({len(active_downloads)} active):\n"
+                    + download_result_str
+            )
 
         upload_result_str = ""
+        active_uploads = []
+
         for idx, value in node.upload_stat_dict.items():
             if value.total_size == value.upload_size:
                 continue
+            active_uploads.append((idx, value))
 
-            temp_file_name = truncate_filename(os.path.basename(value.file_name), 10)
+        for idx, value in active_uploads[:MAX_ACTIVE_ITEMS]:
             progress = int(value.upload_size / value.total_size * 100)
             upload_result_str += (
-                f" ├─ 🆔 {_t('Message ID')}: {idx}\n"
-                f" │   ├─ 📁 : {temp_file_name}\n"
-                f" │   ├─ 📏 : {format_byte(value.total_size)}\n"
-                f" │   ├─ ⏫ : {format_byte(value.upload_speed)}/s\n"
-                f" │   └─ 📊 : [{create_progress_bar(progress)}]"
-                f" ({progress}%)\n"
+                f" ├─ 🆔 {idx}: {progress}% "
+                f"({format_byte(value.upload_speed)}/s)\n"
             )
 
-        if upload_result_str:
-            upload_result_str = f"\n📤 {_t('Upload Progresses')}:\n" + upload_result_str
+        if active_uploads:
+            upload_result_str = (
+                    f"\n📤 {_t('Uploading')} "
+                    f"({len(active_uploads)} active):\n"
+                    + upload_result_str
+            )
 
         new_msg_str = (
             f"`\n"
             f"🆔 task id: {node.task_id}\n"
-            f"📥 {_t('Downloading')}: {format_byte(node.total_download_byte)}\n"
+            f"📥 {_t('Downloaded')}: {format_byte(node.total_download_byte)}\n"
             f"├─ 📁 {_t('Total')}: {node.total_download_task}\n"
             f"├─ ✅ {_t('Success')}: {node.success_download_task}\n"
             f"├─ ❌ {_t('Failed')}: {node.failed_download_task}\n"
@@ -930,7 +970,8 @@ async def _report_bot_status(
             f"{node.forward_msg_detail_str}"
             f"{upload_msg_detail_str}"
             f"{upload_result_str}"
-            f"{download_result_str}\n`"
+            f"{download_result_str}\n"
+            f"`"
         )
 
         if new_msg_str != node.last_edit_msg:
@@ -941,6 +982,110 @@ async def _report_bot_status(
                 new_msg_str,
                 parse_mode=pyrogram.enums.ParseMode.MARKDOWN,
             )
+            # 如果任务完成，发送一次汇总
+            try:
+                await _send_finish_summary(client, node)
+            except Exception as e:
+                logger.debug(f"send_finish_summary failed: {e}")
+
+def _collect_finish_lists(node: "TaskNode"):
+    """
+    返回 (failed_ids, skipped_ids) 两个列表
+    这里先尽最大可能从 node 上取；取不到就返回空列表。
+    """
+    failed_ids = []
+    skipped_ids = []
+
+    # 常见字段名兜底（如果你项目里有这些）
+    for attr in ("failed_msg_ids", "failed_message_ids", "fail_message_ids"):
+        v = getattr(node, attr, None)
+        if isinstance(v, (list, tuple, set)):
+            failed_ids = list(v)
+            break
+
+    for attr in ("skipped_msg_ids", "skipped_message_ids", "skip_message_ids"):
+        v = getattr(node, attr, None)
+        if isinstance(v, (list, tuple, set)):
+            skipped_ids = list(v)
+            break
+
+    # 没拿到就空
+    return failed_ids, skipped_ids
+
+async def _send_finish_summary(client: pyrogram.Client, node: "TaskNode"):
+    """
+    任务完成后发送汇总（可能分多条），只用于 bot 私聊/回执聊天。
+    """
+    # 防重复（兼容没改 TaskNode 的情况）
+    if getattr(node, "summary_sent", False):
+        return
+    setattr(node, "summary_sent", True)
+
+    failed_ids, skipped_ids = _collect_finish_lists(node)
+
+    # 这里的“完成条件”用你的统计字段判断更稳
+    finished = (
+        node.success_download_task + node.failed_download_task + node.skip_download_task
+    )
+    if node.total_download_task and finished < node.total_download_task:
+        # 尚未完成就不发（避免误发）
+        setattr(node, "summary_sent", False)
+        return
+
+    # 汇总正文（尽量短+清晰）
+    header = (
+        f"`\n"
+        f"✅ {_t('Task Finished')}\n"
+        f"🆔 task id: {node.task_id}\n"
+        f"📥 {_t('Downloaded')}: {format_byte(node.total_download_byte)}\n"
+        f"├─ 📁 {_t('Total')}: {node.total_download_task}\n"
+        f"├─ ✅ {_t('Success')}: {node.success_download_task}\n"
+        f"├─ ❌ {_t('Failed')}: {node.failed_download_task}\n"
+        f"└─ ⏩ {_t('Skipped')}: {node.skip_download_task}\n"
+    )
+
+    # 如果你还有上传/转发统计，也可以加进来
+    if getattr(node, "upload_success_count", 0):
+        header += f"\n☁️ {_t('Upload')}: ✅ {node.upload_success_count}\n"
+
+    # 失败/跳过列表（只列出 ID，避免超长）
+    details = ""
+    if failed_ids:
+        details += "\n❌ failed message_ids:\n" + " ".join(map(str, failed_ids)) + "\n"
+    if skipped_ids:
+        details += "\n⏩ skipped message_ids:\n" + " ".join(map(str, skipped_ids)) + "\n"
+
+    footer = "`"
+
+    full_text = header + details + footer
+
+    # 分片发送（每片都是完整 Markdown code block，避免破坏格式）
+    chunks = _split_text_chunks(full_text, MAX_TG_TEXT)
+    msg_ids = []
+    for i, chunk in enumerate(chunks, 1):
+        # 确保每条都有成对的反引号包裹（如果被切断了）
+        if not chunk.startswith("`"):
+            chunk = "`\n" + chunk
+        if not chunk.rstrip().endswith("`"):
+            chunk = chunk.rstrip("\n") + "\n`"
+
+        # 第一条可以 reply 原来的消息，更友好
+        if i == 1:
+            m = await client.send_message(
+                node.from_user_id,
+                chunk,
+                parse_mode=pyrogram.enums.ParseMode.MARKDOWN,
+                reply_to_message_id=node.reply_message_id,
+            )
+        else:
+            m = await client.send_message(
+                node.from_user_id,
+                chunk,
+                parse_mode=pyrogram.enums.ParseMode.MARKDOWN,
+            )
+        msg_ids.append(m.id)
+
+    setattr(node, "summary_message_ids", msg_ids)
 
 
 def set_max_concurrent_transmissions(

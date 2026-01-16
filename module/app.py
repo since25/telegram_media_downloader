@@ -173,6 +173,8 @@ class TaskNode:
         self.topic_id = topic_id
         self.reply_to_message = None
         self.cloud_drive_upload_stat_dict: dict = {}
+        self.summary_sent = False
+        self.summary_message_ids = []  # 可选：用于记录发了哪些汇总消息，便于你以后撤回/更新
 
     def skip_msg_id(self, msg_id: int):
         """Skip if message id out of range"""
