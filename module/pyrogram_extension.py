@@ -831,31 +831,6 @@ def _split_text_chunks(text: str, limit: int = MAX_TG_TEXT) -> list[str]:
     if buf:
         chunks.append(buf)
     return chunks
-async def _report_bot_status(
-    client: pyrogram.Client,
-    node: TaskNode,
-    immediate_reply=False,
-):
-    """
-    Sends a message with the current status of the download bot.
-    """
-    if not node.reply_message_id or not node.bot:
-        return
-
-    if immediate_reply or node.can_reply():
-        # 发送实时进度
-        await client.edit_message_text(
-            node.from_user_id,
-            node.reply_message_id,
-            new_msg_str,
-            parse_mode=pyrogram.enums.ParseMode.MARKDOWN,
-        )
-
-        # 如果任务完成，发送一次汇总
-        try:
-            await _send_finish_summary(client, node)
-        except Exception as e:
-            logger.debug(f"send_finish_summary failed: {e}")
 
 
 async def _report_bot_status(
