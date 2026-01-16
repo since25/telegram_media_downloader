@@ -47,7 +47,7 @@ from utils.meta_data import MetaData
 
 _mimetypes = MimeTypes()
 _mimetypes.readfp(StringIO(mime_types))
-_download_cache = Cache(1024 * 1024 * 1024)
+_download_cache = Cache(4*1024 * 1024 * 1024)
 MAX_ACTIVE_ITEMS = 5   # 状态页最多显示 5 个进行中任务
 
 
