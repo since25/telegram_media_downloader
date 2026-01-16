@@ -831,9 +831,11 @@ async def report_bot_status(
     """see _report_bot_status"""
     current_time = time.time()
     
-    # 简化节流逻辑：只在非立即回复且距离上次更新不到5秒时跳过
-    # 去掉了可能导致问题的任务完成判断
-    if not immediate_reply and current_time - node.last_report_time < 5.0:
+    # 节流逻辑：只有在非立即回复、距离上次更新不到5秒且没有新任务开始时才跳过
+    # 新增：如果有新任务开始（总任务数增加但完成任务数未增加），立即更新
+    has_new_tasks = (node.total_download_task - (node.success_download_task + node.failed_download_task + node.skip_download_task)) > 0
+    
+    if not immediate_reply and current_time - node.last_report_time < 5.0 and not has_new_tasks:
         return
     
     try:

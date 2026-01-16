@@ -286,6 +286,11 @@ async def add_download_task(
     node.download_status[message.id] = DownloadStatus.Downloading
     await queue.put((message, node))
     node.total_task += 1
+    node.total_download_task += 1
+    # 任务开始时立即更新状态，确保用户能看到实时进度
+    if node.bot:
+        from module.pyrogram_extension import report_bot_status
+        await report_bot_status(client=node.bot, node=node, immediate_reply=True)
     return True
 
 
@@ -756,6 +761,8 @@ def main():
         logger.success(_t("Successfully started (Press Ctrl+C to stop)"))
 
         app.loop.create_task(download_all_chat(client))
+        # 检查并记录并行任务数量
+        logger.info(f"Creating {app.max_download_task} download workers")
         for _ in range(app.max_download_task):
             task = app.loop.create_task(worker(client))
             tasks.append(task)

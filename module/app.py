@@ -395,7 +395,7 @@ class Application:
         self.hide_file_name = False
         self.caption_name_dict: dict = {}
         self.caption_entities_dict: dict = {}
-        self.max_concurrent_transmissions: int = 1
+        self.max_concurrent_transmissions: int = 5
         self.web_host: str = "0.0.0.0"
         self.web_port: int = 5000
         self.max_download_task: int = 5
@@ -497,6 +497,7 @@ class Application:
         self.max_download_task = _config.get(
             "max_download_task", self.max_download_task
         )
+        logger.info(f"Max download task: {self.max_download_task}")
 
         self.max_concurrent_transmissions = self.max_download_task * 5
 
