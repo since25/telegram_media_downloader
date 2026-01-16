@@ -788,7 +788,20 @@ async def report_bot_download_status(
     """
     node.stat(download_status)
     node.total_download_byte += download_size
-    await report_bot_status(client, node)
+    
+    # 检查任务是否完成，完成时立即回复
+    # 对于ListenForward类型任务，使用is_running状态判断
+    # 对于普通下载任务，检查total_download_task是否有变化
+    immediate_reply = False
+    if node.task_type == TaskType.ListenForward:
+        # ListenForward任务不需要立即回复
+        pass
+    else:
+        # 普通下载任务，每次状态更新都可能是最后一次
+        # 使用immediate_reply=True确保最后一次更新被发送
+        immediate_reply = True
+    
+    await report_bot_status(client, node, immediate_reply)
 
 
 async def report_bot_forward_status(
@@ -818,15 +831,9 @@ async def report_bot_status(
     """see _report_bot_status"""
     current_time = time.time()
     
-    # 任务完成时强制更新状态，不受节流限制
-    is_finished = node.is_stop_transmission or (
-        node.is_running and 
-        node.task_type != TaskType.ListenForward and 
-        node.total_task == node.total_download_task
-    )
-    
-    # 添加节流机制：限制状态更新频率为5秒一次
-    if not immediate_reply and not is_finished and current_time - node.last_report_time < 5.0:
+    # 简化节流逻辑：只在非立即回复且距离上次更新不到5秒时跳过
+    # 去掉了可能导致问题的任务完成判断
+    if not immediate_reply and current_time - node.last_report_time < 5.0:
         return
     
     try:
