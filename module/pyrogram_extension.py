@@ -31,6 +31,7 @@ from module.app import (
     DownloadStatus,
     ForwardStatus,
     TaskNode,
+    TaskType,
     UploadProgressStat,
     UploadStatus,
 )
@@ -815,9 +816,17 @@ async def report_bot_status(
     immediate_reply=False,
 ):
     """see _report_bot_status"""
-    # 添加节流机制：限制状态更新频率为5秒一次
     current_time = time.time()
-    if not immediate_reply and current_time - node.last_report_time < 10.0:
+    
+    # 任务完成时强制更新状态，不受节流限制
+    is_finished = node.is_stop_transmission or (
+        node.is_running and 
+        node.task_type != TaskType.ListenForward and 
+        node.total_task == node.total_download_task
+    )
+    
+    # 添加节流机制：限制状态更新频率为5秒一次
+    if not immediate_reply and not is_finished and current_time - node.last_report_time < 5.0:
         return
     
     try:
