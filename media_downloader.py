@@ -13,7 +13,7 @@ from rich.logging import RichHandler
 
 from module.app import Application, ChatDownloadConfig, DownloadStatus, TaskNode
 from module.bot import start_download_bot, stop_download_bot
-from module.download_stat import update_download_status
+from module.download_stat import get_download_result, update_download_status
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import _t
 from module.pyrogram_extension import (
@@ -394,6 +394,7 @@ async def _stall_watchdog(message_id: int, timeout_s: int, target_task: asyncio.
             target_task.cancel()
             return
 @record_download_status
+
 async def download_media(
     client: pyrogram.client.Client,
     message: pyrogram.types.Message,
@@ -489,15 +490,33 @@ async def download_media(
         download_task = None
         watchdog_task = None
         try:
+            # 重试开始时的明确日志
+            logger.info(f"Message[{message_id}] ({ui_file_name}): Starting retry {retry + 1}/3...")
+            
             # 每次 retry 前重置心跳：避免上一次残留时间戳误杀
             DOWNLOAD_LAST_PROGRESS_TS[message_id] = time.time()
             DOWNLOAD_LAST_PROGRESS_BYTES.pop(message_id, None)
-            # ✅ 关键：retry 前清理临时文件（cancel/中断很容易留下半截 temp）
+            
+            # 清理下载结果中的进度信息，确保WebUI显示正确的进度
+            download_result = get_download_result()
+            if node.chat_id in download_result and message_id in download_result[node.chat_id]:
+                del download_result[node.chat_id][message_id]
+            
+            # ✅ 关键：retry 前清理临时文件和可能的不完整最终文件
             try:
+                # 清理临时文件
                 if temp_file_name and os.path.exists(temp_file_name):
+                    logger.debug(f"Message[{message_id}] removing temp file: {temp_file_name}")
                     os.remove(temp_file_name)
+                
+                # 清理可能存在的不完整最终文件
+                if file_name and os.path.exists(file_name):
+                    file_size = os.path.getsize(file_name)
+                    if file_size != media_size:
+                        logger.warning(f"Message[{message_id}] removing incomplete file: {file_name} (size {file_size} != {media_size})")
+                        os.remove(file_name)
             except Exception as e:
-                logger.debug(f"Message[{message_id}] remove temp ignore: {e}")
+                logger.debug(f"Message[{message_id}] remove file ignore: {e}")
             download_task = app.loop.create_task(
                 client.download_media(
                     message,
@@ -586,6 +605,13 @@ async def download_media(
     # 失败后也清理，防止字典膨胀
     DOWNLOAD_LAST_PROGRESS_TS.pop(message_id, None)
     DOWNLOAD_LAST_PROGRESS_BYTES.pop(message_id, None)
+    
+    # 清理下载结果中的进度信息，确保WebUI不再显示失败任务的进度
+    download_result = get_download_result()
+    if node.chat_id in download_result and message_id in download_result[node.chat_id]:
+        del download_result[node.chat_id][message_id]
+    
+    logger.warning(f"Message[{message_id}] ({ui_file_name}): All {retry + 1} retries failed.")
 
     return DownloadStatus.FailedDownload, None
 
