@@ -732,20 +732,36 @@ async def download_comments(
 ):
     """Download comments for a specific message"""
     from module.download_stat import remove_active_task_node
-    from module.pyrogram_extension import get_discussion_replies, report_bot_status, set_meta_data
+    from module.pyrogram_extension import report_bot_status, set_meta_data
     from utils.meta_data import MetaData
     from utils.format import validate_title
     
     try:
-        # 获取所有评论
-        comments = []
-        logger.info(f"尝试获取评论，chat_id={chat_id}, base_message_id={base_message_id}, start_comment_id={start_comment_id}, end_comment_id={end_comment_id}")
+        # 获取讨论组
+        chat = await client.get_chat(chat_id)
+        discussion_group_id = chat.id
+        logger.info(f"使用讨论组ID: {discussion_group_id}")
         
-        async for comment in get_discussion_replies(client, chat_id, base_message_id):
-            logger.info(f"找到评论: id={comment.id}, chat_id={comment.chat.id}, from_user={comment.from_user.id if comment.from_user else None}")
-            if comment.id >= start_comment_id and comment.id <= end_comment_id:
-                comments.append(comment)
-                logger.info(f"添加评论到列表: id={comment.id}")
+        # 生成评论ID列表
+        comment_ids = list(range(start_comment_id, end_comment_id + 1))
+        logger.info(f"生成评论ID列表: {comment_ids}")
+        
+        # 获取所有评论对象
+        comments = []
+        for comment_id in comment_ids:
+            try:
+                # 使用get_discussion_message获取特定评论
+                logger.info(f"尝试获取评论: id={comment_id}, group_id={discussion_group_id}")
+                comment = await client.get_discussion_message(discussion_group_id, comment_id)
+                if comment:
+                    comments.append(comment)
+                    logger.info(f"成功获取评论: id={comment.id}, has_media={comment.media is not None}")
+                else:
+                    logger.warning(f"未找到评论: id={comment_id}")
+            except Exception as e:
+                logger.error(f"获取评论 {comment_id} 失败: {e}")
+                node.failed_download_task += 1
+                await report_bot_status(node.bot, node)
         
         logger.info(f"共找到 {len(comments)} 条符合条件的评论")
         

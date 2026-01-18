@@ -1244,29 +1244,7 @@ async def parse_link(client: pyrogram.Client, link_str: str):
     return link.group_id, link.post_id, link.topic_id
 
 
-async def get_discussion_replies(client: pyrogram.Client, chat_id: int, message_id: int):
-    """Get all replies for a discussion message"""
-    try:
-        # 获取讨论组
-        chat = await client.get_chat(chat_id)
-        if not chat or not hasattr(chat, 'linked_chat') or not chat.linked_chat:
-            logger.error(f"Chat {chat_id} is not a discussion group or has no linked chat")
-            return
-        
-        # 获取实际的讨论组ID
-        discussion_group_id = chat.id
-        logger.info(f"Using discussion group ID: {discussion_group_id}")
-        
-        # 使用iter_history遍历讨论组的消息历史
-        logger.info(f"Starting to iterate through discussion group history")
-        async for msg in client.iter_history(discussion_group_id):
-            # 检查消息是否是回复特定消息的评论
-            if msg.reply_to_message_id == message_id:
-                logger.info(f"Found reply: id={msg.id}, reply_to={msg.reply_to_message_id}")
-                yield msg
-    except Exception as e:
-        logger.error(f"Error getting discussion replies: {e}")
-        raise
+
 
 
 async def update_cloud_upload_stat(

@@ -35,7 +35,6 @@ from module.pyrogram_extension import (
     retry,
     set_meta_data,
     upload_telegram_chat_message,
-    get_discussion_replies,
 )
 from module.download_stat import add_active_task_node, remove_active_task_node
 from utils.format import replace_date_time, validate_title
