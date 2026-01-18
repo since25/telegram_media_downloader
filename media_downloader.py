@@ -750,12 +750,12 @@ async def download_comments(
         comments = []
         for comment_id in comment_ids:
             try:
-                # 使用get_discussion_message获取特定评论
+                # 使用普通的get_messages方法获取评论，因为评论本身就是讨论组中的消息
                 logger.info(f"尝试获取评论: id={comment_id}, group_id={discussion_group_id}")
-                comment = await client.get_discussion_message(discussion_group_id, comment_id)
+                comment = await client.get_messages(discussion_group_id, comment_id)
                 if comment:
                     comments.append(comment)
-                    logger.info(f"成功获取评论: id={comment.id}, has_media={comment.media is not None}")
+                    logger.info(f"成功获取评论: id={comment.id}, has_media={comment.media is not None}, reply_to_message_id={comment.reply_to_message_id}")
                 else:
                     logger.warning(f"未找到评论: id={comment_id}")
             except Exception as e:
