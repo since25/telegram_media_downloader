@@ -860,6 +860,9 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                 _bot.add_task_node(node)
                 add_active_task_node(node)
                 
+                # 设置任务为运行状态
+                node.is_running = True
+                
                 # 获取并下载评论
                 # 局部导入避免循环导入
                 from media_downloader import download_comments
