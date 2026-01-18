@@ -887,24 +887,33 @@ async def download_comments(
             logger.info(f"处理评论 {i+1}/{len(comments)}: id={comment.id}, has_media={comment.media is not None}, type={type(comment)}")
             
             try:
-                logger.info(f"准备添加下载任务: comment_id={comment.id}, chat_id={comment.chat.id}")
+                # 确保comment.chat存在
+                chat_id = comment.chat.id if comment.chat else "未知"
+                logger.info(f"准备添加下载任务: comment_id={comment.id}, chat_id={chat_id}")
                 result = await add_download_task(comment, node)
                 logger.info(f"添加下载任务结果: {result}")
             except Exception as e:
-                logger.error(f"Failed to download comment {comment.id}: {e}")
+                logger.error(f"处理评论 {comment.id} 失败: {e}")
+                import traceback
+                traceback.print_exc()
                 node.failed_download_task += 1
                 await report_bot_status(node.bot, node)
         
-        # 完成任务
-        node.is_running = False
+        # 等待所有下载任务完成
+        # 我们不能立即将node.is_running设置为False，因为这会终止正在进行的下载任务
+        # 下载任务会在完成后自动更新状态，所以我们只需要报告最终状态
         await report_bot_status(node.bot, node)
-        remove_active_task_node(node.task_id)
+        
+        # 注意：不要在这里调用remove_active_task_node，因为下载任务可能还在进行中
+        # 任务会在所有下载完成后由系统自动清理
+        logger.info(f"评论下载任务已完成，共添加 {len(comments)} 条评论到下载队列")
         
     except Exception as e:
         logger.error(f"Error downloading comments: {e}")
-        node.is_running = False
+        import traceback
+        traceback.print_exc()
+        # 发生异常时，我们需要确保任务状态正确
         await report_bot_status(node.bot, node)
-        remove_active_task_node(node.task_id)
 
 
 async def download_chat_task(
