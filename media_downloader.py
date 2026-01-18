@@ -739,15 +739,23 @@ async def download_comments(
     try:
         # 获取所有评论
         comments = []
+        logger.info(f"尝试获取评论，chat_id={chat_id}, base_message_id={base_message_id}, start_comment_id={start_comment_id}, end_comment_id={end_comment_id}")
+        
         async for comment in get_discussion_replies(client, chat_id, base_message_id):
+            logger.info(f"找到评论: id={comment.id}, chat_id={comment.chat.id}, from_user={comment.from_user.id if comment.from_user else None}")
             if comment.id >= start_comment_id and comment.id <= end_comment_id:
                 comments.append(comment)
+                logger.info(f"添加评论到列表: id={comment.id}")
+        
+        logger.info(f"共找到 {len(comments)} 条符合条件的评论")
         
         # 按评论ID排序
         comments.sort(key=lambda x: x.id)
+        logger.info(f"评论排序完成，顺序: {[c.id for c in comments]}")
         
         # 设置总任务数
         node.total_download_task = len(comments)
+        logger.info(f"设置总任务数: {len(comments)}")
         await report_bot_status(node.bot, node)
         
         # 处理下载过滤
@@ -779,12 +787,18 @@ async def download_comments(
             await report_bot_status(node.bot, node)
         
         # 下载评论中的媒体
-        for comment in comments:
+        logger.info(f"开始下载评论媒体，共 {len(comments)} 条评论")
+        for i, comment in enumerate(comments):
             if not node.is_running:
+                logger.info(f"任务已停止，中断下载")
                 break
             
+            logger.info(f"处理评论 {i+1}/{len(comments)}: id={comment.id}, has_media={comment.media is not None}, type={type(comment)}")
+            
             try:
-                await add_download_task(comment, node)
+                logger.info(f"准备添加下载任务: comment_id={comment.id}, chat_id={comment.chat.id}")
+                result = await add_download_task(comment, node)
+                logger.info(f"添加下载任务结果: {result}")
             except Exception as e:
                 logger.error(f"Failed to download comment {comment.id}: {e}")
                 node.failed_download_task += 1

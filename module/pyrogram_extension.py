@@ -1101,6 +1101,8 @@ async def fetch_message(client: pyrogram.Client, message: pyrogram.types.Message
      Returns:
         pyrogram.types.Message: A message object retrieved from the specified chat.
     """
+    # 对于评论消息，message.chat.id已经是正确的讨论组ID
+    # 直接使用message对象的chat.id和id即可
     return await client.get_messages(
         chat_id=message.chat.id,
         message_ids=message.id,
