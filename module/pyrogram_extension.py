@@ -306,7 +306,7 @@ async def upload_telegram_chat_message(
                 client, upload_user, app, node, message, file_name
             )
             break
-        except pyrogram.errors.exceptions.flood_420.FloodWait as wait_err:
+        except pyrogram.errors.FloodWait as wait_err:
             await asyncio.sleep(wait_err.value * 2)
             logger.warning(
                 "Upload Message[{}]: FlowWait {}", message.id, wait_err.value
@@ -1128,7 +1128,7 @@ async def retry(func: Callable, args: tuple = (), max_attempts=3, wait_second=15
     for _ in range(1, max_attempts + 1):
         try:
             return await func(*args)
-        except pyrogram.errors.exceptions.flood_420.FloodWait as wait_err:
+        except pyrogram.errors.FloodWait as wait_err:
             logger.warning("bad call retry: FlowWait {}", wait_err.value)
             await asyncio.sleep(wait_err.value)
         except Exception as e:

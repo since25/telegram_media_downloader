@@ -30,8 +30,8 @@ from module.pyrogram_extension import (
     upload_telegram_chat,
 )
 # 导入Pyrogram错误类
-import pyrogram.errors.exceptions.server_error_5xx
-import pyrogram.errors.exceptions.connection_error
+# 使用更通用的导入方式，避免特定异常模块导入错误
+import pyrogram.errors
 from module.web import init_web
 from utils.format import truncate_filename, validate_title
 from utils.log import LogFilter
@@ -800,7 +800,7 @@ async def download_media(
             # 对于stall错误，缩短重试延迟
             await asyncio.sleep(1)
 
-        except pyrogram.errors.exceptions.bad_request_400.BadRequest as bad_err:
+        except pyrogram.errors.BadRequest as bad_err:
             # file reference expired / 或者别的 400
             logger.warning(
                 f"Message[{message_id}]: BadRequest ({bad_err.error_code}): {bad_err.MESSAGE} - refetching... ({retry + 1}/{MAX_RETRIES})"
@@ -808,21 +808,21 @@ async def download_media(
             await asyncio.sleep(RETRY_TIME_OUT)
             message = await fetch_message(client, message)
 
-        except pyrogram.errors.exceptions.flood_420.FloodWait as wait_err:
+        except pyrogram.errors.FloodWait as wait_err:
             # FloodWait 必须等够时间，并且不计入重试次数
             logger.warning(f"Message[{message_id}]: FloodWait {wait_err.value}s - pausing download...")
             await asyncio.sleep(wait_err.value)
             # 重置重试次数，因为这不是我们的错误
             retry = -1  # 因为循环会+1，所以设置为-1
 
-        except pyrogram.errors.exceptions.server_error_5xx.ServerError:
+        except pyrogram.errors.ServerError:
             # Telegram服务器错误，需要更长时间重试
             logger.warning(
                 f"Message[{message_id}]: Telegram Server Error - retrying after {INITIAL_RETRY_DELAY * 2}s... ({retry + 1}/{MAX_RETRIES})"
             )
             await asyncio.sleep(INITIAL_RETRY_DELAY * 2)
 
-        except pyrogram.errors.exceptions.connection_error.ConnectionError:
+        except pyrogram.errors.ConnectionError:
             # 网络连接错误，需要更长时间重试
             logger.warning(
                 f"Message[{message_id}]: Connection Error - retrying after {INITIAL_RETRY_DELAY * 3}s... ({retry + 1}/{MAX_RETRIES})"
