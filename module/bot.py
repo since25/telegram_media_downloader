@@ -35,6 +35,7 @@ from module.pyrogram_extension import (
     retry,
     set_meta_data,
     upload_telegram_chat_message,
+    get_discussion_replies,
 )
 from module.download_stat import add_active_task_node, remove_active_task_node
 from utils.format import replace_date_time, validate_title
@@ -775,8 +776,8 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
         f"<i>/download https://t.me/12000000 N M [filter]</i>\n\n"
     )
 
-    args = message.text.split(maxsplit=4)
-    if not message.text or len(args) < 4:
+    args = message.text.split(maxsplit=5)
+    if not message.text or len(args) < 3:
         await client.send_message(
             message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
         )
@@ -784,8 +785,107 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
 
     url = args[1]
     try:
+        # 解析URL获取基础信息
+        from utils.format import extract_info_from_link
+        link_info = extract_info_from_link(url)
+        
+        # 检查是否是评论下载
+        if link_info.comment_id is not None or (len(args) >= 5 and "comment=" in url):
+            # 评论下载模式
+            if len(args) < 5:
+                await client.send_message(
+                    message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
+                )
+                return
+            
+            start_comment_id = int(args[2])
+            end_comment_id = int(args[3])
+            download_filter = args[4] if len(args) > 4 else None
+            
+            # 处理评论下载逻辑
+            try:
+                # 获取基础消息
+                base_message_id = link_info.post_id
+                if not base_message_id:
+                    # 如果URL中没有消息ID，尝试从URL路径中提取
+                    if "/" in url and "?" in url:
+                        path_part = url.split("?")[0]
+                        parts = path_part.split("/")
+                        if len(parts) >= 3:
+                            base_message_id = int(parts[-1])
+                
+                if not base_message_id:
+                    await client.send_message(
+                        message.from_user.id,
+                        f"{_t('Invalid comment URL format, please include the base message ID')}",
+                        reply_to_message_id=message.id
+                    )
+                    return
+                
+                chat_id, _, _ = await parse_link(_bot.client, url)
+                if not chat_id:
+                    await client.send_message(
+                        message.from_user.id,
+                        f"{_t('Invalid chat link')}",
+                        reply_to_message_id=message.id
+                    )
+                    return
+                
+                entity = await _bot.client.get_chat(chat_id)
+                if not entity:
+                    await client.send_message(
+                        message.from_user.id,
+                        f"{_t('Chat not found')}",
+                        reply_to_message_id=message.id
+                    )
+                    return
+                
+                # 构建下载任务
+                chat_title = entity.title
+                reply_message = f"from {chat_title} "
+                reply_message += f"download comment id = {start_comment_id} - {end_comment_id} for message {base_message_id} !"
+                last_reply_message = await client.send_message(
+                    message.from_user.id, reply_message, reply_to_message_id=message.id
+                )
+                
+                # 创建评论下载任务
+                node = TaskNode(
+                    chat_id=entity.id,
+                    from_user_id=message.from_user.id,
+                    reply_message_id=last_reply_message.id,
+                    replay_message=reply_message,
+                    bot=_bot.bot,
+                    task_id=_bot.gen_task_id(),
+                )
+                
+                _bot.add_task_node(node)
+                add_active_task_node(node)
+                
+                # 获取并下载评论
+                # 局部导入避免循环导入
+                from media_downloader import download_comments
+                _bot.app.loop.create_task(
+                    download_comments(_bot.client, entity.id, base_message_id, start_comment_id, end_comment_id, download_filter, node)
+                )
+                return
+            except Exception as e:
+                await client.send_message(
+                    message.from_user.id,
+                    f"{_t('Comment download error')}: {e}",
+                    reply_to_message_id=message.id
+                )
+                return
+        
+        # 普通消息下载模式
+        if len(args) < 4:
+            await client.send_message(
+                message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
+            )
+            return
+        
         start_offset_id = int(args[2])
         end_offset_id = int(args[3])
+        download_filter = args[4] if len(args) > 4 else None
     except Exception:
         await client.send_message(
             message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
@@ -800,8 +900,6 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
             )
 
         limit = end_offset_id - start_offset_id + 1
-
-    download_filter = args[4] if len(args) > 4 else None
 
     if download_filter:
         download_filter = replace_date_time(download_filter)

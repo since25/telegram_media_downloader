@@ -1235,6 +1235,17 @@ async def parse_link(client: pyrogram.Client, link_str: str):
     return link.group_id, link.post_id, link.topic_id
 
 
+async def get_discussion_replies(client: pyrogram.Client, chat_id: int, message_id: int):
+    """Get all replies for a discussion message"""
+    try:
+        # 使用Pyrogram的iter_discussion_replies方法获取所有评论
+        async for reply in client.iter_discussion_replies(chat_id, message_id):
+            yield reply
+    except Exception as e:
+        logger.error(f"Error getting discussion replies: {e}")
+        raise
+
+
 async def update_cloud_upload_stat(
     transferred: str,
     total: str,

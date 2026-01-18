@@ -721,6 +721,87 @@ async def worker(client: pyrogram.client.Client):
             logger.exception(f"{e}")
 
 
+async def download_comments(
+    client: pyrogram.Client,
+    chat_id: int,
+    base_message_id: int,
+    start_comment_id: int,
+    end_comment_id: int,
+    download_filter: str,
+    node: TaskNode,
+):
+    """Download comments for a specific message"""
+    from module.download_stat import remove_active_task_node
+    from module.pyrogram_extension import get_discussion_replies, report_bot_status
+    from utils.meta_data import MetaData
+    from utils.format import set_meta_data, validate_title
+    
+    try:
+        # 获取所有评论
+        comments = []
+        async for comment in get_discussion_replies(client, chat_id, base_message_id):
+            if comment.id >= start_comment_id and comment.id <= end_comment_id:
+                comments.append(comment)
+        
+        # 按评论ID排序
+        comments.sort(key=lambda x: x.id)
+        
+        # 设置总任务数
+        node.total_download_task = len(comments)
+        await report_bot_status(node.bot, node)
+        
+        # 处理下载过滤
+        if download_filter:
+            from utils.format import replace_date_time
+            from module.app import app
+            
+            # 创建临时ChatDownloadConfig用于过滤
+            class TempChatDownloadConfig:
+                def __init__(self):
+                    self.download_filter = download_filter
+            
+            temp_config = TempChatDownloadConfig()
+            
+            # 应用过滤
+            filtered_comments = []
+            for comment in comments:
+                meta_data = MetaData()
+                caption = comment.caption
+                if caption:
+                    caption = validate_title(caption)
+                set_meta_data(meta_data, comment, caption)
+                
+                if app.exec_filter(temp_config, meta_data):
+                    filtered_comments.append(comment)
+            
+            comments = filtered_comments
+            node.total_download_task = len(comments)
+            await report_bot_status(node.bot, node)
+        
+        # 下载评论中的媒体
+        for comment in comments:
+            if not node.is_running:
+                break
+            
+            try:
+                await add_download_task(comment, node)
+            except Exception as e:
+                logger.error(f"Failed to download comment {comment.id}: {e}")
+                node.failed_download_task += 1
+                await report_bot_status(node.bot, node)
+        
+        # 完成任务
+        node.is_running = False
+        await report_bot_status(node.bot, node)
+        remove_active_task_node(node.task_id)
+        
+    except Exception as e:
+        logger.error(f"Error downloading comments: {e}")
+        node.is_running = False
+        await report_bot_status(node.bot, node)
+        remove_active_task_node(node.task_id)
+
+
 async def download_chat_task(
     client: pyrogram.Client,
     chat_download_config: ChatDownloadConfig,
