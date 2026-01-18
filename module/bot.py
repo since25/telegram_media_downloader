@@ -790,17 +790,17 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
         link_info = extract_info_from_link(url)
         
         # 检查是否是评论下载
-        if link_info.comment_id is not None or (len(args) >= 5 and "comment=" in url):
+        is_comment_range_download = "comment=" in url and len(args) >= 4
+        if link_info.comment_id is not None or is_comment_range_download:
             # 评论下载模式
-            if len(args) < 5:
-                await client.send_message(
-                    message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
-                )
-                return
-            
-            start_comment_id = int(args[2])
-            end_comment_id = int(args[3])
-            download_filter = args[4] if len(args) > 4 else None
+            if link_info.comment_id is not None:
+                # 单条评论下载
+                pass  # 这部分已经在原来的代码中处理
+            elif is_comment_range_download:
+                # 评论范围下载
+                start_comment_id = int(args[2])
+                end_comment_id = int(args[3])
+                download_filter = args[4] if len(args) > 4 else None
             
             # 处理评论下载逻辑
             try:

@@ -1229,9 +1229,16 @@ def set_meta_data(
 async def parse_link(client: pyrogram.Client, link_str: str):
     """Parse link"""
     link = extract_info_from_link(link_str)
-    if link.comment_id:
+    
+    # 检查是否是评论URL，无论是单个评论还是评论范围
+    from urllib.parse import urlparse, parse_qs
+    u = urlparse(link_str)
+    query = parse_qs(u.query)
+    is_comment_url = "comment" in query
+    
+    if link.comment_id or is_comment_url:
         chat = await client.get_chat(link.group_id)
-        if chat:
+        if chat and hasattr(chat, 'linked_chat') and chat.linked_chat:
             return chat.linked_chat.id, link.comment_id, link.topic_id
 
     return link.group_id, link.post_id, link.topic_id
