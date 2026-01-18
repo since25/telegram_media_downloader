@@ -284,54 +284,84 @@ async def add_download_task(
 ):
     """Add Download task"""
     try:
-        logger.info(f"add_download_task: 开始处理消息 - message_id={message.id if hasattr(message, 'id') else 'N/A'}")
-        
-        # 确保所有必要的对象都存在
-        if not message or message.empty:
-            logger.error(f"add_download_task: 消息无效 - message={message}, empty={message.empty if message else 'N/A'}")
+        msg_id = getattr(message, "id", None)
+
+        logger.info(
+            f"add_download_task: start "
+            f"message_id={msg_id if msg_id is not None else 'N/A'} "
+            f"queue_id={id(queue)} queue_size_before={queue.qsize()}"
+        )
+
+        # ---- 基础校验：只做“不会误杀”的检查 ----
+        if message is None:
+            logger.error("add_download_task: message is None")
             return False
-        
-        if not node:
-            logger.error("add_download_task: 任务节点无效")
+
+        if msg_id is None:
+            logger.error(f"add_download_task: message has no id - type={type(message)}")
             return False
-        
-        if not hasattr(message, 'id'):
-            logger.error(f"add_download_task: 消息没有ID属性 - type={type(message)}")
+
+        # Pyrogram 的 empty / service 等情况不统一，别用 message.empty 做硬判断
+        # 只要它是 Message 并且后续 download_task 能识别 has_media，就让它进队列
+        if node is None:
+            logger.error("add_download_task: node is None")
             return False
-        
-        # 确保node有必要的属性
-        if not hasattr(node, 'download_status'):
+
+        # ---- 初始化 node 统计字段 ----
+        if not hasattr(node, "download_status") or node.download_status is None:
             node.download_status = {}
-        
-        if not hasattr(node, 'total_task'):
+
+        if not hasattr(node, "total_task") or node.total_task is None:
             node.total_task = 0
-        
-        if not hasattr(node, 'total_download_task'):
+
+        if not hasattr(node, "total_download_task") or node.total_download_task is None:
             node.total_download_task = 0
-        
-        node.download_status[message.id] = DownloadStatus.Downloading
-        
-        # 添加到队列前记录队列大小
-        logger.info(f"add_download_task: 添加任务到队列前 - queue_size={queue.qsize()}")
+
+        # 标记下载中
+        node.download_status[msg_id] = DownloadStatus.Downloading
+
+        # ---- 入队：这是核心，必须尽快完成 ----
         await queue.put((message, node))
-        
-        # 添加到队列后记录队列大小
-        logger.info(f"add_download_task: 添加任务到队列后 - queue_size={queue.qsize()}")
-        
+
         node.total_task += 1
         node.total_download_task += 1
-        
-        # 任务开始时立即更新状态，确保用户能看到实时进度
-        if hasattr(node, 'bot') and node.bot:
-            from module.pyrogram_extension import report_bot_status
-            await report_bot_status(client=node.bot, node=node, immediate_reply=True)
-        
-        logger.info(f"add_download_task: 任务添加成功 - message_id={message.id}")
+
+        logger.info(
+            f"add_download_task: enqueued "
+            f"message_id={msg_id} queue_id={id(queue)} queue_size_after={queue.qsize()} "
+            f"node_task_id={getattr(node, 'task_id', 'N/A')}"
+        )
+
+        # ---- 状态上报：不要影响主流程，建议加超时 + 容错 ----
+        # 这里你原来用 node.bot，很可能不是 pyrogram.Client。
+        # 更稳的是：优先用 node.bot_client / node.client 之类（如果你工程里有），
+        # 没有就跳过，不要阻塞入队成功。
+        bot_client = None
+
+        # 如果你 TaskNode 里确实有 bot_client / client，这里可按实际字段调整
+        if hasattr(node, "bot_client"):
+            bot_client = getattr(node, "bot_client", None)
+        elif hasattr(node, "bot") and isinstance(getattr(node, "bot", None), pyrogram.Client):
+            bot_client = node.bot
+
+        if bot_client:
+            try:
+                from module.pyrogram_extension import report_bot_status
+
+                # 给个超时，防止 Telegram API 卡住把 add_task 卡住
+                await asyncio.wait_for(
+                    report_bot_status(client=bot_client, node=node, immediate_reply=True),
+                    timeout=5,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"add_download_task: report_bot_status timeout - message_id={msg_id}")
+            except Exception as e:
+                logger.warning(f"add_download_task: report_bot_status failed - {e}")
+
         return True
+
     except Exception as e:
-        logger.error(f"Error in add_download_task: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.exception(f"add_download_task: failed - {e}")
         return False
 
 
@@ -786,41 +816,50 @@ async def worker(client: pyrogram.client.Client):
     logger.info(f"worker start queue_id={id(queue)}")
 
     while True:
+        item = await queue.get()   # ✅ 只 get 一次
         try:
-            logger.info(f"worker: waiting... queue_size={queue.qsize()} queue_id={id(queue)}")
-            item = await queue.get()
-            logger.info(f"worker: got item queue_size={queue.qsize()} queue_id={id(queue)} item_type={type(item)}")
-            # 记录队列大小
-            queue_size = queue.qsize()
-            logger.info(f"worker: 检查队列 - 队列大小={queue_size}")
-            
-            # 等待队列中有任务
-            item = await queue.get()
-            logger.info(f"worker: 从队列中获取到任务 - 队列大小={queue.qsize()}")
-            
-            message = item[0]
-            node: TaskNode = item[1]
+            logger.info(
+                f"worker: got item queue_size={queue.qsize()} "
+                f"queue_id={id(queue)} item_type={type(item)}"
+            )
 
-            if node.is_stop_transmission:
-                logger.info(f"worker: 任务已停止 - message_id={message.id if hasattr(message, 'id') else 'N/A'}")
-                queue.task_done()  # 确保标记任务完成
+            # ✅ 防御性解包
+            try:
+                message, node = item
+            except Exception:
+                logger.error(f"worker: invalid queue item (expect (message,node)): {item!r}")
                 continue
 
-            logger.info(f"worker: 开始处理下载任务 - message_id={message.id if hasattr(message, 'id') else 'N/A'}, node_id={node.task_id}")
-            if node.client:
-                await download_task(node.client, message, node)
-            else:
-                await download_task(client, message, node)
-            logger.info(f"worker: 完成下载任务 - message_id={message.id if hasattr(message, 'id') else 'N/A'}")
+            msg_id = getattr(message, "id", "N/A")
+            task_id = getattr(node, "task_id", "N/A")
+
+            if getattr(node, "is_stop_transmission", False):
+                logger.info(f"worker: 任务已停止 - message_id={msg_id}, task_id={task_id}")
+                continue
+
+            logger.info(f"worker: 开始处理下载任务 - message_id={msg_id}, task_id={task_id}")
+
+            real_client = getattr(node, "client", None) or client
+
+            # ✅ 这里必须 await（你说“缺了一部分 await”，核心就在这里）
+            await download_task(real_client, message, node)
+
+            logger.info(f"worker: 完成下载任务 - message_id={msg_id}, task_id={task_id}")
+
+        except asyncio.CancelledError:
+            # ✅ 服务退出时正常取消，不要吞掉
+            logger.info("worker: cancelled, exiting")
+            raise
         except Exception as e:
             logger.exception(f"worker: 处理下载任务失败: {e}")
-            # 确保无论如何都标记任务完成
+            # 可选：异常后稍微 sleep，避免持续异常刷屏
+            await asyncio.sleep(0.5)
+        finally:
+            # ✅ 无论成功/continue/异常，都保证 task_done 一次
             try:
                 queue.task_done()
             except Exception as e:
-                logger.error(f"worker: 标记任务完成失败: {e}")
-        await asyncio.sleep(0.1)  # 避免CPU占用过高
-
+                logger.error(f"worker: task_done failed: {e}")
 
 async def download_comments(
     client: pyrogram.Client,
