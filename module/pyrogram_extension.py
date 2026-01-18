@@ -774,6 +774,9 @@ async def report_bot_download_status(
     node: TaskNode,
     download_status: DownloadStatus,
     download_size: int = 0,
+    chat_id: Union[int, str] = None,
+    message_id: int = None,
+    file_name: str = None,
 ):
     """
     Sends a message with the current status of the download bot.
@@ -782,11 +785,15 @@ async def report_bot_download_status(
         client (pyrogram.Client): The client instance.
         node (TaskNode): The download task node.
         download_status (DownloadStatus): The current download status.
+        download_size (int): The size of the downloaded file.
+        chat_id (Union[int, str]): The chat ID of the message.
+        message_id (int): The message ID.
+        file_name (str): The name of the downloaded file.
 
     Returns:
         None
     """
-    node.stat(download_status)
+    node.stat(download_status, chat_id, message_id, file_name)
     node.total_download_byte += download_size
     
     # 检查任务是否完成，完成时立即回复
@@ -951,27 +958,22 @@ async def _report_bot_status(
 
 def _collect_finish_lists(node: "TaskNode"):
     """
-    返回 (failed_ids, skipped_ids) 两个列表
-    这里先尽最大可能从 node 上取；取不到就返回空列表。
+    返回详细的任务列表 (成功任务列表, 失败任务列表, 跳过任务列表)
+    使用新添加的任务跟踪列表，如果没有则使用旧的字段名
     """
-    failed_ids = []
-    skipped_ids = []
+    success_tasks = []
+    failed_tasks = []
+    skipped_tasks = []
 
-    # 常见字段名兜底（如果你项目里有这些）
-    for attr in ("failed_msg_ids", "failed_message_ids", "fail_message_ids"):
-        v = getattr(node, attr, None)
-        if isinstance(v, (list, tuple, set)):
-            failed_ids = list(v)
-            break
+    # 优先使用新添加的详细任务列表
+    if hasattr(node, "success_tasks") and isinstance(node.success_tasks, (list, tuple)):
+        success_tasks = node.success_tasks
+    if hasattr(node, "failed_tasks") and isinstance(node.failed_tasks, (list, tuple)):
+        failed_tasks = node.failed_tasks
+    if hasattr(node, "skipped_tasks") and isinstance(node.skipped_tasks, (list, tuple)):
+        skipped_tasks = node.skipped_tasks
 
-    for attr in ("skipped_msg_ids", "skipped_message_ids", "skip_message_ids"):
-        v = getattr(node, attr, None)
-        if isinstance(v, (list, tuple, set)):
-            skipped_ids = list(v)
-            break
-
-    # 没拿到就空
-    return failed_ids, skipped_ids
+    return success_tasks, failed_tasks, skipped_tasks
 
 async def _send_finish_summary(client: pyrogram.Client, node: "TaskNode"):
     """
@@ -982,7 +984,7 @@ async def _send_finish_summary(client: pyrogram.Client, node: "TaskNode"):
         return
     setattr(node, "summary_sent", True)
 
-    failed_ids, skipped_ids = _collect_finish_lists(node)
+    success_tasks, failed_tasks, skipped_tasks = _collect_finish_lists(node)
 
     # 这里的“完成条件”用你的统计字段判断更稳
     finished = (
@@ -1009,12 +1011,29 @@ async def _send_finish_summary(client: pyrogram.Client, node: "TaskNode"):
     if getattr(node, "upload_success_count", 0):
         header += f"\n☁️ {_t('Upload')}: ✅ {node.upload_success_count}\n"
 
-    # 失败/跳过列表（只列出 ID，避免超长）
+    # 详细任务列表
     details = ""
-    if failed_ids:
-        details += "\n❌ failed message_ids:\n" + " ".join(map(str, failed_ids)) + "\n"
-    if skipped_ids:
-        details += "\n⏩ skipped message_ids:\n" + " ".join(map(str, skipped_ids)) + "\n"
+    
+    # 成功任务列表
+    if success_tasks:
+        details += f"\n✅ {_t('Success Tasks')}: {len(success_tasks)}\n"
+        details += f"chat id|id\n"
+        for chat_id, msg_id, _ in success_tasks:
+            details += f"{chat_id}|{msg_id}\n"
+    
+    # 失败任务列表
+    if failed_tasks:
+        details += f"\n❌ {_t('Failed Tasks')}: {len(failed_tasks)}\n"
+        details += f"chat id|id\n"
+        for chat_id, msg_id, _ in failed_tasks:
+            details += f"{chat_id}|{msg_id}\n"
+    
+    # 跳过任务列表
+    if skipped_tasks:
+        details += f"\n⏩ {_t('Skipped Tasks')}: {len(skipped_tasks)}\n"
+        details += f"chat id|id\n"
+        for chat_id, msg_id, _ in skipped_tasks:
+            details += f"{chat_id}|{msg_id}\n"
 
     footer = "`"
 

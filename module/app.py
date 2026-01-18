@@ -176,6 +176,11 @@ class TaskNode:
         self.summary_sent = False
         self.summary_message_ids = []  # 可选：用于记录发了哪些汇总消息，便于你以后撤回/更新
         self.last_report_time = time.time()  # 上次发送状态的时间，用于节流
+        
+        # 添加用于跟踪详细任务状态的列表
+        self.success_tasks = []  # 格式: [(chat_id, message_id, file_name)]
+        self.failed_tasks = []   # 格式: [(chat_id, message_id, file_name)]
+        self.skipped_tasks = []  # 格式: [(chat_id, message_id, file_name)]
 
     def skip_msg_id(self, msg_id: int):
         """Skip if message id out of range"""
@@ -199,23 +204,34 @@ class TaskNode:
         """Stop task"""
         self.is_stop_transmission = True
 
-    def stat(self, status: DownloadStatus):
+    def stat(self, status: DownloadStatus, chat_id: Union[int, str] = None, message_id: int = None, file_name: str = None):
         """
         Updates the download status of the task.
 
         Args:
             status (DownloadStatus): The status of the download task.
+            chat_id (Union[int, str]): The chat ID of the message.
+            message_id (int): The message ID.
+            file_name (str): The name of the downloaded file.
 
         Returns:
             None
         """
         self.total_download_task += 1
+        
+        # 记录详细的任务状态
         if status is DownloadStatus.SuccessDownload:
             self.success_download_task += 1
+            if chat_id is not None and message_id is not None:
+                self.success_tasks.append((chat_id, message_id, file_name))
         elif status is DownloadStatus.SkipDownload:
             self.skip_download_task += 1
+            if chat_id is not None and message_id is not None:
+                self.skipped_tasks.append((chat_id, message_id, file_name))
         else:
             self.failed_download_task += 1
+            if chat_id is not None and message_id is not None:
+                self.failed_tasks.append((chat_id, message_id, file_name))
 
     def stat_forward(self, status: ForwardStatus, count: int = 1):
         """Stat upload"""

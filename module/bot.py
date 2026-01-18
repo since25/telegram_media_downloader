@@ -178,6 +178,10 @@ class DownloadBot:
             ),
             types.BotCommand("set_language", _t("Set language")),
             types.BotCommand("stop", _t("Stop bot download or forward")),
+            types.BotCommand(
+                "retry_failed",
+                _t("Retry failed download tasks with chat_id|message_id pairs"),
+            ),
         ]
 
         self.app = app
@@ -284,6 +288,15 @@ class DownloadBot:
             MessageHandler(
                 stop,
                 filters=pyrogram.filters.command(["stop"])
+                & pyrogram.filters.user(self.allowed_user_ids),
+            )
+        )
+        
+        # 添加重试失败任务的命令
+        self.bot.add_handler(
+            MessageHandler(
+                retry_failed_tasks,
+                filters=pyrogram.filters.command(["retry_failed"])
                 & pyrogram.filters.user(self.allowed_user_ids),
             )
         )
@@ -644,6 +657,106 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
 
 
 # pylint: disable = R0912, R0915,R0914
+
+
+async def retry_failed_tasks(client: pyrogram.Client, message: pyrogram.types.Message):
+    """
+    Retries the failed download tasks using the provided chat_id and message_id pairs.
+    
+    Usage: /retry_failed chat_id|message_id chat_id|message_id ...
+    
+    Example: /retry_failed -1234567890|1234 -1234567890|5678
+    """
+    msg = f"""
+{_t('Parameter error, please enter according to the reference format')}:
+
+{_t('Retry failed tasks with format')}
+<i>/retry_failed chat_id|message_id chat_id|message_id ...</i>
+
+{_t('Example')}:
+<i>/retry_failed -1234567890|1234 -1234567890|5678</i>
+"""
+
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2:
+        await client.send_message(
+            message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
+        )
+        return
+
+    try:
+        # 解析所有的 chat_id|message_id 对
+        task_pairs = args[1].split()
+        tasks_to_retry = []
+        
+        for pair in task_pairs:
+            if '|' not in pair:
+                await client.send_message(
+                    message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
+                )
+                return
+            chat_id_str, msg_id_str = pair.split('|')
+            chat_id = int(chat_id_str)
+            message_id = int(msg_id_str)
+            tasks_to_retry.append((chat_id, message_id))
+        
+        # 创建一个新的 TaskNode 来处理这些失败的任务
+        if tasks_to_retry:
+            # 假设所有任务都来自同一个聊天
+            first_chat_id, _ = tasks_to_retry[0]
+            entity = await _bot.client.get_chat(first_chat_id)
+            chat_title = entity.title if entity else "Unknown chat"
+            
+            reply_message = f"Retry failed tasks from {chat_title} ({len(tasks_to_retry)} tasks)"
+            last_reply_message = await client.send_message(
+                message.from_user.id, reply_message, reply_to_message_id=message.id
+            )
+            
+            # 创建一个 TaskNode 用于重试
+            node = TaskNode(
+                chat_id=first_chat_id,
+                from_user_id=message.from_user.id,
+                reply_message_id=last_reply_message.id,
+                replay_message=reply_message,
+                bot=_bot.bot,
+                task_id=_bot.gen_task_id(),
+            )
+            
+            _bot.add_task_node(node)
+            
+            # 启动下载任务
+            node.is_running = True
+            
+            # 为每个失败的任务创建一个下载任务
+            for chat_id, msg_id in tasks_to_retry:
+                try:
+                    download_message = await retry(
+                        _bot.client.get_messages, args=(chat_id, msg_id)
+                    )
+                    if download_message:
+                        # 添加到下载任务队列
+                        await _bot.add_download_task(download_message, node)
+                    else:
+                        logger.warning(f"Failed to get message {msg_id} from chat {chat_id}")
+                except Exception as e:
+                    logger.error(f"Error getting message {msg_id} from chat {chat_id}: {e}")
+            
+            # 设置任务完成条件
+            node.total_task = len(tasks_to_retry)
+            
+            await client.edit_message_text(
+                message.from_user.id,
+                last_reply_message.id,
+                f"{reply_message}\nTasks added to download queue!"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error in retry_failed_tasks: {e}")
+        await client.send_message(
+            message.from_user.id,
+            f"{_t('Error processing retry request')}: {e}",
+            reply_to_message_id=message.id
+        )
 
 
 async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Message):

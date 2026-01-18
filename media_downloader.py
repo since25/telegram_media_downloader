@@ -368,6 +368,9 @@ async def download_task(
         node,
         download_status,
         file_size,
+        chat_id=node.chat_id,
+        message_id=message.id,
+        file_name=file_name,
     )
 
 
