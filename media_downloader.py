@@ -650,28 +650,56 @@ def _check_config() -> bool:
 async def periodic_progress_refresh():
     """
     定期刷新所有活跃TaskNode的进度信息
-    每20秒执行一次
+    每30秒执行一次
     """
     from module.pyrogram_extension import report_bot_status
+    import time
+    
+    # 全局冷却时间，确保短时间内不会有太多API请求
+    global_last_refresh_time = 0
+    GLOBAL_COOLDOWN = 8  # 全局冷却时间：8秒
+    MAX_NODES_PER_REFRESH = 5  # 每次刷新最多处理5个节点
     
     while app.is_running:
         try:
             # 获取所有活跃的TaskNode
             active_nodes = get_active_task_nodes()
             
-            # 为每个活跃的TaskNode更新进度
-            for task_id, node in active_nodes.items():
+            # 如果没有活跃节点，跳过这次刷新
+            if not active_nodes:
+                await asyncio.sleep(30)
+                continue
+                
+            # 只处理部分活跃节点，减少API请求量
+            nodes_to_refresh = list(active_nodes.items())[:MAX_NODES_PER_REFRESH]
+            
+            # 为选中的活跃TaskNode更新进度
+            for task_id, node in nodes_to_refresh:
                 if node.bot and node.reply_message_id:
+                    # 检查全局冷却时间
+                    current_time = time.time()
+                    if current_time - global_last_refresh_time < GLOBAL_COOLDOWN:
+                        # 等待到冷却时间结束
+                        await asyncio.sleep(GLOBAL_COOLDOWN - (current_time - global_last_refresh_time))
+                    
                     try:
-                        # 不使用immediate_reply=True，尊重1秒更新限制
+                        # 使用immediate_reply=False，尊重现有的1秒更新限制
+                        # 但我们的全局冷却和节点数量限制已经提供了额外保护
                         await report_bot_status(node.bot, node)
+                        # 更新全局冷却时间
+                        global_last_refresh_time = time.time()
+                        
+                        # 小延迟，避免过快发送请求
+                        await asyncio.sleep(1)
                     except Exception as e:
                         logger.debug(f"Failed to refresh progress for task {task_id}: {e}")
+                        # 出错时也更新冷却时间，避免重试风暴
+                        global_last_refresh_time = time.time()
         except Exception as e:
             logger.debug(f"Periodic progress refresh error: {e}")
         
-        # 等待20秒后再次执行
-        await asyncio.sleep(20)
+        # 等待30秒后再次执行
+        await asyncio.sleep(30)
 
 
 async def worker(client: pyrogram.client.Client):
