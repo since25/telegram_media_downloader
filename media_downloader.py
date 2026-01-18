@@ -732,9 +732,9 @@ async def download_comments(
 ):
     """Download comments for a specific message"""
     from module.download_stat import remove_active_task_node
-    from module.pyrogram_extension import get_discussion_replies, report_bot_status
+    from module.pyrogram_extension import get_discussion_replies, report_bot_status, set_meta_data
     from utils.meta_data import MetaData
-    from utils.format import set_meta_data, validate_title
+    from utils.format import validate_title
     
     try:
         # 获取所有评论
