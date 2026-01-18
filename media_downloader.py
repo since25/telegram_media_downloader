@@ -281,17 +281,43 @@ async def add_download_task(
     node: TaskNode,
 ):
     """Add Download task"""
-    if message.empty:
+    try:
+        # 确保所有必要的对象都存在
+        if not message or message.empty:
+            return False
+        
+        if not node:
+            return False
+        
+        if not hasattr(message, 'id'):
+            return False
+        
+        # 确保node有必要的属性
+        if not hasattr(node, 'download_status'):
+            node.download_status = {}
+        
+        if not hasattr(node, 'total_task'):
+            node.total_task = 0
+        
+        if not hasattr(node, 'total_download_task'):
+            node.total_download_task = 0
+        
+        node.download_status[message.id] = DownloadStatus.Downloading
+        await queue.put((message, node))
+        node.total_task += 1
+        node.total_download_task += 1
+        
+        # 任务开始时立即更新状态，确保用户能看到实时进度
+        if hasattr(node, 'bot') and node.bot:
+            from module.pyrogram_extension import report_bot_status
+            await report_bot_status(client=node.bot, node=node, immediate_reply=True)
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error in add_download_task: {e}")
+        import traceback
+        traceback.print_exc()
         return False
-    node.download_status[message.id] = DownloadStatus.Downloading
-    await queue.put((message, node))
-    node.total_task += 1
-    node.total_download_task += 1
-    # 任务开始时立即更新状态，确保用户能看到实时进度
-    if node.bot:
-        from module.pyrogram_extension import report_bot_status
-        await report_bot_status(client=node.bot, node=node, immediate_reply=True)
-    return True
 
 
 async def save_msg_to_file(
