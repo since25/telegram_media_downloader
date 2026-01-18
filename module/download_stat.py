@@ -161,6 +161,39 @@ async def update_download_status(
         _total_download_size = 0
         _last_download_time = cur_time
 
-    # Report download status to bot
+    # Report download status to bot - 添加速率限制
     from module.pyrogram_extension import report_bot_status
-    await report_bot_status(client=client, node=node)
+    
+    # 计算下载进度百分比
+    progress_percent = (down_byte / total_size * 100) if total_size > 0 else 0
+    
+    # 速率限制规则：
+    # 1. 只在下载进度变化超过1%时更新
+    # 2. 至少间隔2秒才更新一次
+    # 3. 在下载接近完成时(>95%)可以更频繁地更新
+    
+    # 获取上次更新的进度和时间
+    last_report = getattr(node, "last_progress_report", {})
+    last_percent = last_report.get("percent", -1)
+    last_time = last_report.get("time", 0)
+    
+    should_report = False
+    
+    # 检查是否需要更新
+    if cur_time - last_time >= 2:  # 至少间隔2秒
+        if abs(progress_percent - last_percent) >= 1:  # 进度变化超过1%
+            should_report = True
+        elif progress_percent > 95:  # 接近完成时更频繁更新
+            should_report = True
+    
+    # 总是在下载完成或进度为0时更新
+    if progress_percent == 100 or progress_percent == 0:
+        should_report = True
+    
+    if should_report:
+        # 更新上次报告的信息
+        node.last_progress_report = {
+            "percent": progress_percent,
+            "time": cur_time
+        }
+        await report_bot_status(client=client, node=node)

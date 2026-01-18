@@ -29,6 +29,9 @@ from module.pyrogram_extension import (
     update_cloud_upload_stat,
     upload_telegram_chat,
 )
+# 导入Pyrogram错误类
+import pyrogram.errors.exceptions.server_error_5xx
+import pyrogram.errors.exceptions.connection_error
 from module.web import init_web
 from utils.format import truncate_filename, validate_title
 from utils.log import LogFilter
@@ -37,6 +40,27 @@ from utils.meta_data import MetaData
 # ---- stall watchdog state ----
 DOWNLOAD_LAST_PROGRESS_TS: dict[int, float] = {}
 DOWNLOAD_LAST_PROGRESS_BYTES: dict[int, int] = {}
+
+# ---- performance monitoring ----
+PERFORMANCE_STATS = {
+    "total_download_time": 0,  # 总下载时间
+    "total_queue_time": 0,     # 总队列等待时间
+    "total_network_time": 0,   # 总网络请求时间
+    "total_io_time": 0,        # 总磁盘IO时间
+    "download_task_count": 0,  # 总下载任务数
+    "successful_downloads": 0, # 成功下载数
+    "failed_downloads": 0,     # 失败下载数
+    "skipped_downloads": 0,    # 跳过下载数
+    "avg_download_speed": 0,   # 平均下载速度
+    "avg_queue_time": 0,       # 平均队列等待时间
+    "avg_download_time": 0     # 平均下载时间
+}
+
+# 用于跟踪单个任务的开始时间
+TASK_START_TIMES: dict[tuple[int, int], float] = {}  # (chat_id, message_id) -> start_time
+
+# 用于跟踪队列等待时间
+QUEUE_ENTRY_TIMES: dict[tuple[int, int], float] = {}  # (chat_id, message_id) -> queue_entry_time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -321,6 +345,10 @@ async def add_download_task(
         node.download_status[msg_id] = DownloadStatus.Downloading
 
         # ---- 入队：这是核心，必须尽快完成 ----
+        # 记录任务进入队列的时间
+        queue_entry_time = time.time()
+        QUEUE_ENTRY_TIMES[(node.chat_id, msg_id)] = queue_entry_time
+        
         await queue.put((message, node))
 
         node.total_task += 1
@@ -396,6 +424,12 @@ async def download_task(
     client: pyrogram.Client, message: pyrogram.types.Message, node: TaskNode
 ):
     """Download and Forward media"""
+    # 初始化变量，确保在任何情况下都有定义
+    download_status = None
+    file_name = None
+    file_size = 0
+    message_id = None
+    
     try:
         # 确保消息对象存在
         if not message:
@@ -411,7 +445,21 @@ async def download_task(
             node.failed_download_task += 1
             return
             
-        logger.info(f"download_task: Processing message id={message.id}, type={type(message)}, has_media={message.media is not None}")
+        message_id = message.id
+        
+        # 记录任务开始时间
+        task_start_time = time.time()
+        TASK_START_TIMES[(node.chat_id, message_id)] = task_start_time
+        
+        # 计算队列等待时间
+        queue_wait_time = 0
+        if (node.chat_id, message_id) in QUEUE_ENTRY_TIMES:
+            queue_entry_time = QUEUE_ENTRY_TIMES[(node.chat_id, message_id)]
+            queue_wait_time = task_start_time - queue_entry_time
+            PERFORMANCE_STATS["total_queue_time"] += queue_wait_time
+            del QUEUE_ENTRY_TIMES[(node.chat_id, message_id)]  # 清理已处理的条目
+        
+        logger.info(f"download_task: Processing message id={message_id}, type={type(message)}, has_media={message.media is not None}, queue_wait_time={queue_wait_time:.2f}s")
         
         # 下载媒体
         download_status, file_name = await download_media(
@@ -422,9 +470,9 @@ async def download_task(
             download_status, file_name = await save_msg_to_file(app, node.chat_id, message)
 
         if not node.bot:
-            app.set_download_id(node, message.id, download_status)
+            app.set_download_id(node, message_id, download_status)
 
-        node.download_status[message.id] = download_status
+        node.download_status[message_id] = download_status
 
         # 更新任务完成状态
         if download_status == DownloadStatus.SuccessDownload:
@@ -436,8 +484,11 @@ async def download_task(
         
         logger.info(f"download_task: 任务状态更新 - success={node.success_download_task}, failed={node.failed_download_task}, skip={node.skip_download_task}")
 
-        file_size = os.path.getsize(file_name) if file_name else 0
-        logger.info(f"download_task: Download completed for message {message.id}, status={download_status}, file_name={file_name}, size={file_size}")
+        # 只在需要时获取文件大小
+        if file_name and os.path.exists(file_name):
+            file_size = os.path.getsize(file_name)
+        
+        logger.info(f"download_task: Download completed for message {message_id}, status={download_status}, file_name={file_name}, size={file_size}")
 
         await upload_telegram_chat(
             client,
@@ -448,6 +499,30 @@ async def download_task(
             download_status,
             file_name,
         )
+        
+        # rclone upload
+        if (
+            not node.upload_telegram_chat_id
+            and download_status is DownloadStatus.SuccessDownload
+        ):
+            ui_file_name = file_name
+            if app.hide_file_name:
+                ui_file_name = f"****{os.path.splitext(file_name)[-1]}"
+            if await app.upload_file(
+                file_name, update_cloud_upload_stat, (node, message_id, ui_file_name)
+            ):
+                node.upload_success_count += 1
+        
+        await report_bot_download_status(
+            node.bot,
+            node,
+            download_status,
+            file_size,
+            chat_id=node.chat_id,
+            message_id=message_id,
+            file_name=file_name,
+        )
+        
     except Exception as e:
         logger.error(f"Error in download_task: {e}")
         import traceback
@@ -455,29 +530,63 @@ async def download_task(
         # 更新失败任务计数
         node.failed_download_task += 1
         logger.info(f"download_task: 异常导致任务失败 - 失败计数={node.failed_download_task}")
-
-    # rclone upload
-    if (
-        not node.upload_telegram_chat_id
-        and download_status is DownloadStatus.SuccessDownload
-    ):
-        ui_file_name = file_name
-        if app.hide_file_name:
-            ui_file_name = f"****{os.path.splitext(file_name)[-1]}"
-        if await app.upload_file(
-            file_name, update_cloud_upload_stat, (node, message.id, ui_file_name)
-        ):
-            node.upload_success_count += 1
-
-    await report_bot_download_status(
-        node.bot,
-        node,
-        download_status,
-        file_size,
-        chat_id=node.chat_id,
-        message_id=message.id,
-        file_name=file_name,
-    )
+        
+        # 在异常情况下也尝试报告状态
+        if message_id and node.bot:
+            try:
+                await report_bot_download_status(
+                    node.bot,
+                    node,
+                    DownloadStatus.FailedDownload,
+                    0,
+                    chat_id=node.chat_id,
+                    message_id=message_id,
+                    file_name=file_name,
+                )
+            except Exception as report_err:
+                logger.error(f"Error reporting download status: {report_err}")
+    finally:
+        # 记录任务完成时间并更新性能统计
+        if message_id and (node.chat_id, message_id) in TASK_START_TIMES:
+            task_start_time = TASK_START_TIMES[(node.chat_id, message_id)]
+            task_duration = time.time() - task_start_time
+            PERFORMANCE_STATS["total_download_time"] += task_duration
+            PERFORMANCE_STATS["download_task_count"] += 1
+            
+            # 更新任务类型统计
+            if download_status == DownloadStatus.SuccessDownload:
+                PERFORMANCE_STATS["successful_downloads"] += 1
+            elif download_status == DownloadStatus.FailedDownload:
+                PERFORMANCE_STATS["failed_downloads"] += 1
+            elif download_status == DownloadStatus.SkipDownload:
+                PERFORMANCE_STATS["skipped_downloads"] += 1
+            
+            # 更新平均统计
+            if PERFORMANCE_STATS["download_task_count"] > 0:
+                PERFORMANCE_STATS["avg_download_time"] = PERFORMANCE_STATS["total_download_time"] / PERFORMANCE_STATS["download_task_count"]
+                
+            if PERFORMANCE_STATS["successful_downloads"] > 0:
+                PERFORMANCE_STATS["avg_queue_time"] = PERFORMANCE_STATS["total_queue_time"] / PERFORMANCE_STATS["download_task_count"]
+            
+            # 清理已处理的条目
+            del TASK_START_TIMES[(node.chat_id, message_id)]
+            
+            logger.debug(f"Task performance: message_id={message_id}, duration={task_duration:.2f}s, status={download_status}")
+        
+        # 清理下载结果中的进度信息，释放内存
+        if message_id:
+            download_result = get_download_result()
+            if node.chat_id in download_result and message_id in download_result[node.chat_id]:
+                del download_result[node.chat_id][message_id]
+        
+        # 释放资源引用
+        del download_status
+        del file_name
+        del file_size
+        del message_id
+        del message
+        del client
+        del node
 
 
 # pylint: disable = R0915,R0914
@@ -597,12 +706,17 @@ async def download_media(
 
     logger.info(f"Message[{message_id}] {ui_file_name}")
     
-    for retry in range(3):
+    # 增强的重试策略配置
+    MAX_RETRIES = 5  # 增加最大重试次数到5次
+    INITIAL_RETRY_DELAY = 1  # 初始重试延迟
+    MAX_RETRY_DELAY = 30  # 最大重试延迟
+    
+    for retry in range(MAX_RETRIES):
         download_task = None
         watchdog_task = None
         try:
             # 重试开始时的明确日志
-            logger.info(f"Message[{message_id}] ({ui_file_name}): Starting retry {retry + 1}/3...")
+            logger.info(f"Message[{message_id}] ({ui_file_name}): Starting retry {retry + 1}/{MAX_RETRIES}...")
             
             # 每次 retry 前重置心跳：避免上一次残留时间戳误杀
             DOWNLOAD_LAST_PROGRESS_TS[message_id] = time.time()
@@ -626,14 +740,23 @@ async def download_media(
                 if file_name and os.path.exists(file_name):
                     file_size = os.path.getsize(file_name)
                     if file_size != media_size:
-                        logger.warning(f"Message[{message_id}] removing incomplete file: {file_name} (size {file_size} != {media_size})")
+                        logger.warning(f"Message[{message_id}] removing incomplete file: {file_name} (size {file_size} != {media_size})"
+                        )
                         os.remove(file_name)
                     else:
                         logger.info(f"Message[{message_id}] file exists and size is correct, no need to remove: {file_name}")
+                        return DownloadStatus.SkipDownload, None  # 文件已存在且完整，跳过下载
                 else:
                     logger.info(f"Message[{message_id}] final file not found, no need to remove: {file_name}")
             except Exception as e:
                 logger.warning(f"Message[{message_id}] error removing files: {e}")
+            
+            # 指数退避重试延迟
+            retry_delay = min(INITIAL_RETRY_DELAY * (2 ** retry), MAX_RETRY_DELAY)
+            if retry > 0:
+                logger.info(f"Message[{message_id}] Waiting {retry_delay}s before retry...")
+                await asyncio.sleep(retry_delay)
+            
             download_task = app.loop.create_task(
                 client.download_media(
                     message,
@@ -672,34 +795,51 @@ async def download_media(
         except asyncio.CancelledError:
             # ✅ watchdog cancel 会走这里
             logger.warning(
-                f"Message[{message_id}]: stalled >{STALL_TIMEOUT}s (no progress), cancelled and retrying... ({retry + 1}/3)"
+                f"Message[{message_id}]: stalled >{STALL_TIMEOUT}s (no progress), cancelled and retrying... ({retry + 1}/{MAX_RETRIES})"
             )
+            # 对于stall错误，缩短重试延迟
             await asyncio.sleep(1)
 
-        except pyrogram.errors.exceptions.bad_request_400.BadRequest:
+        except pyrogram.errors.exceptions.bad_request_400.BadRequest as bad_err:
             # file reference expired / 或者别的 400
             logger.warning(
-                f"Message[{message_id}]: {_t('file reference expired, refetching')}... ({retry + 1}/3)"
+                f"Message[{message_id}]: BadRequest ({bad_err.error_code}): {bad_err.MESSAGE} - refetching... ({retry + 1}/{MAX_RETRIES})"
             )
             await asyncio.sleep(RETRY_TIME_OUT)
             message = await fetch_message(client, message)
 
         except pyrogram.errors.exceptions.flood_420.FloodWait as wait_err:
-            # FloodWait 必须等够时间
-            logger.warning(f"Message[{message_id}]: FloodWait {wait_err.value}s")
+            # FloodWait 必须等够时间，并且不计入重试次数
+            logger.warning(f"Message[{message_id}]: FloodWait {wait_err.value}s - pausing download...")
             await asyncio.sleep(wait_err.value)
+            # 重置重试次数，因为这不是我们的错误
+            retry = -1  # 因为循环会+1，所以设置为-1
+
+        except pyrogram.errors.exceptions.server_error_5xx.ServerError:
+            # Telegram服务器错误，需要更长时间重试
+            logger.warning(
+                f"Message[{message_id}]: Telegram Server Error - retrying after {INITIAL_RETRY_DELAY * 2}s... ({retry + 1}/{MAX_RETRIES})"
+            )
+            await asyncio.sleep(INITIAL_RETRY_DELAY * 2)
+
+        except pyrogram.errors.exceptions.connection_error.ConnectionError:
+            # 网络连接错误，需要更长时间重试
+            logger.warning(
+                f"Message[{message_id}]: Connection Error - retrying after {INITIAL_RETRY_DELAY * 3}s... ({retry + 1}/{MAX_RETRIES})"
+            )
+            await asyncio.sleep(INITIAL_RETRY_DELAY * 3)
 
         except TypeError:
             # 旧逻辑保留：pyrogram 内部某些情况下会抛 TypeError 当 timeout
             logger.warning(
                 f"{_t('Timeout Error occurred when downloading Message')}[{message_id}], "
-                f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')} ({retry + 1}/3)"
+                f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')} ({retry + 1}/{MAX_RETRIES})"
             )
             await asyncio.sleep(RETRY_TIME_OUT)
 
         except ValueError as e:
             # ✅ 包括 size mismatch / 空路径等
-            logger.warning(f"Message[{message_id}]: {e}, retrying... ({retry + 1}/3)")
+            logger.warning(f"Message[{message_id}]: {e}, retrying... ({retry + 1}/{MAX_RETRIES})")
             await asyncio.sleep(1)
 
         except Exception as e:
@@ -707,7 +847,9 @@ async def download_media(
                 f"Message[{message_id}]: {_t('could not be downloaded due to following exception')}: [{e}].",
                 exc_info=True,
             )
-            break
+            # 对于未知错误，使用指数退避延迟
+            retry_delay = min(INITIAL_RETRY_DELAY * (2 ** retry), MAX_RETRY_DELAY)
+            await asyncio.sleep(retry_delay)
 
         finally:
             # ✅ 无论成功/失败都停止 watchdog，避免后台悬挂
@@ -753,6 +895,20 @@ def _check_config() -> bool:
         return False
 
     return True
+
+
+def print_performance_stats():
+    """Print performance statistics"""
+    logger.info("=== Performance Statistics ===")
+    logger.info(f"Total download time: {PERFORMANCE_STATS['total_download_time']:.2f}s")
+    logger.info(f"Total queue time: {PERFORMANCE_STATS['total_queue_time']:.2f}s")
+    logger.info(f"Total tasks: {PERFORMANCE_STATS['download_task_count']}")
+    logger.info(f"Successful downloads: {PERFORMANCE_STATS['successful_downloads']}")
+    logger.info(f"Failed downloads: {PERFORMANCE_STATS['failed_downloads']}")
+    logger.info(f"Skipped downloads: {PERFORMANCE_STATS['skipped_downloads']}")
+    logger.info(f"Average download time: {PERFORMANCE_STATS['avg_download_time']:.2f}s")
+    logger.info(f"Average queue time: {PERFORMANCE_STATS['avg_queue_time']:.2f}s")
+    logger.info("=============================")
 
 
 async def periodic_progress_refresh():
@@ -817,6 +973,10 @@ async def worker(client: pyrogram.client.Client):
 
     while True:
         item = await queue.get()   # ✅ 只 get 一次
+        message = None
+        node = None
+        real_client = None
+        
         try:
             logger.info(
                 f"worker: got item queue_size={queue.qsize()} "
@@ -830,6 +990,11 @@ async def worker(client: pyrogram.client.Client):
                 logger.error(f"worker: invalid queue item (expect (message,node)): {item!r}")
                 continue
 
+            # 确保node对象存在
+            if not node:
+                logger.error("worker: node is None")
+                continue
+                
             msg_id = getattr(message, "id", "N/A")
             task_id = getattr(node, "task_id", "N/A")
 
@@ -860,6 +1025,12 @@ async def worker(client: pyrogram.client.Client):
                 queue.task_done()
             except Exception as e:
                 logger.error(f"worker: task_done failed: {e}")
+            
+            # 清理资源引用
+            del message
+            del node
+            del real_client
+            del item
 
 async def download_comments(
     client: pyrogram.Client,
@@ -903,37 +1074,54 @@ async def download_comments(
         comment_ids = list(range(start_comment_id, end_comment_id + 1))
         logger.info(f"download_comments: 生成评论ID列表: {comment_ids}")
         
-        # 获取所有评论对象
+        # 获取所有评论对象 - 使用批量获取提高效率
         comments = []
-        for comment_id in comment_ids:
+        BATCH_SIZE = 50  # Pyrogram批量获取的建议最大限制
+        
+        # 将评论ID列表分成多个批次
+        for i in range(0, len(comment_ids), BATCH_SIZE):
+            batch_ids = comment_ids[i:i+BATCH_SIZE]
+            logger.info(f"download_comments: 批量获取评论 - 批次 {i//BATCH_SIZE + 1}/{len(comment_ids)//BATCH_SIZE + 1}, 评论ID={batch_ids}")
+            
             try:
-                # 使用get_messages方法获取评论
-                logger.info(f"download_comments: 尝试获取评论 - id={comment_id}, group_id={discussion_group_id}")
-                comment = await client.get_messages(discussion_group_id, comment_id)
+                # 批量获取评论
+                batch_comments = await client.get_messages(discussion_group_id, batch_ids)
                 
-                if not comment:
-                    logger.warning(f"download_comments: 未找到评论 - id={comment_id}")
-                    continue
+                # 处理批量获取的结果
+                for comment in batch_comments:
+                    if not comment:
+                        logger.warning(f"download_comments: 未找到评论 - 可能ID不存在")
+                        continue
+                        
+                    # 检查评论对象的详细信息
+                    logger.info(f"download_comments: 评论对象信息 - id={comment.id}, type={type(comment)}, empty={comment.empty}, has_media={comment.media is not None}")
+                    logger.info(f"download_comments: 评论属性 - hasattr(comment, 'id')={hasattr(comment, 'id')}, hasattr(comment, 'chat')={hasattr(comment, 'chat')}")
                     
-                # 检查评论对象的详细信息
-                logger.info(f"download_comments: 评论对象信息 - id={comment_id}, type={type(comment)}, empty={comment.empty}, has_media={comment.media is not None}")
-                logger.info(f"download_comments: 评论属性 - hasattr(comment, 'id')={hasattr(comment, 'id')}, hasattr(comment, 'chat')={hasattr(comment, 'chat')}")
-                
-                # 即使comment.empty为True，也尝试检查是否有有价值的信息
-                if hasattr(comment, 'id'):
-                    # 如果评论有ID，无论是否为空，都添加到列表中
-                    logger.info(f"download_comments: 评论 {comment.id} 信息可用，添加到下载列表")
-                    comments.append(comment)
-                else:
-                    logger.warning(f"download_comments: 评论 {comment_id} 没有ID属性，跳过")
-                    continue
-                    
+                    # 即使comment.empty为True，也尝试检查是否有有价值的信息
+                    if hasattr(comment, 'id'):
+                        # 如果评论有ID，无论是否为空，都添加到列表中
+                        logger.info(f"download_comments: 评论 {comment.id} 信息可用，添加到下载列表")
+                        comments.append(comment)
+                    else:
+                        logger.warning(f"download_comments: 评论没有ID属性，跳过")
+                        continue
+                        
             except Exception as e:
-                logger.error(f"download_comments: 获取评论 {comment_id} 失败: {e}")
+                logger.error(f"download_comments: 批量获取评论失败 - 批次 {i//BATCH_SIZE + 1}: {e}")
                 import traceback
                 traceback.print_exc()
-                node.failed_download_task += 1
-                await report_bot_status(node.bot, node)
+                # 对于批量获取失败的情况，尝试单独获取每个评论
+                for comment_id in batch_ids:
+                    try:
+                        logger.info(f"download_comments: 单独重试获取评论 - id={comment_id}")
+                        comment = await client.get_messages(discussion_group_id, comment_id)
+                        if comment and hasattr(comment, 'id'):
+                            comments.append(comment)
+                            logger.info(f"download_comments: 单独获取评论 {comment.id} 成功")
+                    except Exception as single_e:
+                        logger.error(f"download_comments: 单独获取评论 {comment_id} 失败: {single_e}")
+                        node.failed_download_task += 1
+                        await report_bot_status(node.bot, node)
         
         logger.info(f"共找到 {len(comments)} 条符合条件的评论")
         
@@ -1200,6 +1388,10 @@ def main():
         # check_for_updates(app.proxy)
         logger.info(f"{_t('update config')}......")
         app.update_config()
+        
+        # 打印性能统计信息
+        print_performance_stats()
+        
         logger.success(
             f"{_t('Updated last read message_id to config file')},"
             f"{_t('total download')} {app.total_download_task}, "

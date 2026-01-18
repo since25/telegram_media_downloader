@@ -409,10 +409,10 @@ class Application:
         self.hide_file_name = False
         self.caption_name_dict: dict = {}
         self.caption_entities_dict: dict = {}
-        self.max_concurrent_transmissions: int = 5
+        self.max_concurrent_transmissions: int = 10  # 增加默认并发传输数
         self.web_host: str = "0.0.0.0"
         self.web_port: int = 5000
-        self.max_download_task: int = 5
+        self.max_download_task: int = 8  # 增加默认最大下载任务数
         self.language = Language.EN
         self.after_upload_telegram_delete: bool = True
         self.web_login_secret: str = ""
