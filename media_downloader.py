@@ -506,8 +506,10 @@ async def download_media(
             try:
                 # 清理临时文件
                 if temp_file_name and os.path.exists(temp_file_name):
-                    logger.debug(f"Message[{message_id}] removing temp file: {temp_file_name}")
+                    logger.warning(f"Message[{message_id}] removing temp file: {temp_file_name}")
                     os.remove(temp_file_name)
+                else:
+                    logger.info(f"Message[{message_id}] no temp file to remove: {temp_file_name}")
                 
                 # 清理可能存在的不完整最终文件
                 if file_name and os.path.exists(file_name):
@@ -515,8 +517,12 @@ async def download_media(
                     if file_size != media_size:
                         logger.warning(f"Message[{message_id}] removing incomplete file: {file_name} (size {file_size} != {media_size})")
                         os.remove(file_name)
+                    else:
+                        logger.info(f"Message[{message_id}] file exists and size is correct, no need to remove: {file_name}")
+                else:
+                    logger.info(f"Message[{message_id}] final file not found, no need to remove: {file_name}")
             except Exception as e:
-                logger.debug(f"Message[{message_id}] remove file ignore: {e}")
+                logger.warning(f"Message[{message_id}] error removing files: {e}")
             download_task = app.loop.create_task(
                 client.download_media(
                     message,
@@ -555,40 +561,39 @@ async def download_media(
         except asyncio.CancelledError:
             # ✅ watchdog cancel 会走这里
             logger.warning(
-                f"Message[{message.id}]: stalled >{STALL_TIMEOUT}s (no progress), cancelled and retrying... ({retry + 1}/3)"
+                f"Message[{message_id}]: stalled >{STALL_TIMEOUT}s (no progress), cancelled and retrying... ({retry + 1}/3)"
             )
             await asyncio.sleep(1)
 
         except pyrogram.errors.exceptions.bad_request_400.BadRequest:
             # file reference expired / 或者别的 400
             logger.warning(
-                f"Message[{message.id}]: {_t('file reference expired, refetching')}... ({retry + 1}/3)"
+                f"Message[{message_id}]: {_t('file reference expired, refetching')}... ({retry + 1}/3)"
             )
             await asyncio.sleep(RETRY_TIME_OUT)
             message = await fetch_message(client, message)
 
         except pyrogram.errors.exceptions.flood_420.FloodWait as wait_err:
             # FloodWait 必须等够时间
-            logger.warning(f"Message[{message.id}]: FloodWait {wait_err.value}s")
+            logger.warning(f"Message[{message_id}]: FloodWait {wait_err.value}s")
             await asyncio.sleep(wait_err.value)
 
         except TypeError:
             # 旧逻辑保留：pyrogram 内部某些情况下会抛 TypeError 当 timeout
             logger.warning(
-                f"{_t('Timeout Error occurred when downloading Message')}[{message.id}], "
+                f"{_t('Timeout Error occurred when downloading Message')}[{message_id}], "
                 f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')} ({retry + 1}/3)"
             )
             await asyncio.sleep(RETRY_TIME_OUT)
 
         except ValueError as e:
             # ✅ 包括 size mismatch / 空路径等
-            logger.warning(f"Message[{message.id}]: {e}, retrying... ({retry + 1}/3)")
+            logger.warning(f"Message[{message_id}]: {e}, retrying... ({retry + 1}/3)")
             await asyncio.sleep(1)
 
         except Exception as e:
             logger.error(
-                f"Message[{message.id}]: "
-                f"{_t('could not be downloaded due to following exception')}:\n[{e}].",
+                f"Message[{message_id}]: {_t('could not be downloaded due to following exception')}: [{e}].",
                 exc_info=True,
             )
             break
