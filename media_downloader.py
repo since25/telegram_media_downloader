@@ -351,30 +351,47 @@ async def download_task(
     client: pyrogram.Client, message: pyrogram.types.Message, node: TaskNode
 ):
     """Download and Forward media"""
+    try:
+        # 确保消息对象存在
+        if not message:
+            logger.error("download_task: message is None")
+            return
+            
+        # 确保消息ID可用
+        if not hasattr(message, 'id'):
+            logger.error("download_task: message has no id attribute")
+            return
+            
+        logger.info(f"download_task: Processing message id={message.id}, type={type(message)}, has_media={message.media is not None}")
+        
+        download_status, file_name = await download_media(
+            client, message, app.media_types, app.file_formats, node
+        )
 
-    download_status, file_name = await download_media(
-        client, message, app.media_types, app.file_formats, node
-    )
+        if app.enable_download_txt and message.text and not message.media:
+            download_status, file_name = await save_msg_to_file(app, node.chat_id, message)
 
-    if app.enable_download_txt and message.text and not message.media:
-        download_status, file_name = await save_msg_to_file(app, node.chat_id, message)
+        if not node.bot:
+            app.set_download_id(node, message.id, download_status)
 
-    if not node.bot:
-        app.set_download_id(node, message.id, download_status)
+        node.download_status[message.id] = download_status
 
-    node.download_status[message.id] = download_status
+        file_size = os.path.getsize(file_name) if file_name else 0
+        logger.info(f"download_task: Download completed for message {message.id}, status={download_status}, file_name={file_name}, size={file_size}")
 
-    file_size = os.path.getsize(file_name) if file_name else 0
-
-    await upload_telegram_chat(
-        client,
-        node.upload_user if node.upload_user else client,
-        app,
-        node,
-        message,
-        download_status,
-        file_name,
-    )
+        await upload_telegram_chat(
+            client,
+            node.upload_user if node.upload_user else client,
+            app,
+            node,
+            message,
+            download_status,
+            file_name,
+        )
+    except Exception as e:
+        logger.error(f"Error in download_task: {e}")
+        import traceback
+        traceback.print_exc()
 
     # rclone upload
     if (
@@ -763,29 +780,52 @@ async def download_comments(
     from utils.format import validate_title
     
     try:
+        logger.info(f"download_comments: 开始下载评论 - chat_id={chat_id}, base_message_id={base_message_id}, start_comment_id={start_comment_id}, end_comment_id={end_comment_id}")
+        logger.info(f"download_comments: 任务节点信息 - task_id={node.task_id}, is_running={node.is_running}, is_stop_transmission={node.is_stop_transmission}")
+        
         # 获取讨论组
-        chat = await client.get_chat(chat_id)
-        discussion_group_id = chat.id
-        logger.info(f"使用讨论组ID: {discussion_group_id}")
+        try:
+            chat = await client.get_chat(chat_id)
+            logger.info(f"download_comments: 获取到聊天对象 - type={type(chat)}, id={chat.id}, title={chat.title if hasattr(chat, 'title') else 'N/A'}")
+            discussion_group_id = chat.id
+            logger.info(f"download_comments: 使用讨论组ID: {discussion_group_id}")
+        except Exception as e:
+            logger.error(f"download_comments: 获取讨论组失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return
         
         # 生成评论ID列表
         comment_ids = list(range(start_comment_id, end_comment_id + 1))
-        logger.info(f"生成评论ID列表: {comment_ids}")
+        logger.info(f"download_comments: 生成评论ID列表: {comment_ids}")
         
         # 获取所有评论对象
         comments = []
         for comment_id in comment_ids:
             try:
                 # 使用普通的get_messages方法获取评论，因为评论本身就是讨论组中的消息
-                logger.info(f"尝试获取评论: id={comment_id}, group_id={discussion_group_id}")
+                logger.info(f"download_comments: 尝试获取评论 - id={comment_id}, group_id={discussion_group_id}")
                 comment = await client.get_messages(discussion_group_id, comment_id)
-                if comment:
-                    comments.append(comment)
-                    logger.info(f"成功获取评论: id={comment.id}, has_media={comment.media is not None}, reply_to_message_id={comment.reply_to_message_id}")
-                else:
-                    logger.warning(f"未找到评论: id={comment_id}")
+                
+                if not comment:
+                    logger.warning(f"download_comments: 未找到评论 - id={comment_id}")
+                    continue
+                    
+                if comment.empty:
+                    logger.warning(f"download_comments: 评论为空 - id={comment_id}")
+                    continue
+                    
+                # 确保评论有ID
+                if not hasattr(comment, 'id'):
+                    logger.error(f"download_comments: 评论没有ID属性 - id={comment_id}")
+                    continue
+                    
+                logger.info(f"download_comments: 成功获取评论 - id={comment.id}, type={type(comment)}, has_media={comment.media is not None}, reply_to_message_id={comment.reply_to_message_id}")
+                comments.append(comment)
             except Exception as e:
-                logger.error(f"获取评论 {comment_id} 失败: {e}")
+                logger.error(f"download_comments: 获取评论 {comment_id} 失败: {e}")
+                import traceback
+                traceback.print_exc()
                 node.failed_download_task += 1
                 await report_bot_status(node.bot, node)
         

@@ -792,14 +792,25 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
         is_comment_range_download = "comment=" in url and len(args) >= 4
         if link_info.comment_id is not None or is_comment_range_download:
             # 评论下载模式
+            start_comment_id = None
+            end_comment_id = None
+            download_filter = None
+            is_single_comment = False
+            
             if link_info.comment_id is not None:
                 # 单条评论下载
-                pass  # 这部分已经在原来的代码中处理
+                logger.info(f"单条评论下载: comment_id={link_info.comment_id}, post_id={link_info.post_id}")
+                start_comment_id = link_info.comment_id
+                end_comment_id = link_info.comment_id
+                download_filter = args[2] if len(args) > 2 else None
+                is_single_comment = True
             elif is_comment_range_download:
                 # 评论范围下载
+                logger.info(f"评论范围下载: args={args}")
                 start_comment_id = int(args[2])
                 end_comment_id = int(args[3])
                 download_filter = args[4] if len(args) > 4 else None
+                is_single_comment = False
             
             # 处理评论下载逻辑
             try:
@@ -813,6 +824,8 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                         if len(parts) >= 3:
                             base_message_id = int(parts[-1])
                 
+                logger.info(f"处理评论下载: base_message_id={base_message_id}, chat_id={link_info.group_id}")
+                
                 if not base_message_id:
                     await client.send_message(
                         message.from_user.id,
@@ -822,6 +835,8 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                     return
                 
                 chat_id, _, _ = await parse_link(_bot.client, url)
+                logger.info(f"解析链接结果: chat_id={chat_id}")
+                
                 if not chat_id:
                     await client.send_message(
                         message.from_user.id,
@@ -831,6 +846,8 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                     return
                 
                 entity = await _bot.client.get_chat(chat_id)
+                logger.info(f"获取聊天实体: id={entity.id if entity else None}, title={entity.title if entity else None}")
+                
                 if not entity:
                     await client.send_message(
                         message.from_user.id,
@@ -842,7 +859,10 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                 # 构建下载任务
                 chat_title = entity.title
                 reply_message = f"from {chat_title} "
-                reply_message += f"download comment id = {start_comment_id} - {end_comment_id} for message {base_message_id} !"
+                if is_single_comment:
+                    reply_message += f"download comment id = {start_comment_id} for message {base_message_id} !"
+                else:
+                    reply_message += f"download comment id = {start_comment_id} - {end_comment_id} for message {base_message_id} !"
                 last_reply_message = await client.send_message(
                     message.from_user.id, reply_message, reply_to_message_id=message.id
                 )
