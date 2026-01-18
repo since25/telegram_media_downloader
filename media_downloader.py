@@ -368,15 +368,20 @@ async def download_task(
         # 确保消息对象存在
         if not message:
             logger.error("download_task: message is None")
+            # 更新失败任务计数
+            node.failed_download_task += 1
             return
             
         # 确保消息ID可用
         if not hasattr(message, 'id'):
             logger.error("download_task: message has no id attribute")
+            # 更新失败任务计数
+            node.failed_download_task += 1
             return
             
         logger.info(f"download_task: Processing message id={message.id}, type={type(message)}, has_media={message.media is not None}")
         
+        # 下载媒体
         download_status, file_name = await download_media(
             client, message, app.media_types, app.file_formats, node
         )
@@ -388,6 +393,16 @@ async def download_task(
             app.set_download_id(node, message.id, download_status)
 
         node.download_status[message.id] = download_status
+
+        # 更新任务完成状态
+        if download_status == DownloadStatus.SuccessDownload:
+            node.success_download_task += 1
+        elif download_status == DownloadStatus.FailedDownload:
+            node.failed_download_task += 1
+        elif download_status == DownloadStatus.SkipDownload:
+            node.skip_download_task += 1
+        
+        logger.info(f"download_task: 任务状态更新 - success={node.success_download_task}, failed={node.failed_download_task}, skip={node.skip_download_task}")
 
         file_size = os.path.getsize(file_name) if file_name else 0
         logger.info(f"download_task: Download completed for message {message.id}, status={download_status}, file_name={file_name}, size={file_size}")
@@ -405,6 +420,9 @@ async def download_task(
         logger.error(f"Error in download_task: {e}")
         import traceback
         traceback.print_exc()
+        # 更新失败任务计数
+        node.failed_download_task += 1
+        logger.info(f"download_task: 异常导致任务失败 - 失败计数={node.failed_download_task}")
 
     # rclone upload
     if (
