@@ -747,21 +747,32 @@ async def periodic_progress_refresh():
 
 async def worker(client: pyrogram.client.Client):
     """Work for download task"""
-    while app.is_running:
+    while True:
         try:
+            # 使用get_nowait避免阻塞在空队列上
             item = await queue.get()
             message = item[0]
             node: TaskNode = item[1]
 
             if node.is_stop_transmission:
+                queue.task_done()  # 确保标记任务完成
                 continue
 
+            logger.info(f"worker: 开始处理下载任务 - message_id={message.id if hasattr(message, 'id') else 'N/A'}")
             if node.client:
                 await download_task(node.client, message, node)
             else:
                 await download_task(client, message, node)
+            logger.info(f"worker: 完成下载任务 - message_id={message.id if hasattr(message, 'id') else 'N/A'}")
+        except asyncio.QueueEmpty:
+            # 如果队列为空，继续循环
+            await asyncio.sleep(1)
+            continue
         except Exception as e:
-            logger.exception(f"{e}")
+            logger.exception(f"worker: 处理下载任务失败: {e}")
+        finally:
+            # 确保无论如何都标记任务完成
+            queue.task_done()
 
 
 async def download_comments(
@@ -900,13 +911,31 @@ async def download_comments(
                 await report_bot_status(node.bot, node)
         
         # 等待所有下载任务完成
-        # 我们不能立即将node.is_running设置为False，因为这会终止正在进行的下载任务
-        # 下载任务会在完成后自动更新状态，所以我们只需要报告最终状态
-        await report_bot_status(node.bot, node)
+        logger.info(f"评论下载任务已添加 {len(comments)} 条评论到下载队列，等待下载完成")
         
-        # 注意：不要在这里调用remove_active_task_node，因为下载任务可能还在进行中
-        # 任务会在所有下载完成后由系统自动清理
-        logger.info(f"评论下载任务已完成，共添加 {len(comments)} 条评论到下载队列")
+        # 定期检查下载状态，直到所有任务完成
+        while True:
+            # 计算已完成的任务数
+            completed_tasks = node.success_download_task + node.failed_download_task + node.skip_download_task
+            logger.info(f"下载进度: 已完成 {completed_tasks}/{len(comments)} 个任务")
+            
+            if completed_tasks >= len(comments):
+                logger.info("所有下载任务已完成")
+                break
+                
+            # 更新状态报告
+            await report_bot_status(node.bot, node)
+            
+            # 等待5秒后再次检查
+            await asyncio.sleep(5)
+        
+        # 所有任务完成后，报告最终状态
+        await report_bot_status(node.bot, node)
+        logger.info(f"评论下载任务已全部完成 - 成功: {node.success_download_task}, 失败: {node.failed_download_task}, 跳过: {node.skip_download_task}")
+        
+        # 清理任务节点
+        from module.download_stat import remove_active_task_node
+        remove_active_task_node(node.task_id)
         
     except Exception as e:
         logger.error(f"Error downloading comments: {e}")
@@ -914,6 +943,9 @@ async def download_comments(
         traceback.print_exc()
         # 发生异常时，我们需要确保任务状态正确
         await report_bot_status(node.bot, node)
+        # 清理任务节点
+        from module.download_stat import remove_active_task_node
+        remove_active_task_node(node.task_id)
 
 
 async def download_chat_task(
