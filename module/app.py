@@ -217,8 +217,6 @@ class TaskNode:
         Returns:
             None
         """
-        self.total_download_task += 1
-        
         # 记录详细的任务状态
         if status is DownloadStatus.SuccessDownload:
             self.success_download_task += 1
