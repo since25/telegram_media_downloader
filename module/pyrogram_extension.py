@@ -35,7 +35,7 @@ from module.app import (
     UploadProgressStat,
     UploadStatus,
 )
-from module.download_stat import get_download_result
+from module.download_stat import get_download_result, remove_active_task_node
 from module.language import Language, _t
 from module.send_media_group_v2 import cache_media, send_media_group_v2
 from utils.format import (
@@ -897,14 +897,20 @@ async def _report_bot_status(
         return
 
     if immediate_reply or node.can_reply():
+        # 确定任务状态
+        finished_tasks = node.success_download_task + node.failed_download_task + node.skip_download_task
+        is_completed = node.total_download_task > 0 and finished_tasks == node.total_download_task
+        task_status = _t('Completed') if is_completed else _t('In Progress')
+        
         # 简化消息格式，只显示核心信息
         new_msg_str = (
             f"`\n"
             f"🆔 task id: {node.task_id}\n"
+            f"📊 {_t('Task Status')}: {task_status}\n"
             f"📥 {_t('Downloaded')}: {format_byte(node.total_download_byte)}\n"
             f"├─ 📁 {_t('Total')}: {node.total_download_task}\n"
-            f"├─ ✅ {_t('Success')}: {node.success_download_task}\n"
-            f"├─ ❌ {_t('Failed')}: {node.failed_download_task}\n"
+            f"├─ ✅ {_t('Download Success')}: {node.success_download_task}\n"
+            f"├─ ❌ {_t('Download Failed')}: {node.failed_download_task}\n"
             f"└─ ⏩ {_t('Skipped')}: {node.skip_download_task}\n"
         )
 
@@ -955,6 +961,10 @@ async def _report_bot_status(
                 await _send_finish_summary(client, node)
             except Exception as e:
                 logger.debug(f"send_finish_summary failed: {e}")
+        
+        # 任务完成后从活跃列表中移除
+        if is_completed:
+            remove_active_task_node(node.task_id)
 
 def _collect_finish_lists(node: "TaskNode"):
     """
@@ -1002,14 +1012,14 @@ async def _send_finish_summary(client: pyrogram.Client, node: "TaskNode"):
         f"🆔 task id: {node.task_id}\n"
         f"📥 {_t('Downloaded')}: {format_byte(node.total_download_byte)}\n"
         f"├─ 📁 {_t('Total')}: {node.total_download_task}\n"
-        f"├─ ✅ {_t('Success')}: {node.success_download_task}\n"
-        f"├─ ❌ {_t('Failed')}: {node.failed_download_task}\n"
+        f"├─ ✅ {_t('Download Success')}: {node.success_download_task}\n"
+        f"├─ ❌ {_t('Download Failed')}: {node.failed_download_task}\n"
         f"└─ ⏩ {_t('Skipped')}: {node.skip_download_task}\n"
     )
 
     # 如果你还有上传/转发统计，也可以加进来
     if getattr(node, "upload_success_count", 0):
-        header += f"\n☁️ {_t('Upload')}: ✅ {node.upload_success_count}\n"
+        header += f"\n☁️ {_t('Upload Success')}: {node.upload_success_count}\n"
 
     # 详细任务列表
     details = ""

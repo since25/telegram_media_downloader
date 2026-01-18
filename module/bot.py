@@ -36,6 +36,7 @@ from module.pyrogram_extension import (
     set_meta_data,
     upload_telegram_chat_message,
 )
+from module.download_stat import add_active_task_node, remove_active_task_node
 from utils.format import replace_date_time, validate_title
 from utils.meta_data import MetaData
 
@@ -571,6 +572,7 @@ async def direct_download(
     node.client = client
 
     _bot.add_task_node(node)
+    add_active_task_node(node)
 
     await _bot.add_download_task(
         download_message,
@@ -723,6 +725,7 @@ async def retry_failed_tasks(client: pyrogram.Client, message: pyrogram.types.Me
             )
             
             _bot.add_task_node(node)
+            add_active_task_node(node)
             
             # 启动下载任务
             node.is_running = True
@@ -836,6 +839,7 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                 task_id=_bot.gen_task_id(),
             )
             _bot.add_task_node(node)
+            add_active_task_node(node)
             _bot.app.loop.create_task(
                 _bot.download_chat_task(_bot.client, chat_download_config, node)
             )
@@ -945,6 +949,7 @@ async def get_forward_task_node(
         )
 
     _bot.add_task_node(node)
+    add_active_task_node(node)
 
     node.upload_user = _bot.client
     if not dst_chat.type is pyrogram.enums.ChatType.BOT:

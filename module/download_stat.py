@@ -22,11 +22,41 @@ _total_download_speed: int = 0
 _total_download_size: int = 0
 _last_download_time: float = time.time()
 _download_state: DownloadState = DownloadState.Downloading
+_active_task_nodes: dict = {}  # 全局活跃TaskNode管理: {task_id: TaskNode}
 
 
 def get_download_result() -> dict:
     """get global download result"""
     return _download_result
+
+
+def add_active_task_node(node) -> None:
+    """添加或更新活跃的TaskNode
+    
+    Args:
+        node: TaskNode实例
+    """
+    if node.task_id:
+        _active_task_nodes[node.task_id] = node
+
+
+def remove_active_task_node(task_id: int) -> None:
+    """移除活跃的TaskNode
+    
+    Args:
+        task_id: TaskNode的task_id
+    """
+    if task_id in _active_task_nodes:
+        del _active_task_nodes[task_id]
+
+
+def get_active_task_nodes() -> dict:
+    """获取所有活跃的TaskNode
+    
+    Returns:
+        dict: {task_id: TaskNode} 格式的活跃TaskNode字典
+    """
+    return _active_task_nodes
 
 
 def get_total_download_speed() -> int:

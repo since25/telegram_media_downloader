@@ -13,7 +13,7 @@ from rich.logging import RichHandler
 
 from module.app import Application, ChatDownloadConfig, DownloadStatus, TaskNode
 from module.bot import start_download_bot, stop_download_bot
-from module.download_stat import get_download_result, update_download_status
+from module.download_stat import get_download_result, update_download_status, get_active_task_nodes
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import _t
 from module.pyrogram_extension import (
@@ -647,6 +647,33 @@ def _check_config() -> bool:
     return True
 
 
+async def periodic_progress_refresh():
+    """
+    定期刷新所有活跃TaskNode的进度信息
+    每20秒执行一次
+    """
+    from module.pyrogram_extension import report_bot_status
+    
+    while app.is_running:
+        try:
+            # 获取所有活跃的TaskNode
+            active_nodes = get_active_task_nodes()
+            
+            # 为每个活跃的TaskNode更新进度
+            for task_id, node in active_nodes.items():
+                if node.bot and node.reply_message_id:
+                    try:
+                        # 不使用immediate_reply=True，尊重1秒更新限制
+                        await report_bot_status(node.bot, node)
+                    except Exception as e:
+                        logger.debug(f"Failed to refresh progress for task {task_id}: {e}")
+        except Exception as e:
+            logger.debug(f"Periodic progress refresh error: {e}")
+        
+        # 等待20秒后再次执行
+        await asyncio.sleep(20)
+
+
 async def worker(client: pyrogram.client.Client):
     """Work for download task"""
     while app.is_running:
@@ -795,6 +822,10 @@ def main():
         logger.success(_t("Successfully started (Press Ctrl+C to stop)"))
 
         app.loop.create_task(download_all_chat(client))
+        # 创建定期进度刷新任务
+        app.loop.create_task(periodic_progress_refresh())
+        logger.info("Created periodic progress refresh task (interval: 20 seconds)")
+        
         # 检查并记录并行任务数量
         logger.info(f"Creating {app.max_download_task} download workers")
         for _ in range(app.max_download_task):
