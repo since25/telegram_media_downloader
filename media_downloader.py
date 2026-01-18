@@ -5,7 +5,9 @@ import os
 import shutil
 import time
 from typing import List, Optional, Tuple, Union
-
+import sys
+if __name__ == "__main__":
+    sys.modules["media_downloader"] = sys.modules[__name__]
 import pyrogram
 from loguru import logger
 from pyrogram.types import Audio, Document, Photo, Video, VideoNote, Voice
@@ -563,6 +565,8 @@ async def download_media(
 
     message_id = message.id
 
+    logger.info(f"Message[{message_id}] {ui_file_name}")
+    
     for retry in range(3):
         download_task = None
         watchdog_task = None
@@ -779,8 +783,13 @@ async def periodic_progress_refresh():
 async def worker(client: pyrogram.client.Client):
     """Work for download task"""
     logger.info("worker: 工作线程已启动")
+    logger.info(f"worker start queue_id={id(queue)}")
+
     while True:
         try:
+            logger.info(f"worker: waiting... queue_size={queue.qsize()} queue_id={id(queue)}")
+            item = await queue.get()
+            logger.info(f"worker: got item queue_size={queue.qsize()} queue_id={id(queue)} item_type={type(item)}")
             # 记录队列大小
             queue_size = queue.qsize()
             logger.info(f"worker: 检查队列 - 队列大小={queue_size}")
