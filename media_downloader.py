@@ -783,14 +783,21 @@ async def download_comments(
         logger.info(f"download_comments: 开始下载评论 - chat_id={chat_id}, base_message_id={base_message_id}, start_comment_id={start_comment_id}, end_comment_id={end_comment_id}")
         logger.info(f"download_comments: 任务节点信息 - task_id={node.task_id}, is_running={node.is_running}, is_stop_transmission={node.is_stop_transmission}")
         
-        # 获取讨论组
+        # 获取讨论组信息
         try:
-            chat = await client.get_chat(chat_id)
-            logger.info(f"download_comments: 获取到聊天对象 - type={type(chat)}, id={chat.id}, title={chat.title if hasattr(chat, 'title') else 'N/A'}")
-            discussion_group_id = chat.id
+            # 使用get_discussion_message获取讨论组信息
+            logger.info(f"download_comments: 尝试获取讨论组信息 - chat_id={chat_id}, base_message_id={base_message_id}")
+            discussion_message = await client.get_discussion_message(chat_id, base_message_id)
+            
+            if not discussion_message:
+                logger.error(f"download_comments: 无法获取讨论组消息 - chat_id={chat_id}, base_message_id={base_message_id}")
+                return
+                
+            logger.info(f"download_comments: 成功获取讨论组消息 - id={discussion_message.id}, chat_id={discussion_message.chat.id}, title={discussion_message.chat.title}")
+            discussion_group_id = discussion_message.chat.id
             logger.info(f"download_comments: 使用讨论组ID: {discussion_group_id}")
         except Exception as e:
-            logger.error(f"download_comments: 获取讨论组失败: {e}")
+            logger.error(f"download_comments: 获取讨论组信息失败: {e}")
             import traceback
             traceback.print_exc()
             return
@@ -803,7 +810,7 @@ async def download_comments(
         comments = []
         for comment_id in comment_ids:
             try:
-                # 使用普通的get_messages方法获取评论，因为评论本身就是讨论组中的消息
+                # 使用get_messages方法获取评论
                 logger.info(f"download_comments: 尝试获取评论 - id={comment_id}, group_id={discussion_group_id}")
                 comment = await client.get_messages(discussion_group_id, comment_id)
                 
@@ -811,17 +818,19 @@ async def download_comments(
                     logger.warning(f"download_comments: 未找到评论 - id={comment_id}")
                     continue
                     
-                if comment.empty:
-                    logger.warning(f"download_comments: 评论为空 - id={comment_id}")
+                # 检查评论对象的详细信息
+                logger.info(f"download_comments: 评论对象信息 - id={comment_id}, type={type(comment)}, empty={comment.empty}, has_media={comment.media is not None}")
+                logger.info(f"download_comments: 评论属性 - hasattr(comment, 'id')={hasattr(comment, 'id')}, hasattr(comment, 'chat')={hasattr(comment, 'chat')}")
+                
+                # 即使comment.empty为True，也尝试检查是否有有价值的信息
+                if hasattr(comment, 'id'):
+                    # 如果评论有ID，无论是否为空，都添加到列表中
+                    logger.info(f"download_comments: 评论 {comment.id} 信息可用，添加到下载列表")
+                    comments.append(comment)
+                else:
+                    logger.warning(f"download_comments: 评论 {comment_id} 没有ID属性，跳过")
                     continue
                     
-                # 确保评论有ID
-                if not hasattr(comment, 'id'):
-                    logger.error(f"download_comments: 评论没有ID属性 - id={comment_id}")
-                    continue
-                    
-                logger.info(f"download_comments: 成功获取评论 - id={comment.id}, type={type(comment)}, has_media={comment.media is not None}, reply_to_message_id={comment.reply_to_message_id}")
-                comments.append(comment)
             except Exception as e:
                 logger.error(f"download_comments: 获取评论 {comment_id} 失败: {e}")
                 import traceback
