@@ -282,14 +282,19 @@ async def add_download_task(
 ):
     """Add Download task"""
     try:
+        logger.info(f"add_download_task: 开始处理消息 - message_id={message.id if hasattr(message, 'id') else 'N/A'}")
+        
         # 确保所有必要的对象都存在
         if not message or message.empty:
+            logger.error(f"add_download_task: 消息无效 - message={message}, empty={message.empty if message else 'N/A'}")
             return False
         
         if not node:
+            logger.error("add_download_task: 任务节点无效")
             return False
         
         if not hasattr(message, 'id'):
+            logger.error(f"add_download_task: 消息没有ID属性 - type={type(message)}")
             return False
         
         # 确保node有必要的属性
@@ -303,7 +308,14 @@ async def add_download_task(
             node.total_download_task = 0
         
         node.download_status[message.id] = DownloadStatus.Downloading
+        
+        # 添加到队列前记录队列大小
+        logger.info(f"add_download_task: 添加任务到队列前 - queue_size={queue.qsize()}")
         await queue.put((message, node))
+        
+        # 添加到队列后记录队列大小
+        logger.info(f"add_download_task: 添加任务到队列后 - queue_size={queue.qsize()}")
+        
         node.total_task += 1
         node.total_download_task += 1
         
@@ -312,6 +324,7 @@ async def add_download_task(
             from module.pyrogram_extension import report_bot_status
             await report_bot_status(client=node.bot, node=node, immediate_reply=True)
         
+        logger.info(f"add_download_task: 任务添加成功 - message_id={message.id}")
         return True
     except Exception as e:
         logger.error(f"Error in add_download_task: {e}")
@@ -747,32 +760,39 @@ async def periodic_progress_refresh():
 
 async def worker(client: pyrogram.client.Client):
     """Work for download task"""
+    logger.info("worker: 工作线程已启动")
     while True:
         try:
-            # 使用get_nowait避免阻塞在空队列上
+            # 记录队列大小
+            queue_size = queue.qsize()
+            logger.info(f"worker: 检查队列 - 队列大小={queue_size}")
+            
+            # 等待队列中有任务
             item = await queue.get()
+            logger.info(f"worker: 从队列中获取到任务 - 队列大小={queue.qsize()}")
+            
             message = item[0]
             node: TaskNode = item[1]
 
             if node.is_stop_transmission:
+                logger.info(f"worker: 任务已停止 - message_id={message.id if hasattr(message, 'id') else 'N/A'}")
                 queue.task_done()  # 确保标记任务完成
                 continue
 
-            logger.info(f"worker: 开始处理下载任务 - message_id={message.id if hasattr(message, 'id') else 'N/A'}")
+            logger.info(f"worker: 开始处理下载任务 - message_id={message.id if hasattr(message, 'id') else 'N/A'}, node_id={node.task_id}")
             if node.client:
                 await download_task(node.client, message, node)
             else:
                 await download_task(client, message, node)
             logger.info(f"worker: 完成下载任务 - message_id={message.id if hasattr(message, 'id') else 'N/A'}")
-        except asyncio.QueueEmpty:
-            # 如果队列为空，继续循环
-            await asyncio.sleep(1)
-            continue
         except Exception as e:
             logger.exception(f"worker: 处理下载任务失败: {e}")
-        finally:
             # 确保无论如何都标记任务完成
-            queue.task_done()
+            try:
+                queue.task_done()
+            except Exception as e:
+                logger.error(f"worker: 标记任务完成失败: {e}")
+        await asyncio.sleep(0.1)  # 避免CPU占用过高
 
 
 async def download_comments(
