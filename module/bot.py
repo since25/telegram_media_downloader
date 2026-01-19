@@ -570,6 +570,26 @@ async def direct_download(
     )
 
     node.client = client
+    
+    # 获取消息名称作为标签（用于单条消息下载）
+    try:
+        if download_message:
+            from utils.format import validate_title
+            file_name_tag = None
+            # 优先使用消息文本
+            if download_message.text:
+                file_name_tag = validate_title(download_message.text[:30])
+                logger.info(f"从消息文本获取标签: {file_name_tag}")
+            # 如果没有文本，使用caption
+            elif download_message.caption:
+                file_name_tag = validate_title(download_message.caption[:30])
+                logger.info(f"从消息caption获取标签: {file_name_tag}")
+            
+            if file_name_tag:
+                node.file_name_tag = file_name_tag
+                logger.info(f"设置单条消息下载的文件名标签: {file_name_tag}")
+    except Exception as e:
+        logger.warning(f"获取消息名称失败: {e}")
 
     _bot.add_task_node(node)
     add_active_task_node(node)
@@ -633,12 +653,73 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
             message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
         )
 
+    # 解析链接信息，检查是否是带comment的链接
+    from utils.format import extract_info_from_link
+    link_info = extract_info_from_link(text[0])
+    
     chat_id, message_id, _ = await parse_link(_bot.client, text[0])
+    
+    # 如果是带comment的链接，需要获取原始消息（post_id）的名称
+    base_message_id = None
+    if link_info.comment_id is not None or "comment=" in text[0]:
+        base_message_id = link_info.post_id
+        if not base_message_id:
+            # 如果URL中没有消息ID，尝试从URL路径中提取
+            if "/" in text[0] and "?" in text[0]:
+                path_part = text[0].split("?")[0]
+                parts = path_part.split("/")
+                if len(parts) >= 3:
+                    try:
+                        base_message_id = int(parts[-1])
+                    except ValueError:
+                        pass
 
     entity = None
     if chat_id:
         entity = await _bot.client.get_chat(chat_id)
     if entity:
+        # 如果是带comment的链接，下载评论；否则下载单条消息
+        if base_message_id and (link_info.comment_id is not None or "comment=" in text[0]):
+            # 这是带comment的链接，应该通过download_from_bot处理
+            # 但为了兼容，我们也可以在这里处理单条评论下载
+            if link_info.comment_id is not None:
+                # 单条评论下载：获取原始消息名称作为标签
+                try:
+                    base_message = await _bot.client.get_messages(entity.id, base_message_id)
+                    if base_message:
+                        # 获取评论消息
+                        discussion_message = await _bot.client.get_discussion_message(entity.id, base_message_id)
+                        if discussion_message:
+                            comment_message = await _bot.client.get_messages(
+                                discussion_message.chat.id, link_info.comment_id
+                            )
+                            if comment_message:
+                                # 创建node并设置原始消息名称作为标签
+                                from module.download_stat import add_active_task_node
+                                node = TaskNode(
+                                    chat_id=discussion_message.chat.id,
+                                    from_user_id=message.from_user.id,
+                                    reply_message_id=0,
+                                    bot=_bot.bot,
+                                    task_id=_bot.gen_task_id(),
+                                )
+                                
+                                # 获取原始消息名称作为标签
+                                from utils.format import validate_title
+                                if base_message.text:
+                                    node.file_name_tag = validate_title(base_message.text[:30])
+                                elif base_message.caption:
+                                    node.file_name_tag = validate_title(base_message.caption[:30])
+                                
+                                _bot.add_task_node(node)
+                                add_active_task_node(node)
+                                await _bot.add_download_task(comment_message, node)
+                                node.is_running = True
+                                return
+                except Exception as e:
+                    logger.warning(f"处理带comment的链接失败: {e}")
+        
+        # 普通单条消息下载
         if message_id:
             download_message = await retry(
                 _bot.client.get_messages, args=(chat_id, message_id)
@@ -898,28 +979,32 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                 )
                 
                 # 设置文件名标签
-                # 如果用户没有手动提供标签，尝试从原始消息获取标题
-                if not file_name_tag:
-                    try:
-                        # 获取原始消息（基础消息）
-                        base_message = await _bot.client.get_messages(entity.id, base_message_id)
-                        if base_message and base_message.text:
-                            # 使用消息文本的前30个字符作为标签
-                            from utils.format import validate_title
-                            file_name_tag = validate_title(base_message.text[:30])
-                            logger.info(f"从原始消息获取标签: {file_name_tag}")
-                        elif base_message and base_message.caption:
-                            # 如果没有文本，使用caption
-                            from utils.format import validate_title
-                            file_name_tag = validate_title(base_message.caption[:30])
-                            logger.info(f"从原始消息caption获取标签: {file_name_tag}")
-                    except Exception as e:
-                        logger.warning(f"获取原始消息标题失败: {e}")
+                # 对于带有comment的链接，必须获取原始消息（如375）的名称
+                # 优先使用原始消息名称，如果获取失败才使用手动提供的标签
+                original_message_tag = None
+                try:
+                    # 获取原始消息（基础消息，如375）
+                    base_message = await _bot.client.get_messages(entity.id, base_message_id)
+                    if base_message:
+                        from utils.format import validate_title
+                        # 优先使用消息文本
+                        if base_message.text:
+                            original_message_tag = validate_title(base_message.text[:30])
+                            logger.info(f"从原始消息(消息ID={base_message_id})文本获取标签: {original_message_tag}")
+                        # 如果没有文本，使用caption
+                        elif base_message.caption:
+                            original_message_tag = validate_title(base_message.caption[:30])
+                            logger.info(f"从原始消息(消息ID={base_message_id})caption获取标签: {original_message_tag}")
+                except Exception as e:
+                    logger.warning(f"获取原始消息(消息ID={base_message_id})标题失败: {e}")
                 
-                # 设置标签到node
-                if file_name_tag:
+                # 设置标签到node：优先使用原始消息名称，如果没有则使用手动提供的标签
+                if original_message_tag:
+                    node.file_name_tag = original_message_tag
+                    logger.info(f"设置文件名标签（来自原始消息）: {original_message_tag}")
+                elif file_name_tag:
                     node.file_name_tag = file_name_tag
-                    logger.info(f"设置文件名标签: {file_name_tag}")
+                    logger.info(f"设置文件名标签（手动提供）: {file_name_tag}")
                 
                 _bot.add_task_node(node)
                 add_active_task_node(node)
