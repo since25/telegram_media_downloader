@@ -694,15 +694,25 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
                                 discussion_message.chat.id, link_info.comment_id
                             )
                             if comment_message:
+                                # 创建回复消息
+                                replay_message = f"Direct download comment {link_info.comment_id} from message {base_message_id}..."
+                                last_reply_message = await client.send_message(
+                                    message.from_user.id, replay_message, reply_to_message_id=message.id
+                                )
+                                
                                 # 创建node并设置原始消息名称作为标签
                                 from module.download_stat import add_active_task_node
                                 node = TaskNode(
                                     chat_id=discussion_message.chat.id,
                                     from_user_id=message.from_user.id,
-                                    reply_message_id=0,
+                                    reply_message_id=last_reply_message.id,
+                                    replay_message=replay_message,
                                     bot=_bot.bot,
                                     task_id=_bot.gen_task_id(),
                                 )
+                                
+                                # 设置client
+                                node.client = _bot.client
                                 
                                 # 获取原始消息名称作为标签
                                 from utils.format import validate_title

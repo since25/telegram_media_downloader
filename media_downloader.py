@@ -501,13 +501,8 @@ async def download_task(
         node.download_status[message_id] = download_status
 
         # 更新任务完成状态
-        if download_status == DownloadStatus.SuccessDownload:
-            node.success_download_task += 1
-        elif download_status == DownloadStatus.FailedDownload:
-            node.failed_download_task += 1
-        elif download_status == DownloadStatus.SkipDownload:
-            # 注意：skip_not_found已经在download_media中单独计数了，这里只计数普通的skip
-            node.skip_download_task += 1
+        # 使用stat方法更新状态，这样会同时填充success_tasks列表
+        node.stat(download_status, node.chat_id, message_id, file_name)
         
         logger.info(f"download_task: 任务状态更新 - success={node.success_download_task}, failed={node.failed_download_task}, skip={node.skip_download_task}, skip_not_found={node.skip_not_found_download_task}")
 
@@ -527,18 +522,33 @@ async def download_task(
             file_name,
         )
         
-        # rclone upload
+        # rclone upload (云盘上传)
+        # 条件：1. 没有设置telegram转发目标 2. 下载成功 3. 有文件路径
         if (
             not node.upload_telegram_chat_id
             and download_status is DownloadStatus.SuccessDownload
+            and file_name
         ):
-            ui_file_name = file_name
-            if app.hide_file_name:
-                ui_file_name = f"****{os.path.splitext(file_name)[-1]}"
-            if await app.upload_file(
-                file_name, update_cloud_upload_stat, (node, message_id, ui_file_name)
-            ):
-                node.upload_success_count += 1
+            logger.info(f"download_task: 准备上传文件到云盘 - file_name={file_name}, enable_upload_file={app.cloud_drive_config.enable_upload_file}")
+            
+            if app.cloud_drive_config.enable_upload_file:
+                ui_file_name = file_name
+                if app.hide_file_name:
+                    ui_file_name = f"****{os.path.splitext(file_name)[-1]}"
+                
+                try:
+                    upload_result = await app.upload_file(
+                        file_name, update_cloud_upload_stat, (node, message_id, ui_file_name)
+                    )
+                    if upload_result:
+                        node.upload_success_count += 1
+                        logger.info(f"download_task: 文件上传成功 - file_name={file_name}, upload_success_count={node.upload_success_count}")
+                    else:
+                        logger.warning(f"download_task: 文件上传失败 - file_name={file_name}")
+                except Exception as e:
+                    logger.error(f"download_task: 文件上传异常 - file_name={file_name}, error={e}", exc_info=True)
+            else:
+                logger.debug(f"download_task: 云盘上传未启用，跳过上传 - file_name={file_name}")
         
         await report_bot_download_status(
             node.bot,
