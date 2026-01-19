@@ -797,19 +797,39 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
             download_filter = None
             is_single_comment = False
             
+            # 解析标签参数（最后一个参数，如果存在且不是数字，则视为标签）
+            file_name_tag = None
             if link_info.comment_id is not None:
                 # 单条评论下载
                 logger.info(f"单条评论下载: comment_id={link_info.comment_id}, post_id={link_info.post_id}")
                 start_comment_id = link_info.comment_id
                 end_comment_id = link_info.comment_id
-                download_filter = args[2] if len(args) > 2 else None
+                # args[2] 可能是 download_filter 或 file_name_tag
+                if len(args) > 2:
+                    # 如果 args[2] 不是纯数字，则视为标签
+                    if not args[2].isdigit():
+                        file_name_tag = args[2]
+                    else:
+                        download_filter = args[2]
+                # args[3] 可能是标签
+                if len(args) > 3 and not args[3].isdigit():
+                    file_name_tag = args[3]
                 is_single_comment = True
             elif is_comment_range_download:
-                # 评论范围下载
+                # 评论范围下载: /download https://t.me/xxx?comment= 724 744 [标签]
                 logger.info(f"评论范围下载: args={args}")
                 start_comment_id = int(args[2])
                 end_comment_id = int(args[3])
-                download_filter = args[4] if len(args) > 4 else None
+                # args[4] 可能是 download_filter 或 file_name_tag
+                if len(args) > 4:
+                    # 如果 args[4] 不是纯数字，则视为标签
+                    if not args[4].isdigit():
+                        file_name_tag = args[4]
+                    else:
+                        download_filter = args[4]
+                # args[5] 可能是标签
+                if len(args) > 5 and not args[5].isdigit():
+                    file_name_tag = args[5]
                 is_single_comment = False
             
             # 处理评论下载逻辑
@@ -876,6 +896,30 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                     bot=_bot.bot,
                     task_id=_bot.gen_task_id(),
                 )
+                
+                # 设置文件名标签
+                # 如果用户没有手动提供标签，尝试从原始消息获取标题
+                if not file_name_tag:
+                    try:
+                        # 获取原始消息（基础消息）
+                        base_message = await _bot.client.get_messages(entity.id, base_message_id)
+                        if base_message and base_message.text:
+                            # 使用消息文本的前30个字符作为标签
+                            from utils.format import validate_title
+                            file_name_tag = validate_title(base_message.text[:30])
+                            logger.info(f"从原始消息获取标签: {file_name_tag}")
+                        elif base_message and base_message.caption:
+                            # 如果没有文本，使用caption
+                            from utils.format import validate_title
+                            file_name_tag = validate_title(base_message.caption[:30])
+                            logger.info(f"从原始消息caption获取标签: {file_name_tag}")
+                    except Exception as e:
+                        logger.warning(f"获取原始消息标题失败: {e}")
+                
+                # 设置标签到node
+                if file_name_tag:
+                    node.file_name_tag = file_name_tag
+                    logger.info(f"设置文件名标签: {file_name_tag}")
                 
                 _bot.add_task_node(node)
                 add_active_task_node(node)

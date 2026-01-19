@@ -190,6 +190,7 @@ async def _get_media_meta(
     message: pyrogram.types.Message,
     media_obj: Union[Audio, Document, Photo, Video, VideoNote, Voice],
     _type: str,
+    node: Optional["TaskNode"] = None,
 ) -> Tuple[str, str, Optional[str]]:
     """Extract file name and file id from media object.
 
@@ -233,6 +234,15 @@ async def _get_media_meta(
             file_format,
         )
         file_name = validate_title(file_name)
+        
+        # 如果有标签，添加到文件名前面
+        if node and hasattr(node, 'file_name_tag') and node.file_name_tag:
+            tag = validate_title(node.file_name_tag)
+            max_tag_len = 30
+            if len(tag) > max_tag_len:
+                tag = tag[:max_tag_len]
+            file_name = f"{message.id} - {tag} - {file_name}"
+        
         temp_file_name = os.path.join(app.temp_save_path, dirname, file_name)
 
         file_name = os.path.join(file_save_path, file_name)
@@ -281,6 +291,20 @@ async def _get_media_meta(
         gen_file_name = (
             app.get_file_name(message.id, file_name, caption) + file_name_suffix
         )
+
+        # 如果有标签，添加到文件名前面
+        if node and hasattr(node, 'file_name_tag') and node.file_name_tag:
+            tag = validate_title(node.file_name_tag)
+            # 限制标签长度
+            max_tag_len = 30
+            if len(tag) > max_tag_len:
+                tag = tag[:max_tag_len]
+            # 在文件名前面添加标签
+            prefix = f"{message.id} - "
+            if gen_file_name.startswith(prefix):
+                gen_file_name = prefix + tag + " - " + gen_file_name[len(prefix):]
+            else:
+                gen_file_name = f"{message.id} - {tag} - {gen_file_name}"
 
         if caption:
             safe_caption = validate_title(caption)
@@ -433,16 +457,18 @@ async def download_task(
     try:
         # 确保消息对象存在
         if not message:
-            logger.error("download_task: message is None")
-            # 更新失败任务计数
-            node.failed_download_task += 1
+            logger.info("download_task: message is None，跳过下载")
+            # 更新skip_not_found计数
+            node.skip_not_found_download_task += 1
+            node.download_status[0] = DownloadStatus.SkipDownload  # 使用0作为占位ID
             return
             
         # 确保消息ID可用
         if not hasattr(message, 'id'):
-            logger.error("download_task: message has no id attribute")
-            # 更新失败任务计数
-            node.failed_download_task += 1
+            logger.info("download_task: message has no id attribute，跳过下载")
+            # 更新skip_not_found计数
+            node.skip_not_found_download_task += 1
+            node.download_status[0] = DownloadStatus.SkipDownload  # 使用0作为占位ID
             return
             
         message_id = message.id
@@ -480,9 +506,10 @@ async def download_task(
         elif download_status == DownloadStatus.FailedDownload:
             node.failed_download_task += 1
         elif download_status == DownloadStatus.SkipDownload:
+            # 注意：skip_not_found已经在download_media中单独计数了，这里只计数普通的skip
             node.skip_download_task += 1
         
-        logger.info(f"download_task: 任务状态更新 - success={node.success_download_task}, failed={node.failed_download_task}, skip={node.skip_download_task}")
+        logger.info(f"download_task: 任务状态更新 - success={node.success_download_task}, failed={node.failed_download_task}, skip={node.skip_download_task}, skip_not_found={node.skip_not_found_download_task}")
 
         # 只在需要时获取文件大小
         if file_name and os.path.exists(file_name):
@@ -560,6 +587,7 @@ async def download_task(
                 PERFORMANCE_STATS["failed_downloads"] += 1
             elif download_status == DownloadStatus.SkipDownload:
                 PERFORMANCE_STATS["skipped_downloads"] += 1
+                # skip_not_found已经包含在skipped_downloads中，这里不需要重复计数
             
             # 更新平均统计
             if PERFORMANCE_STATS["download_task_count"] > 0:
@@ -659,14 +687,42 @@ async def download_media(
     task_start_time: float = time.time()
     media_size = 0
     _media = None
-    message = await fetch_message(client, message)
+    
+    # 尝试获取message，如果失败则归为skip_not_found
+    try:
+        message = await fetch_message(client, message)
+        # 检查message是否为空或无效
+        if not message or (hasattr(message, 'empty') and message.empty):
+            message_id = getattr(message, 'id', 'N/A') if message else 'N/A'
+            logger.info(f"Message[{message_id}]: message不存在或为空，跳过下载")
+            node.skip_not_found_download_task += 1
+            return DownloadStatus.SkipDownload, None
+    except pyrogram.errors.BadRequest as e:
+        # message不存在/不可见/不属于thread等情况
+        message_id = getattr(message, 'id', 'N/A')
+        logger.info(f"Message[{message_id}]: 无法获取message (BadRequest: {e})，跳过下载")
+        node.skip_not_found_download_task += 1
+        return DownloadStatus.SkipDownload, None
+    except pyrogram.errors.NotFound as e:
+        # message不存在
+        message_id = getattr(message, 'id', 'N/A')
+        logger.info(f"Message[{message_id}]: message不存在 (NotFound: {e})，跳过下载")
+        node.skip_not_found_download_task += 1
+        return DownloadStatus.SkipDownload, None
+    except Exception as e:
+        # 其他获取message的错误，也归为skip_not_found
+        message_id = getattr(message, 'id', 'N/A')
+        logger.warning(f"Message[{message_id}]: 获取message失败 ({type(e).__name__}: {e})，跳过下载")
+        node.skip_not_found_download_task += 1
+        return DownloadStatus.SkipDownload, None
+    
     try:
         for _type in media_types:
             _media = getattr(message, _type, None)
             if _media is None:
                 continue
             file_name, temp_file_name, file_format = await _get_media_meta(
-                node.chat_id, message, _media, _type
+                node.chat_id, message, _media, _type, node
             )
             media_size = getattr(_media, "file_size", 0)
 

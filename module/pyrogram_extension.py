@@ -897,12 +897,19 @@ async def _report_bot_status(
         return
 
     if immediate_reply or node.can_reply():
-        # 确定任务状态
+        # 确定任务状态（包括skip_not_found）
         finished_tasks = node.success_download_task + node.failed_download_task + node.skip_download_task
+        if hasattr(node, 'skip_not_found_download_task'):
+            finished_tasks += node.skip_not_found_download_task
         is_completed = node.total_download_task > 0 and finished_tasks == node.total_download_task
         task_status = _t('Completed') if is_completed else _t('In Progress')
         
         # 简化消息格式，只显示核心信息
+        # 计算总完成数（包括skip_not_found）
+        total_finished = node.success_download_task + node.failed_download_task + node.skip_download_task
+        if hasattr(node, 'skip_not_found_download_task'):
+            total_finished += node.skip_not_found_download_task
+        
         new_msg_str = (
             f"`\n"
             f"🆔 task id: {node.task_id}\n"
@@ -911,8 +918,14 @@ async def _report_bot_status(
             f"├─ 📁 {_t('Total')}: {node.total_download_task}\n"
             f"├─ ✅ {_t('Download Success')}: {node.success_download_task}\n"
             f"├─ ❌ {_t('Download Failed')}: {node.failed_download_task}\n"
-            f"└─ ⏩ {_t('Skipped')}: {node.skip_download_task}\n"
+            f"├─ ⏩ {_t('Skipped')}: {node.skip_download_task}\n"
         )
+        
+        # 如果有skip_not_found，单独显示
+        if hasattr(node, 'skip_not_found_download_task') and node.skip_not_found_download_task > 0:
+            new_msg_str += f"└─ 🔍 {_t('Not Found')}: {node.skip_not_found_download_task}\n"
+        else:
+            new_msg_str += f"└─ 🔍 {_t('Not Found')}: 0\n"
 
         # 只添加必要的转发统计
         if node.upload_telegram_chat_id and (node.total_forward_task > 0 or node.success_forward_task > 0):

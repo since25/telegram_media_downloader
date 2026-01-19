@@ -153,6 +153,7 @@ class TaskNode:
         self.failed_download_task = 0
         self.success_download_task = 0
         self.skip_download_task = 0
+        self.skip_not_found_download_task = 0  # 单独计数：message不存在/不可见/不属于thread的情况
         self.last_reply_time = time.time()
         self.last_edit_msg: str = ""
         self.total_download_byte = 0
@@ -181,6 +182,9 @@ class TaskNode:
         self.success_tasks = []  # 格式: [(chat_id, message_id, file_name)]
         self.failed_tasks = []   # 格式: [(chat_id, message_id, file_name)]
         self.skipped_tasks = []  # 格式: [(chat_id, message_id, file_name)]
+        
+        # 文件名标签：用于在下载评论时添加到文件名中
+        self.file_name_tag: Optional[str] = None
 
     def skip_msg_id(self, msg_id: int):
         """Skip if message id out of range"""
