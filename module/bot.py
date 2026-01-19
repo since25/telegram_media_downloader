@@ -657,7 +657,11 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
     from utils.format import extract_info_from_link
     link_info = extract_info_from_link(text[0])
     
+    logger.info(f"download_from_link: 解析链接 - url={text[0]}, link_info.comment_id={link_info.comment_id}, link_info.post_id={link_info.post_id}")
+    
     chat_id, message_id, _ = await parse_link(_bot.client, text[0])
+    
+    logger.info(f"download_from_link: parse_link结果 - chat_id={chat_id}, message_id={message_id}")
     
     # 如果是带comment的链接，需要获取原始消息（post_id）的名称
     base_message_id = None
@@ -671,8 +675,12 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
                 if len(parts) >= 3:
                     try:
                         base_message_id = int(parts[-1])
+                        logger.info(f"download_from_link: 从URL路径提取base_message_id: {base_message_id}")
                     except ValueError:
+                        logger.warning(f"download_from_link: 无法从URL路径提取base_message_id: {parts}")
                         pass
+        
+        logger.info(f"download_from_link: 检测到comment链接 - base_message_id={base_message_id}, comment_id={link_info.comment_id}")
 
     entity = None
     if chat_id:
@@ -680,12 +688,16 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
     if entity:
         # 如果是带comment的链接，下载评论；否则下载单条消息
         if base_message_id and (link_info.comment_id is not None or "comment=" in text[0]):
+            logger.info(f"download_from_link: 进入comment链接处理分支 - base_message_id={base_message_id}, comment_id={link_info.comment_id}")
             # 这是带comment的链接，应该通过download_from_bot处理
             # 但为了兼容，我们也可以在这里处理单条评论下载
             if link_info.comment_id is not None:
+                logger.info(f"download_from_link: 处理单条评论下载 - comment_id={link_info.comment_id}, base_message_id={base_message_id}")
                 # 单条评论下载：获取原始消息名称作为标签
                 try:
+                    logger.info(f"download_from_link: 开始获取原始消息 - chat_id={entity.id}, base_message_id={base_message_id}")
                     base_message = await _bot.client.get_messages(entity.id, base_message_id)
+                    logger.info(f"download_from_link: 获取原始消息结果 - base_message={base_message is not None}, has_text={base_message.text if base_message else False}, has_caption={base_message.caption if base_message else False}")
                     if base_message:
                         # 获取评论消息
                         discussion_message = await _bot.client.get_discussion_message(entity.id, base_message_id)
@@ -716,10 +728,36 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
                                 
                                 # 获取原始消息名称作为标签
                                 from utils.format import validate_title
+                                file_name_tag = None
+                                
+                                # 优先使用消息文本
                                 if base_message.text:
-                                    node.file_name_tag = validate_title(base_message.text[:30])
+                                    file_name_tag = validate_title(base_message.text[:30])
+                                    logger.info(f"download_from_link: 从原始消息(消息ID={base_message_id})文本获取标签: {file_name_tag}")
+                                # 如果没有文本，使用caption
                                 elif base_message.caption:
-                                    node.file_name_tag = validate_title(base_message.caption[:30])
+                                    file_name_tag = validate_title(base_message.caption[:30])
+                                    logger.info(f"download_from_link: 从原始消息(消息ID={base_message_id})caption获取标签: {file_name_tag}")
+                                
+                                # 如果仍然没有获取到标签，尝试其他方式
+                                if not file_name_tag:
+                                    # 尝试从消息的reply_to_message获取
+                                    if base_message.reply_to_message:
+                                        if base_message.reply_to_message.text:
+                                            file_name_tag = validate_title(base_message.reply_to_message.text[:30])
+                                            logger.info(f"download_from_link: 从原始消息的reply_to_message文本获取标签: {file_name_tag}")
+                                        elif base_message.reply_to_message.caption:
+                                            file_name_tag = validate_title(base_message.reply_to_message.caption[:30])
+                                            logger.info(f"download_from_link: 从原始消息的reply_to_message caption获取标签: {file_name_tag}")
+                                    
+                                    # 如果还是没有，使用消息ID作为标签
+                                    if not file_name_tag:
+                                        file_name_tag = f"msg{base_message_id}"
+                                        logger.warning(f"download_from_link: 无法获取原始消息(消息ID={base_message_id})名称，使用消息ID作为标签: {file_name_tag}")
+                                
+                                if file_name_tag:
+                                    node.file_name_tag = file_name_tag
+                                    logger.info(f"download_from_link: 设置文件名标签: {file_name_tag}")
                                 
                                 _bot.add_task_node(node)
                                 add_active_task_node(node)
@@ -727,7 +765,8 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
                                 node.is_running = True
                                 return
                 except Exception as e:
-                    logger.warning(f"处理带comment的链接失败: {e}")
+                    logger.error(f"download_from_link: 处理带comment的链接失败: {e}", exc_info=True)
+                    # 如果处理失败，继续尝试普通下载流程（可能会失败，但至少不会静默失败）
         
         # 普通单条消息下载
         if message_id:
