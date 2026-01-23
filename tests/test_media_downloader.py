@@ -331,13 +331,13 @@ class MockClient:
     async def download_media(self, *args, **kwargs):
         mock_message = args[0]
         if mock_message.id in [7, 8]:
-            raise pyrogram.errors.exceptions.bad_request_400.BadRequest
+            raise pyrogram.errors.BadRequest
         elif mock_message.id == 9:
-            raise pyrogram.errors.exceptions.unauthorized_401.Unauthorized
+            raise pyrogram.errors.Unauthorized
         elif mock_message.id == 11:
             raise TypeError
         elif mock_message.id == 420:
-            raise pyrogram.errors.exceptions.flood_420.FloodWait(value=420)
+            raise pyrogram.errors.FloodWait(value=420)
         elif mock_message.id == 421:
             raise Exception
         return kwargs["file_name"]

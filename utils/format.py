@@ -233,7 +233,13 @@ def extract_info_from_link(link: str) -> Link:
 
     if "comment" in query:
         result.group_id = paths[0]
-        result.comment_id = int(query["comment"][0])
+        if len(paths) >= 2:
+            result.post_id = int(paths[1])
+        # 处理空的comment参数，比如?comment=
+        comment_value = query["comment"][0] if query["comment"] else None
+        if comment_value and comment_value.strip():
+            result.comment_id = int(comment_value.strip())
+        # 如果comment参数为空，不设置comment_id，这样代码可以识别为评论范围下载
     elif len(paths) == 1 and paths[0] != "c":
         result.group_id = paths[0]
     elif len(paths) == 2:

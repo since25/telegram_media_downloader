@@ -128,7 +128,6 @@ class CloudDrive:
             if proc.stdout:
                 async for output in proc.stdout:
                     s = output.decode(errors="replace")
-                    print(s)
                     if "Transferred" in s and "100%" in s and "1 / 1" in s:
                         logger.info(f"upload file {local_file_path} success")
                         drive_config.total_upload_success_file_count += 1
