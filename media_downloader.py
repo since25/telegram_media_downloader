@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import aiohttp
 import shutil
 import time
 from typing import List, Optional, Tuple, Union
@@ -746,6 +747,55 @@ def main():
         workdir=app.session_file_path,
         start_timeout=app.start_timeout,
     )
+    # --- 开始植入：动态加载 config.yaml 中的监控配置 ---
+    monitor_cfg = app.config.get("monitor", {})
+    if monitor_cfg.get("enabled"):
+        MONITOR_CHATS = monitor_cfg.get("chats", [])
+        KEYWORDS = monitor_cfg.get("keywords", [])
+        WEBHOOK_URL = monitor_cfg.get("webhook_url")
+        MIN_INTERVAL = monitor_cfg.get("min_interval", 5)
+        
+        # 内部变量用于频率控制
+        last_post_time = {"time": 0} 
+
+        async def send_to_discord(content):
+            async with aiohttp.ClientSession() as session:
+                try:
+                    async with session.post(WEBHOOK_URL, json={"content": content}) as resp:
+                        if resp.status != 204:
+                            logger.warning(f"Discord 转发失败: {resp.status}")
+                except Exception as e:
+                    logger.error(f"Webhook 网络错误: {e}")
+
+        @client.on_message(pyrogram.filters.chat(MONITOR_CHATS))
+        async def keyword_monitor_handler(client, message):
+            text = message.text or message.caption
+            if not text: return
+            
+            matched = [w for w in KEYWORDS if w in text]
+            if matched:
+                current_time = time.time()
+                if current_time - last_post_time["time"] < MIN_INTERVAL:
+                    return
+                
+                chat_title = message.chat.title or "Channel"
+                # 构造直达链接
+                clean_id = str(message.chat.id).replace("-100", "")
+                msg_link = f"https://t.me/c/{clean_id}/{message.id}"
+                
+                discord_msg = (
+                    f"🔔 **关键词命中: {', '.join(matched)}**\n"
+                    f"来自频道: **{chat_title}**\n"
+                    f"内容: {text[:500]}\n"
+                    f"🔗 [点击跳转]({msg_link})"
+                )
+                
+                # 使用下载器自带的 loop 异步发送，不干扰主进程
+                asyncio.create_task(send_to_discord(discord_msg))
+                last_post_time["time"] = current_time
+        
+        logger.info(f"✅ 关键词监控已启动，监控频道数量: {len(MONITOR_CHATS)}")
+    # --- 植入结束 ---
     try:
         app.pre_run()
         init_web(app)

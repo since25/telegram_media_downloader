@@ -22,3 +22,16 @@ media_types:
 - video_note
 # in linux please use /
 # save_path: E:\github\telegram_media_downloader
+# 新增监控配置
+monitor:
+  enabled: true
+  webhook_url: "https://discord.com/api/webhooks/你的URL"
+  min_interval: 5
+  keywords:
+    - "长宁"
+    - "浦东"
+    - "静安"
+    - "松江"
+  chats:
+    - -1003050259377
+    - -1001234567890
