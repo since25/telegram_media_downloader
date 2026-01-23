@@ -1,6 +1,7 @@
 """Downloads media from telegram."""
 import asyncio
 import logging
+import yaml
 import os
 import aiohttp
 import shutil
@@ -1418,7 +1419,8 @@ def main():
             _full_cfg = yaml.safe_load(f)
         
         m_cfg = _full_cfg.get("monitor", {})
-
+        # 添加下面这一行
+        print(f"DEBUG: monitor config is: {m_cfg}")
         if m_cfg and m_cfg.get("enabled"):
             MONITOR_CHATS = m_cfg.get("chats", [])
             KEYWORDS = m_cfg.get("keywords", [])
