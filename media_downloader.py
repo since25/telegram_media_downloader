@@ -1408,55 +1408,71 @@ def main():
         workdir=app.session_file_path,
         start_timeout=app.start_timeout,
     )
-    # --- 开始植入：动态加载 config.yaml 中的监控配置 ---
-    monitor_cfg = app.config.get("monitor", {})
-    if monitor_cfg.get("enabled"):
-        MONITOR_CHATS = monitor_cfg.get("chats", [])
-        KEYWORDS = monitor_cfg.get("keywords", [])
-        WEBHOOK_URL = monitor_cfg.get("webhook_url")
-        MIN_INTERVAL = monitor_cfg.get("min_interval", 5)
+
+    # ======================================================
+    # --- 监控插件开始：强力加载 config.yaml 中的监控配置 ---
+    # ======================================================
+    try:
+        # 直接读取文件，防止 app.config 过滤掉非原生字段
+        with open(CONFIG_NAME, "r", encoding="utf-8") as f:
+            _full_cfg = yaml.safe_load(f)
         
-        # 内部变量用于频率控制
-        last_post_time = {"time": 0} 
+        m_cfg = _full_cfg.get("monitor", {})
 
-        async def send_to_discord(content):
-            async with aiohttp.ClientSession() as session:
-                try:
-                    async with session.post(WEBHOOK_URL, json={"content": content}) as resp:
-                        if resp.status != 204:
-                            logger.warning(f"Discord 转发失败: {resp.status}")
-                except Exception as e:
-                    logger.error(f"Webhook 网络错误: {e}")
-
-        @client.on_message(pyrogram.filters.chat(MONITOR_CHATS))
-        async def keyword_monitor_handler(client, message):
-            text = message.text or message.caption
-            if not text: return
+        if m_cfg and m_cfg.get("enabled"):
+            MONITOR_CHATS = m_cfg.get("chats", [])
+            KEYWORDS = m_cfg.get("keywords", [])
+            WEBHOOK_URL = m_cfg.get("webhook_url")
+            MIN_INTERVAL = m_cfg.get("min_interval", 5)
             
-            matched = [w for w in KEYWORDS if w in text]
-            if matched:
-                current_time = time.time()
-                if current_time - last_post_time["time"] < MIN_INTERVAL:
-                    return
+            # 内部变量用于频率控制，使用字典防止闭包作用域问题
+            state = {"last_post_time": 0}
+
+            async def send_to_discord(content):
+                async with aiohttp.ClientSession() as session:
+                    try:
+                        async with session.post(WEBHOOK_URL, json={"content": content}) as resp:
+                            if resp.status not in [200, 204]:
+                                logger.warning(f"Webhook 转发失败，状态码: {resp.status}")
+                    except Exception as e:
+                        logger.error(f"Webhook 网络错误: {e}")
+
+            @client.on_message(pyrogram.filters.chat(MONITOR_CHATS))
+            async def keyword_monitor_handler(c, message):
+                text = message.text or message.caption
+                if not text: return
                 
-                chat_title = message.chat.title or "Channel"
-                # 构造直达链接
-                clean_id = str(message.chat.id).replace("-100", "")
-                msg_link = f"https://t.me/c/{clean_id}/{message.id}"
-                
-                discord_msg = (
-                    f"🔔 **关键词命中: {', '.join(matched)}**\n"
-                    f"来自频道: **{chat_title}**\n"
-                    f"内容: {text[:500]}\n"
-                    f"🔗 [点击跳转]({msg_link})"
-                )
-                
-                # 使用下载器自带的 loop 异步发送，不干扰主进程
-                asyncio.create_task(send_to_discord(discord_msg))
-                last_post_time["time"] = current_time
-        
-        logger.info(f"✅ 关键词监控已启动，监控频道数量: {len(MONITOR_CHATS)}")
-    # --- 植入结束 ---
+                matched = [w for w in KEYWORDS if w in text]
+                if matched:
+                    current_time = time.time()
+                    if current_time - state["last_post_time"] < MIN_INTERVAL:
+                        return
+                    
+                    chat_title = message.chat.title or "未知频道"
+                    # 构造链接
+                    clean_id = str(message.chat.id).replace("-100", "")
+                    msg_link = f"https://t.me/c/{clean_id}/{message.id}"
+                    
+                    discord_msg = (
+                        f"🔔 **关键词命中: {', '.join(matched)}**\n"
+                        f"来自频道: **{chat_title}**\n"
+                        f"内容: {text[:500]}\n"
+                        f"🔗 [点击跳转]({msg_link})"
+                    )
+                    
+                    # 异步任务发送，不占用主消息循环
+                    asyncio.create_task(send_to_discord(discord_msg))
+                    state["last_post_time"] = current_time
+            
+            logger.success(f"✅ 监控插件已加载！监控频道: {len(MONITOR_CHATS)} 个, 关键词: {len(KEYWORDS)} 个")
+        else:
+            logger.info("ℹ️ 监控插件未启用 (enabled=false)")
+    except Exception as e:
+        logger.error(f"❌ 监控插件加载过程中出现异常: {e}")
+    # ======================================================
+    # --- 监控插件结束 ---
+    # ======================================================
+
     try:
         app.pre_run()
         init_web(app)
@@ -1467,11 +1483,12 @@ def main():
         logger.success(_t("Successfully started (Press Ctrl+C to stop)"))
 
         app.loop.create_task(download_all_chat(client))
-        # 创建定期进度刷新任务
-        app.loop.create_task(periodic_progress_refresh())
-        logger.info("Created periodic progress refresh task (interval: 20 seconds)")
         
-        # 检查并记录并行任务数量
+        # 你的原有任务
+        if "periodic_progress_refresh" in globals():
+            app.loop.create_task(periodic_progress_refresh())
+            logger.info("Created periodic progress refresh task (interval: 20 seconds)")
+        
         logger.info(f"Creating {app.max_download_task} download workers")
         for _ in range(app.max_download_task):
             task = app.loop.create_task(worker(client))
