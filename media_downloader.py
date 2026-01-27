@@ -1481,8 +1481,59 @@ def main():
                     logger.error(f"Webhook 网络错误: {e}")
 
             def _build_msg_link(chat_id: int, msg_id: int) -> str:
-                clean_id = str(chat_id).replace("-100", "")
-                return f"https://t.me/c/{clean_id}/{msg_id}"
+                # 私有/非公开频道常见：-100xxxxxxxxxx
+                s = str(chat_id)
+                if s.startswith("-100"):
+                    inner = s[4:]  # 去掉 -100
+                    return f"https://t.me/c/{inner}/{msg_id}"
+                # 公开群/频道可能 msg.link 可用；这里给个兜底占位
+                return f"(no-link chat={chat_id} msg={msg_id})"
+
+            def _msg_text_for_match(msg) -> str:
+                # 常见文本来源：text / caption
+                return (getattr(msg, "text", None) or getattr(msg, "caption", None) or "").strip()
+
+            def _match_keywords(text: str, keywords) -> list[str]:
+                if not text:
+                    return []
+                hit = []
+                for kw in (keywords or []):
+                    if kw and kw in text:
+                        hit.append(kw)
+                return hit
+
+            async def _send_startup_digest(chat_id: int, hits: list[dict], window_sec: int, max_lines: int = 15):
+                if not hits:
+                    return
+
+                # 命中数可能很多：只展示前 max_lines 条，避免 Discord 超长
+                shown = hits[:max_lines]
+                more = len(hits) - len(shown)
+
+                lines = []
+                for h in shown:
+                    kws = ",".join(h["matched"])
+                    lines.append(f"- #{h['msg_id']} 命中[{kws}] {h['preview']} {h['link']}")
+
+                if more > 0:
+                    lines.append(f"... 还有 {more} 条未展示")
+
+                header = f"🕒 启动回扫：最近 {int(window_sec/3600)}h 命中 {len(hits)} 条（chat={chat_id}）"
+                content = header + "\n" + "\n".join(lines)
+
+                # 这里直接发 webhook：不要走 _handle_message 的 rate limit
+                await _post_webhook(content)
+
+            async def _post_webhook(content: str):
+                if not WEBHOOK_URL:
+                    return
+                try:
+                    session = await _get_webhook_session()
+                    async with session.post(WEBHOOK_URL, json={"content": content}) as resp:
+                        if resp.status not in (200, 204):
+                            logger.warning(f"[MONITOR][WEBHOOK] failed status={resp.status}")
+                except Exception as e:
+                    logger.error(f"[MONITOR][WEBHOOK] error: {e}")
 
             async def _handle_message(message: pyrogram.types.Message):
                 logger.info(
@@ -1493,11 +1544,12 @@ def main():
                 
                 if not message or not getattr(message, "id", None):
                     return
-                text = message.text or message.caption
+                
+                text = _msg_text_for_match(message)
                 if not text:
                     return
 
-                matched = [w for w in KEYWORDS if w and w in text]
+                matched = _match_keywords(text, KEYWORDS)
                 logger.info(
                     f"[MONITOR][MATCH] "
                     f"text_preview={text[:80]!r} "
@@ -1514,7 +1566,8 @@ def main():
 
                 chat_id = int(message.chat.id) if message.chat else 0
                 chat_title = (message.chat.title if message.chat and message.chat.title else None) or "未知频道"
-                msg_link = _build_msg_link(chat_id, int(message.id))
+                # 优先使用消息对象的 link 属性（如果存在）
+                msg_link = getattr(message, "link", None) or _build_msg_link(chat_id, int(message.id))
 
                 discord_msg = (
                     f"🔔 **关键词命中: {', '.join(matched)}**\n"
@@ -1656,11 +1709,26 @@ def main():
 
                 # collected 现在是 newest->older 的顺序（append 时跟随遍历顺序），
                 # 我们反过来按 old->new 处理，避免乱序触发限流
+                hits = []  # 收集命中消息
                 if collected:
                     logger.info(f"[MONITOR][STARTUP] chat={chat_id} to_handle={len(collected)}")
                     for msg in reversed(collected):
                         try:
-                            await _handle_message(msg)
+                            text = _msg_text_for_match(msg)
+                            matched = _match_keywords(text, KEYWORDS)
+                            if not matched:
+                                continue
+
+                            mid = int(msg.id)
+                            link = getattr(msg, "link", None) or _build_msg_link(int(chat_id), mid)
+                            preview = text.replace("\n", " ")[:80]
+
+                            hits.append({
+                                "msg_id": mid,
+                                "matched": matched,
+                                "preview": preview,
+                                "link": link,
+                            })
                         except Exception as e:
                             logger.exception(f"[MONITOR][STARTUP] handle failed: {e}")
 
@@ -1670,6 +1738,9 @@ def main():
                     state_db["last_seen"] = last_seen
                     _save_state(state_db)
                     logger.info(f"[MONITOR][STARTUP] updated last_seen={newest_seen_id} chat={chat_id}")
+
+                # 聚合发送启动回扫结果
+                await _send_startup_digest(int(chat_id), hits, window_sec, max_lines=15)
 
             async def fallback_polling_loop(client: pyrogram.Client):
                 await _init_baseline(client)
