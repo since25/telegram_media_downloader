@@ -1484,6 +1484,12 @@ def main():
                 return f"https://t.me/c/{clean_id}/{msg_id}"
 
             async def _handle_message(message: pyrogram.types.Message):
+                logger.info(
+                    f"[MONITOR][HANDLE] enter: "
+                    f"chat_id={getattr(message.chat,'id',None)} "
+                    f"msg_id={getattr(message,'id',None)}"
+                )
+                
                 if not message or not getattr(message, "id", None):
                     return
                 text = message.text or message.caption
@@ -1491,12 +1497,18 @@ def main():
                     return
 
                 matched = [w for w in KEYWORDS if w and w in text]
+                logger.info(
+                    f"[MONITOR][MATCH] "
+                    f"text_preview={text[:80]!r} "
+                    f"matched={matched}"
+                )
                 if not matched:
                     return
 
                 # 全局频率限制
                 t_now = time.time()
                 if t_now - post_state["last_post_time"] < MIN_INTERVAL:
+                    logger.info("[MONITOR][RATE] skipped by rate limit")
                     return
 
                 chat_id = int(message.chat.id) if message.chat else 0
@@ -1517,6 +1529,14 @@ def main():
             # ---- 实时 updates 监听 ----
             @client.on_message(pyrogram.filters.chat(MONITOR_CHATS))
             async def keyword_monitor_handler(c, message):
+                # ===== DEBUG 1：确认是否收到任何消息 =====
+                logger.info(
+                    f"[MONITOR][UPDATE] recv msg: "
+                    f"chat_id={getattr(message.chat,'id',None)} "
+                    f"username={getattr(message.chat,'username',None)} "
+                    f"msg_id={getattr(message,'id',None)}"
+                )
+
                 # 记录 last_seen（用于兜底轮询去重）
                 try:
                     chat_id = int(message.chat.id)
@@ -1533,17 +1553,23 @@ def main():
             async def _init_baseline(client: pyrogram.Client):
                 for chat_id in MONITOR_CHATS:
                     key = str(chat_id)
+
+                    logger.info(f"[MONITOR][BASELINE] init for chat={chat_id}")
+
                     if key in last_seen:
+                        logger.info(f"[MONITOR][BASELINE] already exists: {last_seen[key]}")
                         continue
+
                     try:
                         # baseline 取“当前最新一条消息”的 id，避免第一次启动扫全历史
                         hs = await client.get_history(chat_id, limit=1)
                         if hs:
                             last_seen[key] = int(hs[0].id)
-                    except Exception:
-                        pass
-                    except Exception:
-                        pass
+                            logger.info(
+                                f"[MONITOR][BASELINE] chat={chat_id} last_seen={last_seen[key]}"
+                            )
+                    except Exception as e:
+                        logger.warning(f"[MONITOR][BASELINE] failed: {e}")
                 state_db["last_seen"] = last_seen
                 _save_state(state_db)
 
@@ -1564,6 +1590,11 @@ def main():
                         try:
                             it = get_chat_history_v2(client, chat_id, limit=PER_CHAT_LIMIT, offset_id=offset_id, reverse=True)
                             async for message in it:
+                                logger.info(
+                                    f"[MONITOR][POLL] scan msg: "
+                                    f"chat_id={chat_id} "
+                                    f"msg_id={getattr(message,'id',None)}"
+                                )
                                 if not message or not getattr(message, "id", None):
                                     continue
                                 mid = int(message.id)
@@ -1599,6 +1630,7 @@ def main():
                 f"✅ 监控插件(实时)已加载：chats={len(MONITOR_CHATS)} keywords={len(KEYWORDS)} "
                 f"fallback_poll={'on' if ENABLE_FALLBACK_POLL else 'off'}"
             )
+            logger.info(f"monitor: watching chats={MONITOR_CHATS}, keywords={KEYWORDS}")
 
             monitor_tasks = {
                 "fallback_loop": fallback_polling_loop if ENABLE_FALLBACK_POLL else None,
