@@ -1421,7 +1421,7 @@ def main():
             _full_cfg = yaml.safe_load(f) or {}
 
         m_cfg = _full_cfg.get("monitor", {}) or {}
-        logger.debug(f"monitor 配置读取结果: {m_cfg}")
+        logger.info(f"[MONITOR][CFG] monitor 配置读取结果: {m_cfg}")
         enabled = bool(m_cfg.get("enabled"))
 
         if enabled:
@@ -1608,7 +1608,7 @@ def main():
                                     continue
                                 
                                 # 只在真的有新消息时才打印info级别日志
-                                logger.info(f"[MONITOR][POLL] new msg: chat_id={chat_id} msg_id={mid}")
+                                #logger.info(f"[MONITOR][POLL] new msg: chat_id={chat_id} msg_id={mid}")
                                     
                                 if mid > max_id_this_round:
                                     max_id_this_round = mid
