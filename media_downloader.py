@@ -1458,14 +1458,22 @@ def main():
             state_db = _load_state()
             last_seen: Dict[str, int] = state_db.get("last_seen", {}) or {}
 
-            webhook_session: aiohttp.ClientSession = aiohttp.ClientSession()
+            # 注意：不要在同步阶段创建 aiohttp.ClientSession（Py3.11/aiohttp 新版会报 no running event loop）
+            webhook_session: aiohttp.ClientSession | None = None
             post_state = {"last_post_time": 0.0}
+
+            async def _get_webhook_session() -> aiohttp.ClientSession:
+                nonlocal webhook_session
+                if webhook_session is None or webhook_session.closed:
+                    webhook_session = aiohttp.ClientSession()
+                return webhook_session
 
             async def send_to_discord(content: str):
                 if not WEBHOOK_URL:
                     return
                 try:
-                    async with webhook_session.post(WEBHOOK_URL, json={"content": content}) as resp:
+                    session = await _get_webhook_session()
+                    async with session.post(WEBHOOK_URL, json={"content": content}) as resp:
                         if resp.status not in (200, 204):
                             logger.warning(f"Webhook 转发失败，状态码: {resp.status}")
                 except Exception as e:
@@ -1594,7 +1602,6 @@ def main():
 
             monitor_tasks = {
                 "fallback_loop": fallback_polling_loop if ENABLE_FALLBACK_POLL else None,
-                "session": webhook_session,
             }
 
         else:
@@ -1657,12 +1664,13 @@ def main():
         except Exception as e:
             logger.warning(f"stop_server ignore: {e}")
 
-        # 关闭监控 aiohttp session（避免 Unclosed client session）
+        # 关闭监控资源（webhook aiohttp session）
         try:
-            if monitor_tasks and monitor_tasks.get("session"):
-                app.loop.run_until_complete(monitor_tasks["session"].close())
-        except Exception as e:
-            logger.warning(f"close monitor session ignore: {e}")
+            if enabled:
+                if webhook_session and not webhook_session.closed:
+                    app.loop.run_until_complete(webhook_session.close())
+        except Exception:
+            pass
 
         for task in tasks:
             task.cancel()
