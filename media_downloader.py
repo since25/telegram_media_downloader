@@ -4,9 +4,12 @@ import logging
 import yaml
 import os
 import aiohttp
+import json
+import datetime
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Tuple, Union
 import shutil
 import time
-from typing import List, Optional, Tuple, Union
 import sys
 if __name__ == "__main__":
     sys.modules["media_downloader"] = sys.modules[__name__]
@@ -1411,69 +1414,201 @@ def main():
     )
 
     # ======================================================
-    # --- 监控插件开始：强力加载 config.yaml 中的监控配置 ---
+    # --- 监控插件（版本B：user client 实时 updates + 可选兜底轮询） ---
     # ======================================================
     try:
-        # 直接读取文件，防止 app.config 过滤掉非原生字段
         with open(CONFIG_NAME, "r", encoding="utf-8") as f:
-            _full_cfg = yaml.safe_load(f)
-        
-        m_cfg = _full_cfg.get("monitor", {})
-        # 添加下面这一行
-        print(f"DEBUG: monitor config is: {m_cfg}")
-        if m_cfg and m_cfg.get("enabled"):
-            MONITOR_CHATS = m_cfg.get("chats", [])
-            KEYWORDS = m_cfg.get("keywords", [])
+            _full_cfg = yaml.safe_load(f) or {}
+
+        m_cfg = (_full_cfg.get("monitor", {}) or {})
+        enabled = bool(m_cfg.get("enabled"))
+
+        if enabled:
+            MONITOR_CHATS = m_cfg.get("chats", []) or []
+            KEYWORDS = m_cfg.get("keywords", []) or []
             WEBHOOK_URL = m_cfg.get("webhook_url")
-            MIN_INTERVAL = m_cfg.get("min_interval", 5)
-            
-            # 内部变量用于频率控制，使用字典防止闭包作用域问题
-            state = {"last_post_time": 0}
+            MIN_INTERVAL = int(m_cfg.get("min_interval", 5) or 5)
 
-            async def send_to_discord(content):
-                async with aiohttp.ClientSession() as session:
-                    try:
-                        async with session.post(WEBHOOK_URL, json={"content": content}) as resp:
-                            if resp.status not in [200, 204]:
-                                logger.warning(f"Webhook 转发失败，状态码: {resp.status}")
-                    except Exception as e:
-                        logger.error(f"Webhook 网络错误: {e}")
+            # 兜底轮询参数（可关）
+            ENABLE_FALLBACK_POLL = bool(m_cfg.get("enable_fallback_poll", True))
+            POLL_INTERVAL_SEC = int(m_cfg.get("poll_interval_sec", 300) or 300)
+            WINDOW_SEC = int(m_cfg.get("window_sec", 300) or 300)
+            PER_CHAT_LIMIT = int(m_cfg.get("per_chat_limit", 80) or 80)
 
+            MONITOR_STATE_FILE = Path(app.session_file_path) / "monitor_state.json"
+
+            def _load_state() -> Dict[str, Any]:
+                try:
+                    if MONITOR_STATE_FILE.exists():
+                        return json.loads(MONITOR_STATE_FILE.read_text(encoding="utf-8"))
+                except Exception as e:
+                    logger.warning(f"monitor: load state failed: {e}")
+                return {}
+
+            def _save_state(state: Dict[str, Any]) -> None:
+                try:
+                    MONITOR_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    MONITOR_STATE_FILE.write_text(
+                        json.dumps(state, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                except Exception as e:
+                    logger.warning(f"monitor: save state failed: {e}")
+
+            state_db = _load_state()
+            last_seen: Dict[str, int] = state_db.get("last_seen", {}) or {}
+
+            webhook_session: aiohttp.ClientSession = aiohttp.ClientSession()
+            post_state = {"last_post_time": 0.0}
+
+            async def send_to_discord(content: str):
+                if not WEBHOOK_URL:
+                    return
+                try:
+                    async with webhook_session.post(WEBHOOK_URL, json={"content": content}) as resp:
+                        if resp.status not in (200, 204):
+                            logger.warning(f"Webhook 转发失败，状态码: {resp.status}")
+                except Exception as e:
+                    logger.error(f"Webhook 网络错误: {e}")
+
+            def _build_msg_link(chat_id: int, msg_id: int) -> str:
+                clean_id = str(chat_id).replace("-100", "")
+                return f"https://t.me/c/{clean_id}/{msg_id}"
+
+            async def _handle_message(message: pyrogram.types.Message):
+                if not message or not getattr(message, "id", None):
+                    return
+                text = message.text or message.caption
+                if not text:
+                    return
+
+                matched = [w for w in KEYWORDS if w and w in text]
+                if not matched:
+                    return
+
+                # 全局频率限制
+                t_now = time.time()
+                if t_now - post_state["last_post_time"] < MIN_INTERVAL:
+                    return
+
+                chat_id = int(message.chat.id) if message.chat else 0
+                chat_title = (message.chat.title if message.chat and message.chat.title else None) or "未知频道"
+                msg_link = _build_msg_link(chat_id, int(message.id))
+
+                discord_msg = (
+                    f"🔔 **关键词命中: {', '.join(matched)}**\n"
+                    f"来自频道: **{chat_title}**\n"
+                    f"时间: {getattr(message, 'date', None)}\n"
+                    f"内容: {text[:500]}\n"
+                    f"🔗 [点击跳转]({msg_link})"
+                )
+
+                asyncio.create_task(send_to_discord(discord_msg))
+                post_state["last_post_time"] = t_now
+
+            # ---- 实时 updates 监听 ----
             @client.on_message(pyrogram.filters.chat(MONITOR_CHATS))
             async def keyword_monitor_handler(c, message):
-                text = message.text or message.caption
-                if not text: return
-                
-                matched = [w for w in KEYWORDS if w in text]
-                if matched:
-                    current_time = time.time()
-                    if current_time - state["last_post_time"] < MIN_INTERVAL:
-                        return
-                    
-                    chat_title = message.chat.title or "未知频道"
-                    # 构造链接
-                    clean_id = str(message.chat.id).replace("-100", "")
-                    msg_link = f"https://t.me/c/{clean_id}/{message.id}"
-                    
-                    discord_msg = (
-                        f"🔔 **关键词命中: {', '.join(matched)}**\n"
-                        f"来自频道: **{chat_title}**\n"
-                        f"内容: {text[:500]}\n"
-                        f"🔗 [点击跳转]({msg_link})"
-                    )
-                    
-                    # 异步任务发送，不占用主消息循环
-                    asyncio.create_task(send_to_discord(discord_msg))
-                    state["last_post_time"] = current_time
-            
-            logger.success(f"✅ 监控插件已加载！监控频道: {len(MONITOR_CHATS)} 个, 关键词: {len(KEYWORDS)} 个")
+                # 记录 last_seen（用于兜底轮询去重）
+                try:
+                    chat_id = int(message.chat.id)
+                    key = str(chat_id)
+                    mid = int(message.id)
+                    if mid > int(last_seen.get(key, 0)):
+                        last_seen[key] = mid
+                except Exception:
+                    pass
+
+                await _handle_message(message)
+
+            # ---- 兜底轮询（可选，防漏推）----
+            async def _init_baseline(client: pyrogram.Client):
+                for chat_id in MONITOR_CHATS:
+                    key = str(chat_id)
+                    if key in last_seen:
+                        continue
+                    try:
+                        # baseline 取“当前最新一条消息”的 id，避免第一次启动扫全历史
+                        hs = await client.get_history(chat_id, limit=1)
+                        if hs:
+                            last_seen[key] = int(hs[0].id)
+                    except Exception:
+                        pass
+                    except Exception:
+                        pass
+                state_db["last_seen"] = last_seen
+                _save_state(state_db)
+
+            async def fallback_polling_loop(client: pyrogram.Client):
+                await _init_baseline(client)
+
+                while app.is_running:
+                    #now_utc = datetime.datetime.now(datetime.timezone.utc)
+                    #cutoff = now_utc - datetime.timedelta(seconds=WINDOW_SEC)
+                    # 用 epoch 时间戳做窗口过滤，避免 naive/aware datetime 比较报错
+                    cutoff_ts = time.time() - WINDOW_SEC
+
+                    for chat_id in MONITOR_CHATS:
+                        key = str(chat_id)
+                        offset_id = int(last_seen.get(key, 0))
+                        max_id_this_round = offset_id
+
+                        try:
+                            it = get_chat_history_v2(client, chat_id, limit=PER_CHAT_LIMIT, offset_id=offset_id, reverse=True)
+                            async for message in it:
+                                if not message or not getattr(message, "id", None):
+                                    continue
+                                mid = int(message.id)
+                                if mid > max_id_this_round:
+                                    max_id_this_round = mid
+
+                                msg_dt = getattr(message, "date", None)
+                                if msg_dt is not None:
+                                    try:
+                                        # message.date 可能是 naive 或 aware，timestamp() 两者都可用（极少数异常则放行）
+                                        if msg_dt.timestamp() < cutoff_ts:
+                                            continue
+                                    except Exception:
+                                        # date 异常就不做时间过滤，避免误杀
+                                        pass
+
+                                await _handle_message(message)
+
+                            if max_id_this_round > offset_id:
+                                last_seen[key] = max_id_this_round
+
+                        except Exception as e:
+                            logger.warning(f"monitor: fallback polling error chat_id={chat_id}: {e}")
+
+                        await asyncio.sleep(0.3)
+
+                    state_db["last_seen"] = last_seen
+                    _save_state(state_db)
+
+                    await asyncio.sleep(POLL_INTERVAL_SEC)
+
+            logger.success(
+                f"✅ 监控插件(实时)已加载：chats={len(MONITOR_CHATS)} keywords={len(KEYWORDS)} "
+                f"fallback_poll={'on' if ENABLE_FALLBACK_POLL else 'off'}"
+            )
+
+            monitor_tasks = {
+                "fallback_loop": fallback_polling_loop if ENABLE_FALLBACK_POLL else None,
+                "session": webhook_session,
+            }
+
         else:
             logger.info("ℹ️ 监控插件未启用 (enabled=false)")
+            monitor_tasks = None
+
     except Exception as e:
         logger.error(f"❌ 监控插件加载过程中出现异常: {e}")
+        monitor_tasks = None
     # ======================================================
-    # --- 监控插件结束 ---
+    # --- 监控插件结束（版本B）---
     # ======================================================
+
+
 
     try:
         app.pre_run()
@@ -1482,6 +1617,10 @@ def main():
         set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)
 
         app.loop.run_until_complete(start_server(client))
+        # 启动兜底轮询（版本B可选）
+        if monitor_tasks and monitor_tasks.get("fallback_loop"):
+            app.loop.create_task(monitor_tasks["fallback_loop"](client))
+
         logger.success(_t("Successfully started (Press Ctrl+C to stop)"))
 
         app.loop.create_task(download_all_chat(client))
@@ -1517,22 +1656,28 @@ def main():
             app.loop.run_until_complete(stop_server(client))
         except Exception as e:
             logger.warning(f"stop_server ignore: {e}")
+
+        # 关闭监控 aiohttp session（避免 Unclosed client session）
+        try:
+            if monitor_tasks and monitor_tasks.get("session"):
+                app.loop.run_until_complete(monitor_tasks["session"].close())
+        except Exception as e:
+            logger.warning(f"close monitor session ignore: {e}")
+
         for task in tasks:
             task.cancel()
+
         logger.info(_t("Stopped!"))
-        # check_for_updates(app.proxy)
         logger.info(f"{_t('update config')}......")
         app.update_config()
-        
-        # 打印性能统计信息
         print_performance_stats()
-        
         logger.success(
             f"{_t('Updated last read message_id to config file')},"
             f"{_t('total download')} {app.total_download_task}, "
             f"{_t('total upload file')} "
             f"{app.cloud_drive_config.total_upload_success_file_count}"
         )
+
 
 
 if __name__ == "__main__":

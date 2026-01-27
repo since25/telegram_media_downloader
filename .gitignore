@@ -70,3 +70,4 @@ config.yaml
 data.yaml
 *.scss
 *.css.map
+tg-downloader_last3days.log
