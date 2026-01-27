@@ -1561,10 +1561,13 @@ def main():
                         continue
 
                     try:
-                        # baseline 取“当前最新一条消息”的 id，避免第一次启动扫全历史
-                        hs = await client.get_history(chat_id, limit=1)
-                        if hs:
-                            last_seen[key] = int(hs[0].id)
+                        # baseline 取最新 1 条（稳）
+                        last = None
+                        async for m in client.get_history(chat_id, limit=1):
+                            last = m
+                            break
+                        if last:
+                            last_seen[key] = int(last.id)
                             logger.info(
                                 f"[MONITOR][BASELINE] chat={chat_id} last_seen={last_seen[key]}"
                             )
@@ -1590,7 +1593,7 @@ def main():
                         try:
                             it = get_chat_history_v2(client, chat_id, limit=PER_CHAT_LIMIT, offset_id=offset_id, reverse=True)
                             async for message in it:
-                                logger.info(
+                                logger.debug(
                                     f"[MONITOR][POLL] scan msg: "
                                     f"chat_id={chat_id} "
                                     f"msg_id={getattr(message,'id',None)}"
@@ -1598,6 +1601,14 @@ def main():
                                 if not message or not getattr(message, "id", None):
                                     continue
                                 mid = int(message.id)
+                                
+                                # 强制去重：只处理新消息
+                                if mid <= offset_id:
+                                    continue
+                                
+                                # 只在真的有新消息时才打印info级别日志
+                                logger.info(f"[MONITOR][POLL] new msg: chat_id={chat_id} msg_id={mid}")
+                                    
                                 if mid > max_id_this_round:
                                     max_id_this_round = mid
 
