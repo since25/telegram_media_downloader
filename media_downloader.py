@@ -1552,30 +1552,124 @@ def main():
 
             # ---- 兜底轮询（可选，防漏推）----
             async def _init_baseline(client: pyrogram.Client):
+                # 读配置：启动回扫窗口（默认 6小时）
+                STARTUP_SCAN_WINDOW_SEC = int(m_cfg.get("startup_scan_window_sec", 21600) or 21600)
+                STARTUP_SCAN_SLEEP_SEC = float(m_cfg.get("startup_scan_sleep_sec", 0.3) or 0.3)
+                STARTUP_SCAN_PAGE_SIZE = int(m_cfg.get("startup_scan_page_size", 100) or 100)
+
                 for chat_id in MONITOR_CHATS:
                     key = str(chat_id)
 
                     logger.info(f"[MONITOR][BASELINE] init for chat={chat_id}")
 
-                    if key in last_seen:
-                        logger.info(f"[MONITOR][BASELINE] already exists: {last_seen[key]}")
-                        continue
+                    # ✅ 无论是否 already exists，都做一次启动回扫（方案B）
+                    await _startup_scan_recent_window(
+                        client=client,
+                        chat_id=chat_id,
+                        key=key,
+                        window_sec=STARTUP_SCAN_WINDOW_SEC,
+                        page_size=STARTUP_SCAN_PAGE_SIZE,
+                        page_sleep=STARTUP_SCAN_SLEEP_SEC,
+                    )
 
-                    try:
-                        # baseline 取最新 1 条（稳）
-                        last = None
-                        async for m in client.get_history(chat_id, limit=1):
-                            last = m
-                            break
-                        if last:
-                            last_seen[key] = int(last.id)
-                            logger.info(
-                                f"[MONITOR][BASELINE] chat={chat_id} last_seen={last_seen[key]}"
-                            )
-                    except Exception as e:
-                        logger.warning(f"[MONITOR][BASELINE] failed: {e}")
+                    # 原来的 baseline 逻辑可以保留（用于没有 state 的第一次运行）
+                    # 但如果你已经在 startup_scan 里更新了 last_seen，其实 baseline 就不重要了
+                    if key not in last_seen:
+                        try:
+                            # baseline 取最新 1 条（稳）
+                            last = None
+                            async for m in client.get_history(chat_id, limit=1):
+                                last = m
+                                break
+                            if last:
+                                last_seen[key] = int(last.id)
+                                logger.info(
+                                    f"[MONITOR][BASELINE] chat={chat_id} last_seen={last_seen[key]}"
+                                )
+                        except Exception as e:
+                            logger.warning(f"[MONITOR][BASELINE] failed: {e}")
+                
                 state_db["last_seen"] = last_seen
                 _save_state(state_db)
+
+            async def _startup_scan_recent_window(client: pyrogram.Client, chat_id: int, key: str, window_sec: int = 300, page_size: int = 100, page_sleep: float = 0.3):
+                """
+                启动时回扫最近 window_sec 秒内的消息：
+                - 从最新往旧扫（reverse=False），遇到 cutoff 就停
+                - 只处理 msg.id > last_seen_start，避免重复通知
+                - 按时间顺序（旧->新）调用 _handle_message，避免乱序触发限流
+                """
+                import time
+                import asyncio
+                from pyrogram.errors import FloodWait
+
+                now_ts = time.time()
+                cutoff_ts = now_ts - window_sec
+
+                last_seen_start = int(last_seen.get(key, 0) or 0)
+
+                logger.info(
+                    f"[MONITOR][STARTUP] scan last {window_sec}s chat={chat_id} "
+                    f"cutoff_ts={int(cutoff_ts)} last_seen_start={last_seen_start}"
+                )
+
+                collected = []
+                newest_seen_id = 0
+
+                # 这里用 reverse=False：消息大概率是 newest -> oldest
+                try:
+                    async for msg in get_chat_history_v2(client, chat_id, limit=0, offset_id=0, reverse=False):
+                        if not msg:
+                            continue
+
+                        mid = int(getattr(msg, "id", 0) or 0)
+                        if mid <= 0:
+                            continue
+
+                        if newest_seen_id == 0:
+                            newest_seen_id = mid  # 第一条就是最新
+
+                        # 有些消息可能没有 date（极少），做个兜底
+                        if not getattr(msg, "date", None):
+                            continue
+                        msg_ts = msg.date.timestamp()
+
+                        # 由于是从新到旧扫，遇到比窗口更老的消息就可以直接停
+                        if msg_ts < cutoff_ts:
+                            break
+
+                        # 避免重复：只处理"比 state 记录更新"的消息
+                        if mid > last_seen_start:
+                            collected.append(msg)
+
+                        # 注意：limit=0 是无限，你必须依靠 cutoff break；
+                        # 如果频道无 date 异常导致 break 不触发，可加个硬上限保护
+                        if len(collected) >= 5000:
+                            logger.warning("[MONITOR][STARTUP] collected too many msgs, stop for safety")
+                            break
+
+                except FloodWait as e:
+                    logger.warning(f"[MONITOR][STARTUP] FloodWait {e.value}s, sleeping...")
+                    await asyncio.sleep(e.value)
+                except Exception as e:
+                    logger.exception(f"[MONITOR][STARTUP] scan failed chat={chat_id}: {e}")
+
+                # collected 现在是 newest->older 的顺序（append 时跟随遍历顺序），
+                # 我们反过来按 old->new 处理，避免乱序触发限流
+                if collected:
+                    logger.info(f"[MONITOR][STARTUP] chat={chat_id} to_handle={len(collected)}")
+                    for msg in reversed(collected):
+                        try:
+                            await _handle_message(msg)
+                        except Exception as e:
+                            logger.exception(f"[MONITOR][STARTUP] handle failed: {e}")
+
+                # 更新 last_seen 到"本次看到的最新消息id"（即使 collected 为空也更新）
+                if newest_seen_id > 0 and newest_seen_id > last_seen_start:
+                    last_seen[key] = newest_seen_id
+                    state_db["last_seen"] = last_seen
+                    _save_state(state_db)
+                    logger.info(f"[MONITOR][STARTUP] updated last_seen={newest_seen_id} chat={chat_id}")
 
             async def fallback_polling_loop(client: pyrogram.Client):
                 await _init_baseline(client)
