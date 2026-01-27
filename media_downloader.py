@@ -1420,7 +1420,8 @@ def main():
         with open(CONFIG_NAME, "r", encoding="utf-8") as f:
             _full_cfg = yaml.safe_load(f) or {}
 
-        m_cfg = (_full_cfg.get("monitor", {}) or {})
+        m_cfg = _full_cfg.get("monitor", {}) or {}
+        logger.debug(f"monitor 配置读取结果: {m_cfg}")
         enabled = bool(m_cfg.get("enabled"))
 
         if enabled:
@@ -1593,11 +1594,11 @@ def main():
                         try:
                             it = get_chat_history_v2(client, chat_id, limit=PER_CHAT_LIMIT, offset_id=offset_id, reverse=True)
                             async for message in it:
-                                logger.debug(
-                                    f"[MONITOR][POLL] scan msg: "
-                                    f"chat_id={chat_id} "
-                                    f"msg_id={getattr(message,'id',None)}"
-                                )
+                                # logger.debug(
+                                #     f"[MONITOR][POLL] scan msg: "
+                                #     f"chat_id={chat_id} "
+                                #     f"msg_id={getattr(message,'id',None)}"
+                                # )
                                 if not message or not getattr(message, "id", None):
                                     continue
                                 mid = int(message.id)
