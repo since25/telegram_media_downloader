@@ -1606,7 +1606,7 @@ def main():
             # ---- 兜底轮询（可选，防漏推）----
             async def _init_baseline(client: pyrogram.Client):
                 # 读配置：启动回扫窗口（默认 6小时）
-                STARTUP_SCAN_WINDOW_SEC = int(m_cfg.get("startup_scan_window_sec", 21600) or 21600)
+                c = int(m_cfg.get("startup_scan_window_sec", 21600) or 21600)
                 STARTUP_SCAN_SLEEP_SEC = float(m_cfg.get("startup_scan_sleep_sec", 0.3) or 0.3)
                 STARTUP_SCAN_PAGE_SIZE = int(m_cfg.get("startup_scan_page_size", 100) or 100)
 

@@ -27,11 +27,13 @@ monitor:
   enabled: true
   webhook_url: "https://discord.com/api/webhooks/你的URL"
   min_interval: 5
+  window_sec: 300  # 监控窗口，默认5分钟
+  startup_scan_window_sec: 21600   # 启动后回扫频道内消息范围6小时，config只支持改大，改小需要修改主程序
+  startup_scan_sleep_sec: 0.3      # 每页之间 sleep，防止触发限流，config只支持改大，改小需要修改主程序
+  startup_scan_page_size: 100      # 每次 GetHistory 拉多少（pyrogram这边最大常见是100），config只支持改大，改小需要修改主程序
   keywords:
-    - "长宁"
-    - "浦东"
-    - "静安"
-    - "松江"
+  - 里番 #示例
   chats:
-    - -1003050259377
-    - -1001234567890
+    #- -1001234567890
+    #- -1009876543210
+   - -1003050259377 #频道编号，可以通过发送给bot/get_info link查询，示例/get_info t.me/channel_name，支持同时监控多个频道

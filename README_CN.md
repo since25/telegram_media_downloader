@@ -30,6 +30,22 @@
 
 * 作为一个一次性的下载工具下载
 
+* 监控模式，实时监控指定聊天中的关键词，触发时发送通知到 Discord
+
+### 监控功能
+
+监控功能可以帮助你实时跟踪 Telegram 聊天中的重要信息，当出现指定关键词时，会自动发送通知到 Discord。
+
+**主要特性：**
+
+* **实时通知**：通过 Telegram 的实时 updates 机制，及时捕获新消息
+* **兜底轮询**：为防止实时 updates 丢失，定期轮询补充
+* **启动回扫**：启动时回扫最近一段时间的消息，确保不会错过重要信息
+* **关键词过滤**：只关注包含指定关键词的消息
+* **频率限制**：避免发送过多通知导致的 rate limit
+* **聚合发送**：启动回扫结果聚合发送，避免消息轰炸
+* **消息链接**：自动生成消息链接，方便快速查看原文
+
 ### 界面
 
 #### 网页
@@ -42,10 +58,47 @@
 
 ### 机器人
 
-> 需要配置bot_token,具体参考[文档](https://github.com/tangyoha/telegram_media_downloader/wiki/%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8%E6%9C%BA%E5%99%A8%E4%BA%BA%E4%B8%8B%E8%BD%BD)
+> 需要配置bot_token,具体参考[文档](https://github.com/since25/telegram_media_downloader/wiki/%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8%E6%9C%BA%E5%99%A8%E4%BA%BA%E4%B8%8B%E8%BD%BD)
 
 
 <img alt="Code style: black" style="width:60%; high:30%; " src="./screenshot/bot.gif"/>
+
+#### 手动添加标签功能
+
+在 bot 交互的批量下载选项中，新增了手动添加标签的功能，允许你为下载的文件添加自定义标签，方便后续管理和分类。
+
+**使用示例：**
+
+1. **批量下载添加标签**：在命令末尾添加标签参数
+   ```
+   /download https://t.me/channel_name 1 100 电影
+   ```
+
+2. **批量下载带过滤器和标签**：先指定过滤器，再添加标签
+   ```
+   /download https://t.me/channel_name 1 100 media_type == "video" 电影
+   ```
+
+3. **评论下载添加标签**：为评论下载添加标签
+   ```
+   /download https://t.me/channel_name/123?comment= 10 20 评论标签
+   ```
+
+4. **多个标签**：可以输入多个标签，用空格分隔
+   ```
+   /download https://t.me/channel_name 1 100 电影 动作 科幻
+   ```
+
+5. **带空格的标签**：标签中可以包含空格
+   ```
+   /download https://t.me/channel_name 1 100 经典电影 科幻大片
+   ```
+
+**标签的作用**：
+- 标签会被添加到下载文件的元数据中
+- 可以在文件路径中包含标签信息（需在配置中设置）
+- 便于后续通过标签搜索和管理下载的文件
+- 单条消息下载时，系统会自动从消息文本或caption中提取标签
 
 ### 支持
 
@@ -53,17 +106,19 @@
 | ------------ | ---------------------------------------- |
 | 语言         | `Python 3.7` 及以上                      |
 | 下载媒体类型 | 音频、文档、照片、视频、video_note、语音 |
+| 监控功能     | 关键词监控、实时通知、启动回扫、兜底轮询 |
+| 标签功能     | 手动添加标签、多标签支持、标签分类管理   |
 
 ### 版本发布计划
 
-* [v2.2.0](https://github.com/tangyoha/telegram_media_downloader/issues/2)
+* [v2.2.0](https://github.com/since25/telegram_media_downloader/issues/2)
 
 ## 安装
 
 对于具有 `make` 可用性的 *nix 操作系统发行版
 
 ```sh
-git clone https://github.com/tangyoha/telegram_media_downloader.git
+git clone https://github.com/since25/telegram_media_downloader.git
 cd telegram_media_downloader
 make install
 ```
@@ -71,7 +126,7 @@ make install
 对于没有内置 `make` 的 Windows
 
 ```sh
-git clone https://github.com/tangyoha/telegram_media_downloader.git
+git clone https://github.com/since25/telegram_media_downloader.git
 cd telegram_media_downloader
 pip3 install -r requirements.txt
 ```
@@ -82,10 +137,12 @@ pip3 install -r requirements.txt
 ```sh
 docker pull tangyoha/telegram_media_downloader:latest
 mkdir -p ~/app && mkdir -p ~/app/log/ && cd ~/app
-wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/blob/master/docker-compose.yaml -O docker-compose.yaml
-wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/blob/master/config.yaml -O config.yaml
-wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/blob/master/data.yaml -O data.yaml
-# vi config.yaml and docker-compose.yaml
+wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/docker-compose.yaml -O docker-compose.yaml
+wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/config.example.yaml -O config.example.yaml
+wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/data.yaml -O data.yaml
+# 复制配置文件示例为实际配置文件
+cp config.example.yaml config.yaml
+# 编辑配置文件
 vi config.yaml
 
 # 第一次需要前台启动
@@ -106,10 +163,13 @@ docker-compose up -d
 
 ```sh
 cd telegram_media_downloader
+git pull
 pip3 install -r requirements.txt
 ```
 
 ## 配置
+
+> 项目提供了 `config.example.yaml` 作为配置文件模板，使用前请复制为 `config.yaml` 并根据实际情况修改。
 
 所有配置都通过 config.yaml 文件传递​​给 `Telegram Media Downloader`。
 
@@ -141,6 +201,8 @@ pip3 install -r requirements.txt
     - 任何电报机器人的 ID
 
 ### 配置文件
+
+> 项目提供了 `config.example.yaml` 作为配置文件模板，使用前请复制为 `config.yaml` 并根据实际情况修改。
 
 ```yaml
 api_hash: your_api_hash
@@ -191,6 +253,25 @@ allowed_user_ids:
 - 'me'
 date_format: '%Y_%m'
 enable_download_txt: false
+
+# 监控功能配置
+monitor:
+  enabled: true  # 启用监控功能
+  chats:  # 要监控的聊天ID列表
+  - -1001234567890
+  - -1009876543210
+  keywords:  # 要监控的关键词列表
+  - 关键词1
+  - 关键词2
+  webhook_url: https://discord.com/api/webhooks/your-webhook-url  # Discord webhook URL
+  min_interval: 5  # 消息发送最小间隔（秒）
+  enable_fallback_poll: true  # 启用兜底轮询
+  poll_interval_sec: 300  # 轮询间隔（秒）
+  window_sec: 300  # 轮询时间窗口（秒）
+  per_chat_limit: 80  # 每轮每聊天最多处理消息数
+  startup_scan_window_sec: 21600  # 启动回扫窗口（秒，默认6小时）
+  startup_scan_sleep_sec: 0.3  # 启动回扫休眠时间（秒）
+  startup_scan_page_size: 100  # 启动回扫页面大小
 ```
 
 - **api_hash** - 你从电报应用程序获得的 api_hash
@@ -233,6 +314,21 @@ enable_download_txt: false
 - **allowed_user_ids** - 允许哪些人使用机器人，默认登录账号可以使用，带@的名称请加单引号
 - **date_format** - 支持自定义配置file_path_prefix中media_datetime的格式，具体格式查看 [python-datetime](https://docs.python.org/zh-cn/3/library/time.html)
 - **enable_download_txt** 启用下载txt文件，默认`false`
+
+#### 监控功能配置参数
+- **monitor** - 监控功能配置
+  - `enabled` - 是否启用监控功能，默认为`false`
+  - `chats` - 要监控的聊天ID列表
+  - `keywords` - 要监控的关键词列表
+  - `webhook_url` - Discord webhook URL，用于发送通知
+  - `min_interval` - 消息发送最小间隔（秒），默认为5
+  - `enable_fallback_poll` - 是否启用兜底轮询，默认为`true`
+  - `poll_interval_sec` - 轮询间隔（秒），默认为300
+  - `window_sec` - 轮询时间窗口（秒），默认为300
+  - `per_chat_limit` - 每轮每聊天最多处理消息数，默认为80
+  - `startup_scan_window_sec` - 启动回扫窗口（秒），默认为21600（6小时）
+  - `startup_scan_sleep_sec` - 启动回扫休眠时间（秒），默认为0.3
+  - `startup_scan_page_size` - 启动回扫页面大小，默认为100
 
 ## 执行
 
