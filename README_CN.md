@@ -120,7 +120,11 @@
 ```sh
 git clone https://github.com/since25/telegram_media_downloader.git
 cd telegram_media_downloader
+cp config.example.yaml config.yaml #按照实际情况修改你的配置文件，具体参考后续文档
+python3 -m venv venv #python or python3
+source venv/bin/activate
 make install
+#第一次运行需要前台启动，输入你的电话号码和密码，然后退出(ctrl + c)，配置systemctl服务以后后台运行持续监控
 ```
 
 对于没有内置 `make` 的 Windows
