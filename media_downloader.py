@@ -15,6 +15,7 @@ if __name__ == "__main__":
     sys.modules["media_downloader"] = sys.modules[__name__]
 import pyrogram
 from loguru import logger
+from pyrogram.client import Client as PyrogramClient
 from pyrogram.types import Audio, Document, Photo, Video, VideoNote, Voice
 from rich.logging import RichHandler
 
@@ -42,12 +43,13 @@ from utils.format import truncate_filename, validate_title
 from utils.log import LogFilter
 from utils.meta import print_meta
 from utils.meta_data import MetaData
+from utils.updates import check_for_updates
 # ---- stall watchdog state ----
 DOWNLOAD_LAST_PROGRESS_TS: dict[int, float] = {}
 DOWNLOAD_LAST_PROGRESS_BYTES: dict[int, int] = {}
 
 # ---- performance monitoring ----
-PERFORMANCE_STATS = {
+PERFORMANCE_STATS: dict[str, float] = {
     "total_download_time": 0,  # 总下载时间
     "total_queue_time": 0,     # 总队列等待时间
     "total_network_time": 0,   # 总网络请求时间
@@ -62,10 +64,10 @@ PERFORMANCE_STATS = {
 }
 
 # 用于跟踪单个任务的开始时间
-TASK_START_TIMES: dict[tuple[int, int], float] = {}  # (chat_id, message_id) -> start_time
+TASK_START_TIMES: dict[tuple[Union[int, str], int], float] = {}  # (chat_id, message_id) -> start_time
 
 # 用于跟踪队列等待时间
-QUEUE_ENTRY_TIMES: dict[tuple[int, int], float] = {}  # (chat_id, message_id) -> queue_entry_time
+QUEUE_ENTRY_TIMES: dict[tuple[Union[int, str], int], float] = {}  # (chat_id, message_id) -> queue_entry_time
 
 logging.basicConfig(
     level=logging.INFO,
@@ -269,14 +271,16 @@ async def _get_media_meta(
                     media_obj.file_id, getattr(media_obj, "mime_type", "")
                 )
 
+        media_group_id = (
+            str(message.media_group_id) if message.media_group_id is not None else None
+        )
+
         if caption:
             caption = validate_title(caption)
-            app.set_caption_name(chat_id, message.media_group_id, caption)
-            app.set_caption_entities(
-                chat_id, message.media_group_id, message.caption_entities
-            )
+            app.set_caption_name(chat_id, media_group_id, caption)
+            app.set_caption_entities(chat_id, media_group_id, message.caption_entities)
         else:
-            caption = app.get_caption_name(chat_id, message.media_group_id)
+            caption = app.get_caption_name(chat_id, media_group_id)
 
         if not file_name and message.photo:
             file_name = f"{message.photo.file_unique_id}"
@@ -310,18 +314,6 @@ async def _get_media_meta(
                 gen_file_name = prefix + tag + " - " + gen_file_name[len(prefix):]
             else:
                 gen_file_name = f"{message.id} - {tag} - {gen_file_name}"
-
-        if caption:
-            safe_caption = validate_title(caption)
-            max_cap_len = 60
-            if len(safe_caption) > max_cap_len:
-                safe_caption = safe_caption[:max_cap_len]
-
-            prefix = f"{message.id} - "
-            if gen_file_name.startswith(prefix):
-                gen_file_name = prefix + safe_caption + " - " + gen_file_name[len(prefix):]
-            else:
-                gen_file_name = f"{message.id} - {safe_caption} - {gen_file_name}"
 
         file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
 
@@ -398,7 +390,7 @@ async def add_download_task(
         # 如果你 TaskNode 里确实有 bot_client / client，这里可按实际字段调整
         if hasattr(node, "bot_client"):
             bot_client = getattr(node, "bot_client", None)
-        elif hasattr(node, "bot") and isinstance(getattr(node, "bot", None), pyrogram.Client):
+        elif hasattr(node, "bot") and isinstance(getattr(node, "bot", None), PyrogramClient):
             bot_client = node.bot
 
         if bot_client:
@@ -450,7 +442,7 @@ async def save_msg_to_file(
 
 
 async def download_task(
-    client: pyrogram.Client, message: pyrogram.types.Message, node: TaskNode
+    client: PyrogramClient, message: pyrogram.types.Message, node: TaskNode
 ):
     """Download and Forward media"""
     # 初始化变量，确保在任何情况下都有定义
@@ -657,7 +649,7 @@ async def _stall_watchdog(message_id: int, timeout_s: int, target_task: asyncio.
 @record_download_status
 
 async def download_media(
-    client: pyrogram.client.Client,
+    client: PyrogramClient,
     message: pyrogram.types.Message,
     media_types: List[str],
     file_formats: dict,
@@ -671,7 +663,7 @@ async def download_media(
 
     Parameters
     ----------
-    client: pyrogram.client.Client
+    client: PyrogramClient
         Client to interact with Telegram APIs.
     message: pyrogram.types.Message
         Message object retrieved from telegram.
@@ -777,10 +769,10 @@ async def download_media(
 
     logger.info(f"Message[{message_id}] {ui_file_name}")
     
-    # 增强的重试策略配置
-    MAX_RETRIES = 5  # 增加最大重试次数到5次
-    INITIAL_RETRY_DELAY = 1  # 初始重试延迟
-    MAX_RETRY_DELAY = 30  # 最大重试延迟
+    # 重试策略配置
+    MAX_RETRIES = 3
+    INITIAL_RETRY_DELAY = 1
+    MAX_RETRY_DELAY = 30
     
     for retry in range(MAX_RETRIES):
         download_task = None
@@ -871,37 +863,28 @@ async def download_media(
             # 对于stall错误，缩短重试延迟
             await asyncio.sleep(1)
 
-        except pyrogram.errors.BadRequest as bad_err:
-            # file reference expired / 或者别的 400
-            logger.warning(
-                f"Message[{message_id}]: BadRequest ({bad_err.error_code}): {bad_err.MESSAGE} - refetching... ({retry + 1}/{MAX_RETRIES})"
-            )
+        except pyrogram.errors.BadRequest:
+            # file reference expired
+            if _check_timeout(retry, message_id):
+                logger.error(
+                    f"Message[{message_id}]: file reference expired for 3 retries, download skipped."
+                )
+                return DownloadStatus.FailedDownload, None
+
+            logger.warning(f"Message[{message_id}]: file reference expired, refetching...")
             await asyncio.sleep(RETRY_TIME_OUT)
             message = await fetch_message(client, message)
 
         except pyrogram.errors.FloodWait as wait_err:
-            # FloodWait 必须等够时间，并且不计入重试次数
-            logger.warning(f"Message[{message_id}]: FloodWait {wait_err.value}s - pausing download...")
-            await asyncio.sleep(wait_err.value)
-            # 重置重试次数，因为这不是我们的错误
-            retry = -1  # 因为循环会+1，所以设置为-1
-
-        except pyrogram.errors.ServerError:
-            # Telegram服务器错误，需要更长时间重试
-            logger.warning(
-                f"Message[{message_id}]: Telegram Server Error - retrying after {INITIAL_RETRY_DELAY * 2}s... ({retry + 1}/{MAX_RETRIES})"
-            )
-            await asyncio.sleep(INITIAL_RETRY_DELAY * 2)
-
-        except pyrogram.errors.ConnectionError:
-            # 网络连接错误，需要更长时间重试
-            logger.warning(
-                f"Message[{message_id}]: Connection Error - retrying after {INITIAL_RETRY_DELAY * 3}s... ({retry + 1}/{MAX_RETRIES})"
-            )
-            await asyncio.sleep(INITIAL_RETRY_DELAY * 3)
+            logger.warning("Message[{}]: FlowWait {}", message_id, wait_err.value)
+            return DownloadStatus.FailedDownload, None
 
         except TypeError:
-            # 旧逻辑保留：pyrogram 内部某些情况下会抛 TypeError 当 timeout
+            # Timeout
+            if _check_timeout(retry, message_id):
+                logger.error(f"Message[{message_id}]: Timing out after 3 reties, download skipped.")
+                return DownloadStatus.FailedDownload, None
+
             logger.warning(
                 f"{_t('Timeout Error occurred when downloading Message')}[{message_id}], "
                 f"{_t('retrying after')} {RETRY_TIME_OUT} {_t('seconds')} ({retry + 1}/{MAX_RETRIES})"
@@ -914,11 +897,27 @@ async def download_media(
             await asyncio.sleep(1)
 
         except Exception as e:
+            server_error_cls = getattr(pyrogram.errors, "ServerError", None)
+            connection_error_cls = getattr(pyrogram.errors, "ConnectionError", None)
+
+            if server_error_cls and isinstance(e, server_error_cls):
+                logger.warning(
+                    f"Message[{message_id}]: Telegram Server Error - retrying after {INITIAL_RETRY_DELAY * 2}s... ({retry + 1}/{MAX_RETRIES})"
+                )
+                await asyncio.sleep(INITIAL_RETRY_DELAY * 2)
+                continue
+
+            if connection_error_cls and isinstance(e, connection_error_cls):
+                logger.warning(
+                    f"Message[{message_id}]: Connection Error - retrying after {INITIAL_RETRY_DELAY * 3}s... ({retry + 1}/{MAX_RETRIES})"
+                )
+                await asyncio.sleep(INITIAL_RETRY_DELAY * 3)
+                continue
+
             logger.error(
                 f"Message[{message_id}]: {_t('could not be downloaded due to following exception')}: [{e}].",
                 exc_info=True,
             )
-            # 对于未知错误，使用指数退避延迟
             retry_delay = min(INITIAL_RETRY_DELAY * (2 ** retry), MAX_RETRY_DELAY)
             await asyncio.sleep(retry_delay)
 
@@ -940,7 +939,7 @@ async def download_media(
     if node.chat_id in download_result and message_id in download_result[node.chat_id]:
         del download_result[node.chat_id][message_id]
     
-    logger.warning(f"Message[{message_id}] ({ui_file_name}): All {retry + 1} retries failed.")
+    logger.error(f"Message[{message_id}] ({ui_file_name}): All {retry + 1} retries failed.")
 
     return DownloadStatus.FailedDownload, None
 
@@ -1037,7 +1036,7 @@ async def periodic_progress_refresh():
         await asyncio.sleep(30)
 
 
-async def worker(client: pyrogram.client.Client):
+async def worker(client: PyrogramClient):
     """Work for download task"""
     logger.info("worker: 工作线程已启动")
     logger.info(f"worker start queue_id={id(queue)}")
@@ -1104,7 +1103,7 @@ async def worker(client: pyrogram.client.Client):
             del item
 
 async def download_comments(
-    client: pyrogram.Client,
+    client: PyrogramClient,
     chat_id: int,
     base_message_id: int,
     start_comment_id: int,
@@ -1294,7 +1293,7 @@ async def download_comments(
 
 
 async def download_chat_task(
-    client: pyrogram.Client,
+    client: PyrogramClient,
     chat_download_config: ChatDownloadConfig,
     node: TaskNode,
 ):
@@ -1323,14 +1322,15 @@ async def download_chat_task(
         meta_data = MetaData()
 
         caption = message.caption
+        media_group_id = (
+            str(message.media_group_id) if message.media_group_id is not None else None
+        )
         if caption:
             caption = validate_title(caption)
-            app.set_caption_name(node.chat_id, message.media_group_id, caption)
-            app.set_caption_entities(
-                node.chat_id, message.media_group_id, message.caption_entities
-            )
+            app.set_caption_name(node.chat_id, media_group_id, caption)
+            app.set_caption_entities(node.chat_id, media_group_id, message.caption_entities)
         else:
-            caption = app.get_caption_name(node.chat_id, message.media_group_id)
+            caption = app.get_caption_name(node.chat_id, media_group_id)
         set_meta_data(meta_data, message, caption)
 
         if app.need_skip_message(chat_download_config, message.id):
@@ -1355,7 +1355,7 @@ async def download_chat_task(
     node.is_running = True
 
 
-async def download_all_chat(client: pyrogram.Client):
+async def download_all_chat(client: PyrogramClient):
     """Download All chat"""
     for key, value in app.chat_download_config.items():
         value.node = TaskNode(chat_id=key)
@@ -1387,14 +1387,14 @@ def _exec_loop():
     app.loop.run_until_complete(run_until_all_task_finish())
 
 
-async def start_server(client: pyrogram.Client):
+async def start_server(client: PyrogramClient):
     """
     Start the server using the provided client.
     """
     await client.start()
 
 
-async def stop_server(client: pyrogram.Client):
+async def stop_server(client: PyrogramClient):
     """
     Stop the server using the provided client.
     """
@@ -1604,7 +1604,7 @@ def main():
                 await _handle_message(message)
 
             # ---- 兜底轮询（可选，防漏推）----
-            async def _init_baseline(client: pyrogram.Client):
+            async def _init_baseline(client: PyrogramClient):
                 # 读配置：启动回扫窗口（默认 6小时）
                 c = int(m_cfg.get("startup_scan_window_sec", 21600) or 21600)
                 STARTUP_SCAN_SLEEP_SEC = float(m_cfg.get("startup_scan_sleep_sec", 0.3) or 0.3)
@@ -1645,7 +1645,7 @@ def main():
                 state_db["last_seen"] = last_seen
                 _save_state(state_db)
 
-            async def _startup_scan_recent_window(client: pyrogram.Client, chat_id: int, key: str, window_sec: int = 300, page_size: int = 100, page_sleep: float = 0.3):
+            async def _startup_scan_recent_window(client: PyrogramClient, chat_id: int, key: str, window_sec: int = 300, page_size: int = 100, page_sleep: float = 0.3):
                 """
                 启动时回扫最近 window_sec 秒内的消息：
                 - 从最新往旧扫（reverse=False），遇到 cutoff 就停
@@ -1742,7 +1742,7 @@ def main():
                 # 聚合发送启动回扫结果
                 await _send_startup_digest(int(chat_id), hits, window_sec, max_lines=15)
 
-            async def fallback_polling_loop(client: pyrogram.Client):
+            async def fallback_polling_loop(client: PyrogramClient):
                 await _init_baseline(client)
 
                 while app.is_running:
@@ -1835,15 +1835,18 @@ def main():
         app.loop.run_until_complete(start_server(client))
         # 启动兜底轮询（版本B可选）
         if monitor_tasks and monitor_tasks.get("fallback_loop"):
-            app.loop.create_task(monitor_tasks["fallback_loop"](client))
+            fallback_task = app.loop.create_task(monitor_tasks["fallback_loop"](client))
+            tasks.append(fallback_task)
 
         logger.success(_t("Successfully started (Press Ctrl+C to stop)"))
 
-        app.loop.create_task(download_all_chat(client))
+        download_task = app.loop.create_task(download_all_chat(client))
+        tasks.append(download_task)
         
         # 你的原有任务
         if "periodic_progress_refresh" in globals():
-            app.loop.create_task(periodic_progress_refresh())
+            refresh_task = app.loop.create_task(periodic_progress_refresh())
+            tasks.append(refresh_task)
             logger.info("Created periodic progress refresh task (interval: 20 seconds)")
         
         logger.info(f"Creating {app.max_download_task} download workers")

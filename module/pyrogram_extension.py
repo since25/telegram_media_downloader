@@ -14,7 +14,7 @@ from typing import Callable, Iterable, List, Optional, Union
 import pyrogram
 from loguru import logger
 from pyrogram import types
-from pyrogram.client import Cache
+from pyrogram.client import Cache, Client as PyrogramClient
 from pyrogram.file_id import (
     FILE_REFERENCE_FLAG,
     PHOTO_TYPES,
@@ -1092,7 +1092,7 @@ async def _send_finish_summary(client: pyrogram.Client, node: "TaskNode"):
 
 
 def set_max_concurrent_transmissions(
-    client: pyrogram.Client, max_concurrent_transmissions: int
+    client: PyrogramClient, max_concurrent_transmissions: int
 ):
     """Set maximum concurrent transmissions"""
     if getattr(client, "max_concurrent_transmissions", None):
@@ -1105,7 +1105,9 @@ def set_max_concurrent_transmissions(
         )
 
 
-async def fetch_message(client: pyrogram.Client, message: pyrogram.types.Message):
+async def fetch_message(
+    client: PyrogramClient, message: pyrogram.types.Message
+) -> Optional[pyrogram.types.Message]:
     """
     This function retrieves a message from a specified chat using the Pyrogram library.
      Args:
@@ -1116,10 +1118,13 @@ async def fetch_message(client: pyrogram.Client, message: pyrogram.types.Message
     """
     # 对于评论消息，message.chat.id已经是正确的讨论组ID
     # 直接使用message对象的chat.id和id即可
-    return await client.get_messages(
+    result = await client.get_messages(
         chat_id=message.chat.id,
         message_ids=message.id,
     )
+    if isinstance(result, list):
+        return result[0] if result else None
+    return result
 
 
 async def retry(func: Callable, args: tuple = (), max_attempts=3, wait_second=15):

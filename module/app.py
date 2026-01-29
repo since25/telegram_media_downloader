@@ -208,7 +208,13 @@ class TaskNode:
         """Stop task"""
         self.is_stop_transmission = True
 
-    def stat(self, status: DownloadStatus, chat_id: Union[int, str] = None, message_id: int = None, file_name: str = None):
+    def stat(
+        self,
+        status: DownloadStatus,
+        chat_id: Union[int, str] = None,
+        message_id: int = None,
+        file_name: Optional[str] = None,
+    ):
         """
         Updates the download status of the task.
 

@@ -233,8 +233,6 @@ def extract_info_from_link(link: str) -> Link:
 
     if "comment" in query:
         result.group_id = paths[0]
-        if len(paths) >= 2:
-            result.post_id = int(paths[1])
         # 处理空的comment参数，比如?comment=
         comment_value = query["comment"][0] if query["comment"] else None
         if comment_value and comment_value.strip():
