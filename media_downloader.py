@@ -301,19 +301,35 @@ async def _get_media_meta(
             app.get_file_name(message.id, file_name, caption) + file_name_suffix
         )
 
-        # 如果有标签，添加到文件名前面
+        # 自动从 caption 提取标签（如果 node.file_name_tag 为空）
+        # 如果有手动指定的统一标签，则同时保留 caption 标签和手动标签
+        auto_caption_tag = None
+        if caption:
+            auto_caption_tag = validate_title(caption[:30]) if len(caption) > 30 else validate_title(caption)
+        
+        manual_tag = None
         if node and hasattr(node, 'file_name_tag') and node.file_name_tag:
-            tag = validate_title(node.file_name_tag)
-            # 限制标签长度
-            max_tag_len = 30
-            if len(tag) > max_tag_len:
-                tag = tag[:max_tag_len]
-            # 在文件名前面添加标签
+            manual_tag = validate_title(node.file_name_tag)
+            if len(manual_tag) > 30:
+                manual_tag = manual_tag[:30]
+        
+        # 组合标签：优先 caption，如果有手动标签则追加
+        combined_tag = None
+        if auto_caption_tag and manual_tag:
+            # 两者都有：caption + 手动标签
+            combined_tag = f"{auto_caption_tag} - {manual_tag}"
+        elif auto_caption_tag:
+            combined_tag = auto_caption_tag
+        elif manual_tag:
+            combined_tag = manual_tag
+        
+        # 如果有标签，添加到文件名前面
+        if combined_tag:
             prefix = f"{message.id} - "
             if gen_file_name.startswith(prefix):
-                gen_file_name = prefix + tag + " - " + gen_file_name[len(prefix):]
+                gen_file_name = prefix + combined_tag + " - " + gen_file_name[len(prefix):]
             else:
-                gen_file_name = f"{message.id} - {tag} - {gen_file_name}"
+                gen_file_name = f"{message.id} - {combined_tag} - {gen_file_name}"
 
         file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
 

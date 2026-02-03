@@ -1085,7 +1085,18 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
         
         start_offset_id = int(args[2])
         end_offset_id = int(args[3])
-        download_filter = args[4] if len(args) > 4 else None
+        download_filter = None
+        batch_file_name_tag = None
+        # args[4] 可能是 filter 或者 标签
+        if len(args) > 4:
+            # 如果 args[4] 不包含常见的 filter 关键字，视为标签
+            if any(kw in args[4].lower() for kw in ['video', 'audio', 'photo', 'document', 'size', 'date', '>', '<', '=']):
+                download_filter = args[4]
+                # args[5] 是标签
+                if len(args) > 5:
+                    batch_file_name_tag = args[5]
+            else:
+                batch_file_name_tag = args[4]
     except Exception:
         await client.send_message(
             message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
@@ -1136,6 +1147,10 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                 bot=_bot.bot,
                 task_id=_bot.gen_task_id(),
             )
+            # 设置批量下载的统一标签（如果有）
+            if batch_file_name_tag:
+                node.file_name_tag = batch_file_name_tag
+                logger.info(f"设置批量下载统一标签: {batch_file_name_tag}")
             _bot.add_task_node(node)
             add_active_task_node(node)
             _bot.app.loop.create_task(
