@@ -83,7 +83,7 @@ app = Application(CONFIG_NAME, DATA_FILE_NAME, APPLICATION_NAME)
 
 queue: asyncio.Queue = asyncio.Queue()
 RETRY_TIME_OUT = 3
-STALL_TIMEOUT = 600  # 10分钟无进度就判定卡死
+STALL_TIMEOUT = 300  # 5分钟无进度就判定卡死
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
 logging.getLogger("pyrogram.client").addFilter(LogFilter())
 

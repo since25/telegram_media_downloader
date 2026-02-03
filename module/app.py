@@ -422,7 +422,7 @@ class Application:
         self.max_concurrent_transmissions: int = 10  # 增加默认并发传输数
         self.web_host: str = "0.0.0.0"
         self.web_port: int = 5000
-        self.max_download_task: int = 8  # 增加默认最大下载任务数
+        self.max_download_task: int = 4  # 默认4个worker，避免TG限流
         self.language = Language.EN
         self.after_upload_telegram_delete: bool = True
         self.web_login_secret: str = ""
