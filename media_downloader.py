@@ -1844,7 +1844,7 @@ def main():
 
     try:
         app.pre_run()
-        init_web(app)
+        # init_web(app)  # 禁用Web UI（端口5000），避免外部扫描
 
         set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)
 
