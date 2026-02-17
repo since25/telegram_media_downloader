@@ -939,23 +939,43 @@ async def _report_bot_status(
                 f"☁️ {_t('Upload Success')}: {node.upload_success_count}\n"
             )
 
-        # 简化活跃任务显示，只显示数量
+        # 显示活跃下载任务的详细进度
         download_result = get_download_result()
-        active_downloads_count = 0
+        active_downloads = []
         if node.chat_id in download_result:
             messages = download_result[node.chat_id]
             for idx, value in messages.items():
                 if value["task_id"] == node.task_id and value["down_byte"] < value["total_size"]:
-                    active_downloads_count += 1
+                    active_downloads.append(value)
         
         active_uploads_count = 0
         for idx, value in node.upload_stat_dict.items():
             if value.total_size > value.upload_size:
                 active_uploads_count += 1
         
-        # 只显示活跃任务数量，不显示详细列表
-        if active_downloads_count > 0:
-            new_msg_str += f"📥 {_t('Active Downloads')}: {active_downloads_count}\n"
+        if active_downloads:
+            new_msg_str += f"📥 {_t('Active Downloads')}: {len(active_downloads)}\n"
+            # 最多显示5个任务的详情，避免消息过长
+            max_display = 5
+            for i, dl in enumerate(active_downloads[:max_display]):
+                total = dl["total_size"]
+                down = dl["down_byte"]
+                speed = dl.get("download_speed", 0)
+                fname = dl.get("file_name", "unknown")
+                # 截断文件名，只取basename并限制长度
+                fname = os.path.basename(fname) if fname else "unknown"
+                if len(fname) > 20:
+                    name_part, ext = os.path.splitext(fname)
+                    fname = name_part[:16] + ".." + ext
+                # 计算进度百分比
+                pct = (down / total * 100) if total > 0 else 0
+                # 格式化速度
+                speed_str = format_byte(speed, 1) + "/s" if speed > 0 else "⏳"
+                # 树形符号
+                prefix = " └" if (i == len(active_downloads[:max_display]) - 1 and len(active_downloads) <= max_display) else " ├"
+                new_msg_str += f"{prefix} 📄 {fname}  {pct:.0f}% ⚡{speed_str}\n"
+            if len(active_downloads) > max_display:
+                new_msg_str += f" └ ... +{len(active_downloads) - max_display} more\n"
         if active_uploads_count > 0:
             new_msg_str += f"📤 {_t('Active Uploads')}: {active_uploads_count}\n"
         
