@@ -347,6 +347,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
             start_message_id=126711,
             package_title=package_plan.package_title,
         )
+        package_plan.scan_warning = "未发现下一包边界，已达到扫描上限 2 条。"
         preview_text = format_package_preview_message(
             channel="私密频道",
             start_message_id=126711,
@@ -359,9 +360,20 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("识别到连续资源包", preview_text)
         self.assertIn("范围：126711 - 126712", preview_text)
         self.assertIn("预计大小：809.0MB", preview_text)
+        self.assertIn("最大文件：126711 video 421.0MB", preview_text)
+        self.assertIn("大小示例：", preview_text)
+        self.assertIn("- 126711 video 421.0MB", preview_text)
         self.assertIn("继承 caption：1 个", preview_text)
+        self.assertIn("rclone上传：开启", preview_text)
+        self.assertIn("上传后删除本地：开启", preview_text)
+        self.assertIn("提示：未发现下一包边界，已达到扫描上限 2 条。", preview_text)
         self.assertIn("下一包起点预览：", preview_text)
         self.assertIn("126713 - 某某课程 第02章", preview_text)
+        self.assertIn("不会纳入本次下载。", preview_text)
+        self.assertIn("推荐C：频道/起始ID-标题/消息ID - 原文件名", preview_text)
+        self.assertIn("A：标题/消息ID - 作者 - 原文件名", preview_text)
+        self.assertIn("B：标题/消息ID - caption摘要 - 原文件名", preview_text)
+        self.assertIn("D：频道/年月/标题/消息ID - caption摘要", preview_text)
         self.assertIn(
             "私密频道/126711-某某课程 第01章/126711 - 001_bad_.mp4",
             preview_text,
