@@ -286,6 +286,14 @@ def plan_message_package(
             current_caption = raw_caption
             if package_title is None:
                 package_title = raw_caption
+                for item in items:
+                    if item.original_caption is not None:
+                        continue
+                    if item.caption_for_naming != f"message-{item.message.id}":
+                        continue
+                    item.caption_for_naming = raw_caption
+                    item.inherited_caption = True
+                    inherited_caption_count += 1
         elif effective_caption and current_caption is None:
             current_caption = effective_caption
             if package_title is None:
