@@ -137,7 +137,19 @@ class FormatTestCase(unittest.TestCase):
             ("self", Link(group_id="self")),
             (
                 "https://t.me/opencfdchannel/4434?comment=360409",
-                Link(group_id="opencfdchannel", comment_id=360409),
+                Link(group_id="opencfdchannel", post_id=4434, comment_id=360409),
+            ),
+            (
+                "https://t.me/zhyseseb/422?comment=4978",
+                Link(group_id="zhyseseb", post_id=422, comment_id=4978),
+            ),
+            (
+                "https://t.me/zhyseseb/422?comment=",
+                Link(group_id="zhyseseb", post_id=422),
+            ),
+            (
+                "https://t.me/c/123456/422?comment=4978",
+                Link(group_id=-100123456, post_id=422, comment_id=4978),
             ),
             ("https://t.me/telegram/193", Link(group_id="telegram", post_id=193)),
             (

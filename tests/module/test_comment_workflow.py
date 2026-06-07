@@ -7,8 +7,6 @@ from unittest.mock import patch
 
 from tests.test_common import MockDocument, MockMessage, MockPhoto, MockUser, MockVideo
 
-from utils.format import Link
-
 from module.comment_workflow import (
     COMMENT_WORKFLOW_PREFIX,
     NamingStrategy,
@@ -24,13 +22,9 @@ from module.comment_workflow import (
 
 class CommentWorkflowTestCase(unittest.TestCase):
     def test_build_comment_workflow_request_from_comment_link(self):
-        with patch(
-            "module.comment_workflow.extract_info_from_link",
-            return_value=Link(group_id="zhyseseb", post_id=422, comment_id=4978),
-        ):
-            request = build_comment_workflow_request(
-                "https://t.me/zhyseseb/422?comment=4978"
-            )
+        request = build_comment_workflow_request(
+            "https://t.me/zhyseseb/422?comment=4978"
+        )
 
         self.assertEqual(request.source_chat, "zhyseseb")
         self.assertEqual(request.post_id, 422)
@@ -42,8 +36,18 @@ class CommentWorkflowTestCase(unittest.TestCase):
         )
 
     def test_build_comment_workflow_request_does_not_reconstruct_post_id(self):
+        with patch("module.comment_workflow.extract_info_from_link") as parser:
+            parser.return_value.group_id = "zhyseseb"
+            parser.return_value.post_id = None
+            parser.return_value.comment_id = 4978
+
+            self.assertIsNone(
+                build_comment_workflow_request("https://t.me/zhyseseb/422?comment=4978")
+            )
+
+    def test_build_comment_workflow_request_rejects_empty_comment_id(self):
         self.assertIsNone(
-            build_comment_workflow_request("https://t.me/zhyseseb/422?comment=4978")
+            build_comment_workflow_request("https://t.me/zhyseseb/422?comment=")
         )
 
     def test_filter_media_comments_skips_text_and_empty_messages(self):

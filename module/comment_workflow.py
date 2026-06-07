@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
 
 from utils.format import extract_info_from_link, validate_title
 
@@ -18,6 +18,14 @@ SUPPORTED_MEDIA_TYPES = {
     "voice",
     "video_note",
 }
+
+
+class CommentLike(Protocol):
+    """Minimal message shape expected by the pure workflow helpers."""
+
+    id: int
+    media: Any
+    empty: bool
 
 
 class NamingStrategy(Enum):
@@ -91,7 +99,7 @@ def build_comment_workflow_request(text: str) -> Optional[CommentWorkflowRequest
     )
 
 
-def is_media_comment(comment) -> bool:
+def is_media_comment(comment: Optional[CommentLike]) -> bool:
     """Return True when a comment contains a supported media payload."""
 
     if not comment or getattr(comment, "empty", False):
@@ -104,13 +112,13 @@ def is_media_comment(comment) -> bool:
     )
 
 
-def filter_media_comments(comments: Iterable) -> List:
+def filter_media_comments(comments: Iterable[CommentLike]) -> List[CommentLike]:
     """Keep only supported media comments."""
 
     return [comment for comment in comments if is_media_comment(comment)]
 
 
-def summarize_comments(comments: Sequence) -> CommentScanSummary:
+def summarize_comments(comments: Sequence[CommentLike]) -> CommentScanSummary:
     """Build a scan summary for user confirmation."""
 
     comment_list = [
@@ -172,7 +180,7 @@ def clean_segment(value: Optional[str], fallback: str, max_len: int = 40) -> str
     return text[:max_len]
 
 
-def _media_name(comment) -> str:
+def _media_name(comment: CommentLike) -> str:
     media = getattr(comment, "media", None)
     return getattr(media, "value", media)
 
