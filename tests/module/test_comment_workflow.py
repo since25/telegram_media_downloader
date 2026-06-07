@@ -96,6 +96,24 @@ class CommentWorkflowTestCase(unittest.TestCase):
             )
         )
 
+    def test_build_message_package_workflow_request_rejects_empty_comment_query(self):
+        from module.comment_workflow import build_message_package_workflow_request
+
+        self.assertIsNone(
+            build_message_package_workflow_request(
+                "https://t.me/zhyseseb/422?comment="
+            )
+        )
+
+    def test_build_message_package_workflow_request_rejects_empty_comment_query_for_private_link(self):
+        from module.comment_workflow import build_message_package_workflow_request
+
+        self.assertIsNone(
+            build_message_package_workflow_request(
+                "https://t.me/c/1298283297/126711?comment="
+            )
+        )
+
     def test_build_message_package_workflow_request_accepts_comment_substring_in_path(self):
         from module.comment_workflow import build_message_package_workflow_request
 
@@ -105,6 +123,24 @@ class CommentWorkflowTestCase(unittest.TestCase):
 
         self.assertEqual(request.source_chat, "commentaryhub")
         self.assertEqual(request.start_message_id, 422)
+
+    def test_build_message_package_workflow_request_rejects_malformed_private_group_id(self):
+        from module.comment_workflow import build_message_package_workflow_request
+
+        self.assertIsNone(
+            build_message_package_workflow_request(
+                "https://t.me/c/notanint/126711"
+            )
+        )
+
+    def test_build_message_package_workflow_request_rejects_malformed_private_message_id(self):
+        from module.comment_workflow import build_message_package_workflow_request
+
+        self.assertIsNone(
+            build_message_package_workflow_request(
+                "https://t.me/c/1298283297/notanint"
+            )
+        )
 
     def test_build_size_summary_counts_known_unknown_and_largest(self):
         from module.comment_workflow import build_size_summary, format_size_summary

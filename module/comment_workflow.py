@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
+from urllib.parse import parse_qs, urlparse
 
 from utils.format import extract_info_from_link, format_byte, validate_title
 
@@ -142,7 +143,15 @@ def build_message_package_workflow_request(
     if not url.startswith("https://t.me"):
         return None
 
-    link = extract_info_from_link(url)
+    query = parse_qs(urlparse(url).query, keep_blank_values=True)
+    if "comment" in query:
+        return None
+
+    try:
+        link = extract_info_from_link(url)
+    except (TypeError, ValueError):
+        return None
+
     if link.group_id is None or link.post_id is None or link.comment_id is not None:
         return None
 
