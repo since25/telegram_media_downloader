@@ -310,7 +310,7 @@ async def _get_media_meta(
         # 自动从 caption 提取标签（如果 node.file_name_tag 为空）
         # 如果有手动指定的统一标签，则同时保留 caption 标签和手动标签
         auto_caption_tag = None
-        if caption:
+        if caption and "caption" not in app.file_name_prefix:
             auto_caption_tag = validate_title(caption[:30]) if len(caption) > 30 else validate_title(caption)
         
         manual_tag = None
@@ -331,11 +331,14 @@ async def _get_media_meta(
         
         # 如果有标签，添加到文件名前面
         if combined_tag:
-            prefix = f"{message.id} - "
+            split = app.file_name_prefix_split
+            prefix = f"{message.id}{split}"
             if gen_file_name.startswith(prefix):
-                gen_file_name = prefix + combined_tag + " - " + gen_file_name[len(prefix):]
+                gen_file_name = (
+                    prefix + combined_tag + split + gen_file_name[len(prefix):]
+                )
             else:
-                gen_file_name = f"{message.id} - {combined_tag} - {gen_file_name}"
+                gen_file_name = f"{message.id}{split}{combined_tag}{split}{gen_file_name}"
 
         if node and getattr(node, "comment_naming_context", None):
             from module.comment_workflow import build_name_for_strategy

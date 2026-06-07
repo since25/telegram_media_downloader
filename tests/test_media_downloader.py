@@ -360,8 +360,13 @@ def check_for_updates(_: dict = None):
 class MediaDownloaderTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.loop = asyncio.get_event_loop()
+        try:
+            cls.loop = asyncio.get_event_loop()
+        except RuntimeError:
+            cls.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(cls.loop)
         rest_app(MOCK_CONF)
+        app.loop = cls.loop
 
     # @mock.patch("media_downloader.app.save_path", new=MOCK_DIR)
     def test_get_media_meta(self):
