@@ -1125,6 +1125,96 @@ async def worker(client: PyrogramClient):
             del real_client
             del item
 
+async def scan_comment_range(
+    client,
+    chat_id,
+    base_message_id,
+    start_comment_id,
+    end_comment_id,
+):
+    """Resolve a post discussion group and fetch comments in an inclusive range."""
+    # 获取讨论组信息
+    try:
+        # 使用get_discussion_message获取讨论组信息
+        logger.info(f"download_comments: 尝试获取讨论组信息 - chat_id={chat_id}, base_message_id={base_message_id}")
+        discussion_message = await client.get_discussion_message(chat_id, base_message_id)
+
+        if not discussion_message:
+            logger.error(f"download_comments: 无法获取讨论组消息 - chat_id={chat_id}, base_message_id={base_message_id}")
+            raise ValueError("discussion message not found")
+
+        logger.info(f"download_comments: 成功获取讨论组消息 - id={discussion_message.id}, chat_id={discussion_message.chat.id}, title={discussion_message.chat.title}")
+        discussion_group_id = discussion_message.chat.id
+        logger.info(f"download_comments: 使用讨论组ID: {discussion_group_id}")
+    except ValueError:
+        raise
+    except Exception as e:
+        logger.error(f"download_comments: 获取讨论组信息失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+    # 生成评论ID列表
+    comment_ids = list(range(start_comment_id, end_comment_id + 1))
+    logger.info(f"download_comments: 生成评论ID列表: {comment_ids}")
+
+    # 获取所有评论对象 - 使用批量获取提高效率
+    comments = []
+    BATCH_SIZE = 50  # Pyrogram批量获取的建议最大限制
+
+    # 将评论ID列表分成多个批次
+    for i in range(0, len(comment_ids), BATCH_SIZE):
+        batch_ids = comment_ids[i:i+BATCH_SIZE]
+        logger.info(f"download_comments: 批量获取评论 - 批次 {i//BATCH_SIZE + 1}/{len(comment_ids)//BATCH_SIZE + 1}, 评论ID={batch_ids}")
+
+        try:
+            # 批量获取评论
+            batch_comments = await client.get_messages(discussion_group_id, batch_ids)
+            if not isinstance(batch_comments, list):
+                batch_comments = [batch_comments]
+
+            # 处理批量获取的结果
+            for comment in batch_comments:
+                if not comment:
+                    logger.warning(f"download_comments: 未找到评论 - 可能ID不存在")
+                    continue
+
+                has_comment_id = hasattr(comment, 'id')
+                # 检查评论对象的详细信息
+                logger.info(f"download_comments: 评论对象信息 - id={getattr(comment, 'id', None)}, type={type(comment)}, empty={getattr(comment, 'empty', None)}, has_media={getattr(comment, 'media', None) is not None}")
+                logger.info(f"download_comments: 评论属性 - hasattr(comment, 'id')={has_comment_id}, hasattr(comment, 'chat')={hasattr(comment, 'chat')}")
+
+                # 即使comment.empty为True，也尝试检查是否有有价值的信息
+                if has_comment_id:
+                    # 如果评论有ID，无论是否为空，都添加到列表中
+                    logger.info(f"download_comments: 评论 {comment.id} 信息可用，添加到下载列表")
+                    comments.append(comment)
+                else:
+                    logger.warning(f"download_comments: 评论没有ID属性，跳过")
+                    continue
+
+        except Exception as e:
+            logger.error(f"download_comments: 批量获取评论失败 - 批次 {i//BATCH_SIZE + 1}: {e}")
+            import traceback
+            traceback.print_exc()
+            # 对于批量获取失败的情况，尝试单独获取每个评论
+            for comment_id in batch_ids:
+                try:
+                    logger.info(f"download_comments: 单独重试获取评论 - id={comment_id}")
+                    comment = await client.get_messages(discussion_group_id, comment_id)
+                    if comment and hasattr(comment, 'id'):
+                        comments.append(comment)
+                        logger.info(f"download_comments: 单独获取评论 {comment.id} 成功")
+                except Exception as single_e:
+                    logger.error(f"download_comments: 单独获取评论 {comment_id} 失败: {single_e}")
+
+    # 按评论ID排序
+    comments.sort(key=lambda x: x.id)
+    logger.info(f"评论排序完成，顺序: {[c.id for c in comments]}")
+
+    return discussion_group_id, comments
+
+
 async def download_comments(
     client: PyrogramClient,
     chat_id: int,
@@ -1143,85 +1233,22 @@ async def download_comments(
     try:
         logger.info(f"download_comments: 开始下载评论 - chat_id={chat_id}, base_message_id={base_message_id}, start_comment_id={start_comment_id}, end_comment_id={end_comment_id}")
         logger.info(f"download_comments: 任务节点信息 - task_id={node.task_id}, is_running={node.is_running}, is_stop_transmission={node.is_stop_transmission}")
-        
-        # 获取讨论组信息
+
         try:
-            # 使用get_discussion_message获取讨论组信息
-            logger.info(f"download_comments: 尝试获取讨论组信息 - chat_id={chat_id}, base_message_id={base_message_id}")
-            discussion_message = await client.get_discussion_message(chat_id, base_message_id)
-            
-            if not discussion_message:
-                logger.error(f"download_comments: 无法获取讨论组消息 - chat_id={chat_id}, base_message_id={base_message_id}")
-                return
-                
-            logger.info(f"download_comments: 成功获取讨论组消息 - id={discussion_message.id}, chat_id={discussion_message.chat.id}, title={discussion_message.chat.title}")
-            discussion_group_id = discussion_message.chat.id
-            logger.info(f"download_comments: 使用讨论组ID: {discussion_group_id}")
-        except Exception as e:
-            logger.error(f"download_comments: 获取讨论组信息失败: {e}")
-            import traceback
-            traceback.print_exc()
+            _discussion_group_id, comments = await scan_comment_range(
+                client,
+                chat_id,
+                base_message_id,
+                start_comment_id,
+                end_comment_id,
+            )
+        except ValueError:
             return
-        
-        # 生成评论ID列表
-        comment_ids = list(range(start_comment_id, end_comment_id + 1))
-        logger.info(f"download_comments: 生成评论ID列表: {comment_ids}")
-        
-        # 获取所有评论对象 - 使用批量获取提高效率
-        comments = []
-        BATCH_SIZE = 50  # Pyrogram批量获取的建议最大限制
-        
-        # 将评论ID列表分成多个批次
-        for i in range(0, len(comment_ids), BATCH_SIZE):
-            batch_ids = comment_ids[i:i+BATCH_SIZE]
-            logger.info(f"download_comments: 批量获取评论 - 批次 {i//BATCH_SIZE + 1}/{len(comment_ids)//BATCH_SIZE + 1}, 评论ID={batch_ids}")
-            
-            try:
-                # 批量获取评论
-                batch_comments = await client.get_messages(discussion_group_id, batch_ids)
-                
-                # 处理批量获取的结果
-                for comment in batch_comments:
-                    if not comment:
-                        logger.warning(f"download_comments: 未找到评论 - 可能ID不存在")
-                        continue
-                        
-                    # 检查评论对象的详细信息
-                    logger.info(f"download_comments: 评论对象信息 - id={comment.id}, type={type(comment)}, empty={comment.empty}, has_media={comment.media is not None}")
-                    logger.info(f"download_comments: 评论属性 - hasattr(comment, 'id')={hasattr(comment, 'id')}, hasattr(comment, 'chat')={hasattr(comment, 'chat')}")
-                    
-                    # 即使comment.empty为True，也尝试检查是否有有价值的信息
-                    if hasattr(comment, 'id'):
-                        # 如果评论有ID，无论是否为空，都添加到列表中
-                        logger.info(f"download_comments: 评论 {comment.id} 信息可用，添加到下载列表")
-                        comments.append(comment)
-                    else:
-                        logger.warning(f"download_comments: 评论没有ID属性，跳过")
-                        continue
-                        
-            except Exception as e:
-                logger.error(f"download_comments: 批量获取评论失败 - 批次 {i//BATCH_SIZE + 1}: {e}")
-                import traceback
-                traceback.print_exc()
-                # 对于批量获取失败的情况，尝试单独获取每个评论
-                for comment_id in batch_ids:
-                    try:
-                        logger.info(f"download_comments: 单独重试获取评论 - id={comment_id}")
-                        comment = await client.get_messages(discussion_group_id, comment_id)
-                        if comment and hasattr(comment, 'id'):
-                            comments.append(comment)
-                            logger.info(f"download_comments: 单独获取评论 {comment.id} 成功")
-                    except Exception as single_e:
-                        logger.error(f"download_comments: 单独获取评论 {comment_id} 失败: {single_e}")
-                        node.failed_download_task += 1
-                        await report_bot_status(node.bot, node)
-        
+        except Exception:
+            return
+
         logger.info(f"共找到 {len(comments)} 条符合条件的评论")
-        
-        # 按评论ID排序
-        comments.sort(key=lambda x: x.id)
-        logger.info(f"评论排序完成，顺序: {[c.id for c in comments]}")
-        
+
         # 设置总任务数
         node.total_download_task = len(comments)
         logger.info(f"设置总任务数: {len(comments)}")

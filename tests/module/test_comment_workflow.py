@@ -21,6 +21,24 @@ from module.comment_workflow import (
 )
 
 
+class FakeDiscussionClient:
+    def __init__(self, comments):
+        self.comments = {comment.id: comment for comment in comments}
+        self.discussion_message = MockMessage(
+            id=1, chat_id=-200, chat_title="Discussion"
+        )
+
+    async def get_discussion_message(self, chat_id, message_id):
+        self.requested_chat_id = chat_id
+        self.requested_message_id = message_id
+        return self.discussion_message
+
+    async def get_messages(self, chat_id, message_ids):
+        if isinstance(message_ids, list):
+            return [self.comments.get(message_id) for message_id in message_ids]
+        return self.comments.get(message_ids)
+
+
 class CommentWorkflowTestCase(unittest.TestCase):
     def test_build_comment_workflow_request_from_comment_link(self):
         request = build_comment_workflow_request(
@@ -233,6 +251,32 @@ class CommentWorkflowTestCase(unittest.TestCase):
             ["C", "A", "B", "D"],
         )
         self.assertEqual([preview.examples for preview in previews], [[], [], [], []])
+
+
+class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_scan_comment_range_returns_comments_and_discussion_chat(self):
+        from media_downloader import scan_comment_range
+
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(id=4979, text="skip"),
+        ]
+        client = FakeDiscussionClient(comments)
+
+        discussion_group_id, scanned_comments = await scan_comment_range(
+            client=client,
+            chat_id=-1001,
+            base_message_id=422,
+            start_comment_id=4978,
+            end_comment_id=4979,
+        )
+
+        self.assertEqual(discussion_group_id, -200)
+        self.assertEqual([comment.id for comment in scanned_comments], [4978, 4979])
 
 
 if __name__ == "__main__":
