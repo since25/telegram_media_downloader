@@ -8,9 +8,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
 
-from utils.format import extract_info_from_link, validate_title
+from utils.format import extract_info_from_link, format_byte, validate_title
 
 COMMENT_WORKFLOW_PREFIX = "cw"
+PACKAGE_WORKFLOW_PREFIX = "pw"
 SUPPORTED_MEDIA_TYPES = {
     "audio",
     "document",
@@ -49,6 +50,15 @@ class CommentWorkflowRequest:
 
 
 @dataclass
+class MessagePackageWorkflowRequest:
+    """Parsed direct ordinary message-link package workflow request."""
+
+    url: str
+    source_chat: str | int
+    start_message_id: int
+
+
+@dataclass
 class CommentScanSummary:
     """Summary of comments discovered during a preview scan."""
 
@@ -78,6 +88,26 @@ class CommentNamingContext:
     post_title: str
 
 
+@dataclass
+class SizePreviewItem:
+    """Small size preview entry for one media message."""
+
+    message_id: int
+    media_type: str
+    size: int
+    file_name: str
+
+
+@dataclass
+class SizeSummary:
+    """Known and unknown file-size summary for preview."""
+
+    known_total_size: int = 0
+    unknown_size_count: int = 0
+    samples: List[SizePreviewItem] = field(default_factory=list)
+    largest: Optional[SizePreviewItem] = None
+
+
 def build_comment_workflow_request(text: str) -> Optional[CommentWorkflowRequest]:
     """Return a workflow request when text is a t.me post comment link."""
 
@@ -98,6 +128,100 @@ def build_comment_workflow_request(text: str) -> Optional[CommentWorkflowRequest
         post_id=link.post_id,
         start_comment_id=link.comment_id,
     )
+
+
+def build_message_package_workflow_request(
+    text: str,
+) -> Optional[MessagePackageWorkflowRequest]:
+    """Return a package workflow request for direct non-comment message links."""
+
+    if not text:
+        return None
+
+    url = text.strip()
+    if not url.startswith("https://t.me"):
+        return None
+
+    link = extract_info_from_link(url)
+    if link.group_id is None or link.post_id is None or link.comment_id is not None:
+        return None
+    if "comment" in url:
+        return None
+
+    return MessagePackageWorkflowRequest(
+        url=url,
+        source_chat=link.group_id,
+        start_message_id=link.post_id,
+    )
+
+
+def media_payload_for_message(message: CommentLike):
+    """Return `(media_type, media_obj)` for a supported media message."""
+
+    if not message or getattr(message, "empty", False):
+        return None, None
+    media_name = _media_name(message)
+    if media_name not in SUPPORTED_MEDIA_TYPES:
+        return None, None
+    media_obj = getattr(message, media_name, None)
+    if not media_obj:
+        return None, None
+    return media_name, media_obj
+
+
+def media_file_name_for_message(message: CommentLike) -> str:
+    """Return a stable display filename for size previews."""
+
+    media_name, media_obj = media_payload_for_message(message)
+    raw_file_name = getattr(media_obj, "file_name", None)
+    if raw_file_name:
+        return clean_segment(raw_file_name, f"message-{message.id}-{media_name}", 80)
+    if media_name == "photo":
+        unique_id = getattr(media_obj, "file_unique_id", None)
+        return clean_segment(unique_id, f"message-{message.id}-photo", 80)
+    return clean_segment(None, f"message-{message.id}-{media_name}", 80)
+
+
+def build_size_summary(
+    messages: Sequence[CommentLike], sample_size: int = 3
+) -> SizeSummary:
+    """Build known/unknown size preview from Telegram media metadata."""
+
+    summary = SizeSummary()
+    for message in filter_media_comments(messages):
+        media_type, media_obj = media_payload_for_message(message)
+        size = getattr(media_obj, "file_size", None)
+        if not isinstance(size, int) or size <= 0:
+            summary.unknown_size_count += 1
+            continue
+
+        item = SizePreviewItem(
+            message_id=message.id,
+            media_type=media_type,
+            size=size,
+            file_name=media_file_name_for_message(message),
+        )
+        summary.known_total_size += size
+        if len(summary.samples) < sample_size:
+            summary.samples.append(item)
+        if summary.largest is None or item.size > summary.largest.size:
+            summary.largest = item
+
+    return summary
+
+
+def format_size_summary(summary: SizeSummary) -> str:
+    """Format a compact Chinese size summary for Telegram previews."""
+
+    if summary.known_total_size <= 0 and summary.unknown_size_count:
+        return "预计大小：未知"
+    if summary.known_total_size <= 0:
+        return "预计大小：0B"
+
+    text = f"预计大小：{format_byte(summary.known_total_size)}"
+    if summary.unknown_size_count:
+        text += f" + {summary.unknown_size_count} 个未知大小文件"
+    return text
 
 
 def is_media_comment(comment: Optional[CommentLike]) -> bool:

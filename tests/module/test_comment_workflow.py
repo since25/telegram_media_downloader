@@ -76,6 +76,68 @@ class CommentWorkflowTestCase(unittest.TestCase):
             build_comment_workflow_request("https://t.me/zhyseseb/422?comment=")
         )
 
+    def test_build_message_package_workflow_request_from_private_link(self):
+        from module.comment_workflow import build_message_package_workflow_request
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+
+        self.assertEqual(request.source_chat, -1001298283297)
+        self.assertEqual(request.start_message_id, 126711)
+        self.assertEqual(request.url, "https://t.me/c/1298283297/126711")
+
+    def test_build_message_package_workflow_request_rejects_comment_link(self):
+        from module.comment_workflow import build_message_package_workflow_request
+
+        self.assertIsNone(
+            build_message_package_workflow_request(
+                "https://t.me/zhyseseb/422?comment=4978"
+            )
+        )
+
+    def test_build_size_summary_counts_known_unknown_and_largest(self):
+        from module.comment_workflow import build_size_summary, format_size_summary
+
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                video=MockVideo(
+                    file_name="a.mp4",
+                    file_size=421 * 1024 * 1024,
+                    mime_type="video/mp4",
+                ),
+            ),
+            MockMessage(
+                id=126712,
+                media="video",
+                video=MockVideo(
+                    file_name="b.mp4",
+                    file_size=388 * 1024 * 1024,
+                    mime_type="video/mp4",
+                ),
+            ),
+            MockMessage(
+                id=126713,
+                media="photo",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p1",
+                ),
+            ),
+        ]
+        delattr(messages[2].photo, "file_size")
+
+        summary = build_size_summary(messages)
+
+        self.assertEqual(summary.known_total_size, 809 * 1024 * 1024)
+        self.assertEqual(summary.unknown_size_count, 1)
+        self.assertEqual(summary.largest.message_id, 126711)
+        self.assertEqual(summary.samples[0].message_id, 126711)
+        self.assertIn("809.0MB", format_size_summary(summary))
+        self.assertIn("1 个未知大小文件", format_size_summary(summary))
+
     def test_filter_media_comments_skips_text_and_empty_messages(self):
         comments = [
             MockMessage(id=1, text="hello"),
