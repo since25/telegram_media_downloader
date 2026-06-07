@@ -746,6 +746,326 @@ class MediaDownloaderTestCase(unittest.TestCase):
             ),
         )
 
+    def test_download_prepared_messages_preserves_planned_later_caption_for_package_naming_context(self):
+        from module.comment_workflow import (
+            NamingStrategy,
+            PackageNamingContext,
+            plan_message_package,
+        )
+        from media_downloader import download_prepared_messages
+
+        rest_app(MOCK_CONF)
+        app.save_path = MOCK_DIR
+        app.temp_save_path = os.path.join(MOCK_DIR, "temp")
+        app.file_path_prefix = ["chat_title", "media_datetime"]
+        app.file_name_prefix = ["message_id", "file_name"]
+        app.file_name_prefix_split = " - "
+
+        messages = [
+            MockMessage(
+                id=100,
+                chat_id=-1001,
+                chat_title="Private",
+                media="video",
+                video=MockVideo(file_name="ep-01.mp4", mime_type="video/mp4"),
+                caption="课程 第01章 01_40",
+                date=datetime(2026, 6, 7),
+            ),
+            MockMessage(
+                id=101,
+                chat_id=-1001,
+                chat_title="Private",
+                media="video",
+                video=MockVideo(file_name="ep-02.mp4", mime_type="video/mp4"),
+                caption="课程 第01章 02_40",
+                date=datetime(2026, 6, 7),
+            ),
+            MockMessage(
+                id=102,
+                chat_id=-1001,
+                chat_title="Private",
+                media="video",
+                video=MockVideo(file_name="ep-03.mp4", mime_type="video/mp4"),
+                date=datetime(2026, 6, 7),
+            ),
+        ]
+        package_plan = plan_message_package(messages, start_message_id=100)
+
+        for strategy, expected_suffix in (
+            (
+                NamingStrategy.CAPTION,
+                "课程 第01章 01_40/102 - 课程 第01章 02_40 - ep-03.mp4",
+            ),
+            (
+                NamingStrategy.MONTH_CAPTION,
+                "私密频道/2026_06/课程 第01章 01_40/102 - 课程 第01章 02_40.mp4",
+            ),
+        ):
+            with self.subTest(strategy=strategy):
+                node = TaskNode(chat_id=-1001, bot=None, task_id=11)
+                node.is_running = True
+                node.package_naming_context = PackageNamingContext(
+                    strategy=strategy,
+                    channel="私密频道",
+                    start_message_id=100,
+                    package_title=package_plan.package_title,
+                )
+                node.package_media_items = {
+                    item.message.id: item for item in package_plan.items
+                }
+                generated_names = []
+
+                async def fake_add_download_task(message, task_node):
+                    file_name, _temp_file_name, _file_format = await _get_media_meta(
+                        -1001,
+                        message,
+                        message.video,
+                        "video",
+                        node=task_node,
+                    )
+                    generated_names.append(file_name)
+                    task_node.total_task += 1
+                    task_node.total_download_task += 1
+                    task_node.success_download_task += 1
+                    return True
+
+                async def fake_report_bot_status(bot, task_node):
+                    return None
+
+                async def fake_sleep(seconds):
+                    raise AssertionError(
+                        "download_prepared_messages should not wait after queued success"
+                    )
+
+                with mock.patch(
+                    "media_downloader.add_download_task", new=fake_add_download_task
+                ), mock.patch(
+                    "module.pyrogram_extension.report_bot_status",
+                    new=fake_report_bot_status,
+                ), mock.patch(
+                    "module.download_stat.remove_active_task_node"
+                ), mock.patch(
+                    "media_downloader.asyncio.sleep", new=fake_sleep
+                ):
+                    self.loop.run_until_complete(
+                        download_prepared_messages(
+                            messages,
+                            download_filter="",
+                            node=node,
+                        )
+                    )
+
+                self.assertTrue(
+                    generated_names[-1].endswith(platform_generic_path(expected_suffix))
+                )
+                self.assertEqual(
+                    node.package_media_items[102].caption_for_naming,
+                    "课程 第01章 02_40",
+                )
+
+    def test_download_prepared_messages_counts_scan_failures_in_progress_totals(self):
+        from media_downloader import download_prepared_messages
+
+        rest_app(MOCK_CONF)
+        messages = [
+            MockMessage(
+                id=201,
+                chat_id=-1001,
+                chat_title="Private",
+                media="video",
+                video=MockVideo(file_name="clip-a.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=202,
+                chat_id=-1001,
+                chat_title="Private",
+                media="video",
+                video=MockVideo(file_name="clip-b.mp4", mime_type="video/mp4"),
+            ),
+        ]
+        node = TaskNode(chat_id=-1001, bot=None, task_id=12)
+        node.is_running = True
+        report_calls = []
+
+        async def fake_add_download_task(message, task_node):
+            task_node.total_task += 1
+            task_node.total_download_task += 1
+            task_node.success_download_task += 1
+            return True
+
+        async def fake_report_bot_status(bot, task_node):
+            report_calls.append(
+                (
+                    task_node.success_download_task,
+                    task_node.failed_download_task,
+                    task_node.total_download_task,
+                    list(task_node.failed_tasks),
+                )
+            )
+
+        async def fake_sleep(seconds):
+            raise AssertionError(
+                "download_prepared_messages should not sleep after all expected tasks finish"
+            )
+
+        with mock.patch(
+            "media_downloader.add_download_task", new=fake_add_download_task
+        ), mock.patch(
+            "module.pyrogram_extension.report_bot_status", new=fake_report_bot_status
+        ), mock.patch(
+            "module.download_stat.remove_active_task_node"
+        ), mock.patch(
+            "media_downloader.asyncio.sleep", new=fake_sleep
+        ):
+            self.loop.run_until_complete(
+                download_prepared_messages(
+                    messages,
+                    download_filter="",
+                    node=node,
+                    failed_message_ids=[203],
+                )
+            )
+
+        self.assertEqual(node.failed_download_task, 1)
+        self.assertEqual(node.success_download_task, 2)
+        self.assertEqual(node.total_download_task, 3)
+        self.assertEqual(node.total_task, 3)
+        self.assertEqual(node.failed_tasks, [(-1001, 203, None)])
+        self.assertTrue(report_calls)
+        self.assertEqual(report_calls[-1][:3], (2, 1, 3))
+
+    def test_download_prepared_messages_counts_false_enqueue_as_failed_task(self):
+        from media_downloader import download_prepared_messages
+
+        rest_app(MOCK_CONF)
+        messages = [
+            MockMessage(
+                id=301,
+                chat_id=-1001,
+                chat_title="Private",
+                media="video",
+                video=MockVideo(file_name="clip-a.mp4", mime_type="video/mp4"),
+            )
+        ]
+        node = TaskNode(chat_id=-1001, bot=None, task_id=13)
+        node.is_running = True
+        report_calls = []
+
+        async def fake_add_download_task(message, task_node):
+            return False
+
+        async def fake_report_bot_status(bot, task_node):
+            report_calls.append(
+                (
+                    task_node.success_download_task,
+                    task_node.failed_download_task,
+                    task_node.total_download_task,
+                )
+            )
+
+        async def fake_sleep(seconds):
+            raise AssertionError(
+                "download_prepared_messages should not sleep after enqueue failure"
+            )
+
+        with mock.patch(
+            "media_downloader.add_download_task", new=fake_add_download_task
+        ), mock.patch(
+            "module.pyrogram_extension.report_bot_status", new=fake_report_bot_status
+        ), mock.patch(
+            "module.download_stat.remove_active_task_node"
+        ), mock.patch(
+            "media_downloader.asyncio.sleep", new=fake_sleep
+        ):
+            self.loop.run_until_complete(
+                download_prepared_messages(
+                    messages,
+                    download_filter="",
+                    node=node,
+                )
+            )
+
+        self.assertEqual(node.failed_download_task, 1)
+        self.assertEqual(node.success_download_task, 0)
+        self.assertEqual(node.total_download_task, 1)
+        self.assertEqual(node.total_task, 1)
+        self.assertTrue(report_calls)
+        self.assertEqual(report_calls[-1], (0, 1, 1))
+
+    def test_download_prepared_messages_filter_queues_only_matching_media(self):
+        from media_downloader import download_prepared_messages
+        import media_downloader
+
+        rest_app(MOCK_CONF)
+        messages = [
+            MockMessage(
+                id=401,
+                chat_id=-1001,
+                chat_title="Private",
+                media="video",
+                video=MockVideo(file_name="clip-a.mp4", mime_type="video/mp4"),
+                caption="keep",
+            ),
+            MockMessage(
+                id=402,
+                chat_id=-1001,
+                chat_title="Private",
+                media="video",
+                video=MockVideo(file_name="clip-b.mp4", mime_type="video/mp4"),
+                caption="drop",
+            ),
+            MockMessage(id=403, chat_id=-1001, chat_title="Private", text="skip"),
+        ]
+        node = TaskNode(chat_id=-1001, bot=None, task_id=14)
+        node.is_running = True
+        queued_ids = []
+
+        def fake_exec_filter(config, meta_data):
+            return meta_data.caption == "keep"
+
+        def fake_set_meta_data(meta_data, message, caption):
+            meta_data.caption = caption
+
+        async def fake_add_download_task(message, task_node):
+            queued_ids.append(message.id)
+            task_node.total_task += 1
+            task_node.total_download_task += 1
+            task_node.success_download_task += 1
+            return True
+
+        async def fake_report_bot_status(bot, task_node):
+            return None
+
+        async def fake_sleep(seconds):
+            raise AssertionError(
+                "download_prepared_messages should not wait after filtered success"
+            )
+
+        with mock.patch.object(
+            media_downloader.app, "exec_filter", new=fake_exec_filter
+        ), mock.patch(
+            "media_downloader.add_download_task", new=fake_add_download_task
+        ), mock.patch(
+            "module.pyrogram_extension.set_meta_data", new=fake_set_meta_data
+        ), mock.patch(
+            "module.pyrogram_extension.report_bot_status", new=fake_report_bot_status
+        ), mock.patch(
+            "module.download_stat.remove_active_task_node"
+        ), mock.patch(
+            "media_downloader.asyncio.sleep", new=fake_sleep
+        ):
+            self.loop.run_until_complete(
+                download_prepared_messages(
+                    messages,
+                    download_filter="caption == keep",
+                    node=node,
+                )
+            )
+
+        self.assertEqual(queued_ids, [401])
+        self.assertEqual(node.success_download_task, 1)
+        self.assertEqual(node.total_download_task, 1)
+
     @mock.patch("media_downloader.app.save_path", new=MOCK_DIR)
     @mock.patch("media_downloader.asyncio.sleep", return_value=None)
     @mock.patch("media_downloader.logger")

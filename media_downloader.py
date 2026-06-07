@@ -1450,7 +1450,7 @@ async def download_prepared_messages(
     from utils.format import validate_title
     from utils.meta_data import MetaData
 
-    failed_message_ids = list(failed_message_ids or [])
+    failed_message_ids = list(dict.fromkeys(failed_message_ids or []))
 
     try:
         media_messages = filter_media_comments(messages)
@@ -1460,6 +1460,19 @@ async def download_prepared_messages(
             if not isinstance(package_media_items, dict):
                 package_media_items = {}
                 node.package_media_items = package_media_items
+            media_message_ids = {message.id for message in media_messages}
+            package_plan = getattr(node, "package_plan", None)
+            planned_items = getattr(package_plan, "items", None)
+            if planned_items:
+                for item in planned_items:
+                    item_message_id = getattr(
+                        getattr(item, "message", None),
+                        "id",
+                        None,
+                    )
+                    if item_message_id not in media_message_ids:
+                        continue
+                    package_media_items.setdefault(item_message_id, item)
             for message in media_messages:
                 if message.id in package_media_items:
                     continue
@@ -1502,9 +1515,14 @@ async def download_prepared_messages(
                 node.download_status = {}
             for failed_message_id in failed_message_ids:
                 node.download_status[failed_message_id] = DownloadStatus.FailedDownload
-            node.failed_download_task += len(failed_message_ids)
-            node.total_download_task += len(failed_message_ids)
-            node.total_task += len(failed_message_ids)
+                node.stat(
+                    DownloadStatus.FailedDownload,
+                    node.chat_id,
+                    failed_message_id,
+                    None,
+                )
+                node.total_download_task += 1
+                node.total_task += 1
             await report_bot_status(node.bot, node)
 
         logger.info(f"开始下载消息媒体，共 {len(media_messages)} 条消息")
@@ -1525,7 +1543,15 @@ async def download_prepared_messages(
                 result = await add_download_task(message, node)
                 logger.info(f"添加消息下载任务结果: {result}")
                 if result is False:
-                    node.failed_download_task += 1
+                    if not hasattr(node, "download_status") or node.download_status is None:
+                        node.download_status = {}
+                    node.download_status[message.id] = DownloadStatus.FailedDownload
+                    node.stat(
+                        DownloadStatus.FailedDownload,
+                        node.chat_id,
+                        message.id,
+                        None,
+                    )
                     if node.total_task == total_task_before_enqueue:
                         node.total_task += 1
                     if node.total_download_task == total_download_task_before_enqueue:
@@ -1535,7 +1561,15 @@ async def download_prepared_messages(
                 logger.error(f"处理消息 {message.id} 失败: {e}")
                 import traceback
                 traceback.print_exc()
-                node.failed_download_task += 1
+                if not hasattr(node, "download_status") or node.download_status is None:
+                    node.download_status = {}
+                node.download_status[message.id] = DownloadStatus.FailedDownload
+                node.stat(
+                    DownloadStatus.FailedDownload,
+                    node.chat_id,
+                    message.id,
+                    None,
+                )
                 if node.total_task == total_task_before_enqueue:
                     node.total_task += 1
                 if node.total_download_task == total_download_task_before_enqueue:
