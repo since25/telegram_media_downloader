@@ -358,7 +358,9 @@ class CommentWorkflowTestCase(unittest.TestCase):
         )
 
         self.assertIn("识别到连续资源包", preview_text)
+        self.assertIn("标题：某某课程 第01章", preview_text)
         self.assertIn("范围：126711 - 126712", preview_text)
+        self.assertIn("媒体：2 个（video 2 个）", preview_text)
         self.assertIn("预计大小：809.0MB", preview_text)
         self.assertIn("最大文件：126711 video 421.0MB", preview_text)
         self.assertIn("大小示例：", preview_text)
