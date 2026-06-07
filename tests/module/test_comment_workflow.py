@@ -184,6 +184,97 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("809.0MB", format_size_summary(summary))
         self.assertIn("1 个未知大小文件", format_size_summary(summary))
 
+    def test_plan_message_package_inherits_caption_and_excludes_next_package(self):
+        from module.comment_workflow import plan_message_package
+
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                caption="某某课程 第01章 01/40",
+                video=MockVideo(
+                    file_name="001.mp4", mime_type="video/mp4", file_size=100
+                ),
+            ),
+            MockMessage(
+                id=126712,
+                media="video",
+                video=MockVideo(
+                    file_name="002.mp4", mime_type="video/mp4", file_size=200
+                ),
+            ),
+            MockMessage(
+                id=126713,
+                media="video",
+                caption="某某课程 第01章 02/40",
+                video=MockVideo(
+                    file_name="003.mp4", mime_type="video/mp4", file_size=300
+                ),
+            ),
+            MockMessage(
+                id=126714,
+                media="video",
+                caption="某某课程 第02章",
+                video=MockVideo(
+                    file_name="004.mp4", mime_type="video/mp4", file_size=400
+                ),
+            ),
+        ]
+
+        plan = plan_message_package(messages, start_message_id=126711)
+
+        self.assertEqual([item.message.id for item in plan.items], [126711, 126712, 126713])
+        self.assertEqual(plan.package_title, "某某课程 第01章 01_40")
+        self.assertEqual(plan.inherited_caption_count, 1)
+        self.assertEqual(plan.next_package_message.id, 126714)
+        self.assertEqual(plan.summary.media_count, 3)
+        self.assertEqual(plan.size_summary.known_total_size, 600)
+
+    def test_plan_message_package_shares_album_caption_by_media_group(self):
+        from module.comment_workflow import plan_message_package
+
+        messages = [
+            MockMessage(
+                id=10,
+                media="photo",
+                media_group_id="album1",
+                caption="相册标题 EP01",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p10",
+                    file_size=10,
+                ),
+            ),
+            MockMessage(
+                id=11,
+                media="photo",
+                media_group_id="album1",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p11",
+                    file_size=11,
+                ),
+            ),
+            MockMessage(
+                id=12,
+                media="photo",
+                media_group_id="album1",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p12",
+                    file_size=12,
+                ),
+            ),
+        ]
+
+        plan = plan_message_package(messages, start_message_id=10)
+
+        self.assertEqual(
+            [item.caption_for_naming for item in plan.items],
+            ["相册标题 EP01", "相册标题 EP01", "相册标题 EP01"],
+        )
+        self.assertEqual(plan.inherited_caption_count, 2)
+
     def test_filter_media_comments_skips_text_and_empty_messages(self):
         comments = [
             MockMessage(id=1, text="hello"),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
@@ -21,6 +22,13 @@ SUPPORTED_MEDIA_TYPES = {
     "voice",
     "video_note",
 }
+
+_SEQUENCE_PATTERNS = [
+    re.compile(r"\d+\s*[/_]\s*\d+"),
+    re.compile(r"EP\s*\d+", re.IGNORECASE),
+    re.compile(r"^[\[【(（]?\s*\d{1,4}\s*[\]】)）]?(?:[-_.:： ]+)?"),
+    re.compile(r"(?:[-_.:： ]+)?[\[【(（]?\s*\d{1,4}\s*[\]】)）]?$"),
+]
 
 
 class CommentLike(Protocol):
@@ -109,6 +117,30 @@ class SizeSummary:
     largest: Optional[SizePreviewItem] = None
 
 
+@dataclass
+class PackageMediaItem:
+    """Prepared media item with inherited caption metadata."""
+
+    message: CommentLike
+    media_type: str
+    caption_for_naming: str
+    original_caption: Optional[str]
+    inherited_caption: bool = False
+
+
+@dataclass
+class MessagePackagePlan:
+    """Pure package detection result."""
+
+    items: List[PackageMediaItem]
+    package_title: str
+    summary: CommentScanSummary
+    size_summary: SizeSummary
+    inherited_caption_count: int = 0
+    next_package_message: Optional[CommentLike] = None
+    scan_warning: Optional[str] = None
+
+
 def build_comment_workflow_request(text: str) -> Optional[CommentWorkflowRequest]:
     """Return a workflow request when text is a t.me post comment link."""
 
@@ -159,6 +191,126 @@ def build_message_package_workflow_request(
         url=url,
         source_chat=link.group_id,
         start_message_id=link.post_id,
+    )
+
+
+def _message_caption(message: CommentLike) -> Optional[str]:
+    """Return sanitized caption text for package planning."""
+
+    return _sanitize_caption_text(getattr(message, "caption", None))
+
+
+def normalize_caption_for_boundary(caption: Optional[str]) -> str:
+    """Normalize caption text for loose package-boundary comparison."""
+
+    text = _sanitize_caption_text(caption)
+    normalized = re.sub(r"\s+", "", text or "")
+    for pattern in _SEQUENCE_PATTERNS:
+        normalized = pattern.sub("", normalized)
+    return normalized.strip("-_—:：.。 ")
+
+
+def captions_are_similar(current: Optional[str], candidate: Optional[str]) -> bool:
+    """Return True when captions likely belong to the same package."""
+
+    current_norm = normalize_caption_for_boundary(current)
+    candidate_norm = normalize_caption_for_boundary(candidate)
+    if not current_norm or not candidate_norm:
+        return True
+    if current_norm == candidate_norm:
+        return True
+    shorter, longer = sorted([current_norm, candidate_norm], key=len)
+    return len(shorter) >= 4 and shorter in longer
+
+
+def plan_message_package(
+    messages: Sequence[CommentLike],
+    start_message_id: int,
+    max_scan_count: int = 500,
+) -> MessagePackagePlan:
+    """Plan one continuous ordinary-message media package from a start id."""
+
+    candidates = sorted(
+        [
+            message
+            for message in messages
+            if message and hasattr(message, "id") and message.id >= start_message_id
+        ],
+        key=lambda message: message.id,
+    )
+    scan_limit_hit = len(candidates) > max_scan_count
+    scanned_messages = candidates[:max_scan_count]
+
+    items: List[PackageMediaItem] = []
+    group_captions: Dict[str, str] = {}
+    package_title: Optional[str] = None
+    current_caption: Optional[str] = None
+    next_package_message: Optional[CommentLike] = None
+    inherited_caption_count = 0
+
+    for message in scanned_messages:
+        media_type, _media_obj = media_payload_for_message(message)
+        if not media_type:
+            continue
+
+        raw_caption = _message_caption(message)
+        media_group_id = getattr(message, "media_group_id", None)
+        group_caption = group_captions.get(media_group_id) if media_group_id else None
+        candidate_caption = raw_caption or group_caption
+
+        if items and candidate_caption and current_caption:
+            if not captions_are_similar(current_caption, candidate_caption):
+                next_package_message = message
+                break
+
+        if raw_caption and media_group_id:
+            group_captions[media_group_id] = raw_caption
+
+        effective_caption = raw_caption
+        if not effective_caption and media_group_id:
+            effective_caption = group_captions.get(media_group_id)
+        if not effective_caption:
+            effective_caption = current_caption
+
+        inherited_caption = raw_caption is None and effective_caption is not None
+        if inherited_caption:
+            inherited_caption_count += 1
+
+        if raw_caption:
+            current_caption = raw_caption
+            if package_title is None:
+                package_title = raw_caption
+        elif effective_caption and current_caption is None:
+            current_caption = effective_caption
+            if package_title is None:
+                package_title = effective_caption
+
+        items.append(
+            PackageMediaItem(
+                message=message,
+                media_type=media_type,
+                caption_for_naming=effective_caption or f"message-{message.id}",
+                original_caption=raw_caption,
+                inherited_caption=inherited_caption,
+            )
+        )
+
+    package_messages = [item.message for item in items]
+    if package_title is None:
+        package_title = f"message-{start_message_id}"
+
+    scan_warning = None
+    if scan_limit_hit and next_package_message is None:
+        scan_warning = f"未发现下一包边界，已达到扫描上限 {max_scan_count} 条。"
+
+    return MessagePackagePlan(
+        items=items,
+        package_title=package_title,
+        summary=summarize_comments(package_messages),
+        size_summary=build_size_summary(package_messages),
+        inherited_caption_count=inherited_caption_count,
+        next_package_message=next_package_message,
+        scan_warning=scan_warning,
     )
 
 
@@ -492,3 +644,9 @@ def _extension_for_comment(comment: CommentLike) -> str:
 def _normalize_segment(value: Optional[str]) -> str:
     text = " ".join((value or "").split())
     return validate_title(text).strip(" .-_") if text else ""
+
+
+def _sanitize_caption_text(caption: Optional[str]) -> Optional[str]:
+    text = " ".join(str(caption or "").split())
+    text = validate_title(text).strip()
+    return text or None
