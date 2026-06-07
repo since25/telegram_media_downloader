@@ -1,5 +1,6 @@
 """Tests for Telegram comment-link media workflow planning."""
 import datetime
+import hashlib
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -91,11 +92,13 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertLessEqual(len(callback_data.encode("utf-8")), 64)
 
     def test_build_workflow_token_is_deterministic_and_short(self):
-        token = build_workflow_token("https://t.me/zhyseseb/422?comment=4978", MockUser(id=123).id)
+        url = "https://t.me/zhyseseb/422?comment=4978"
+        user_id = MockUser(id=123).id
+        token = build_workflow_token(url, user_id)
 
         self.assertEqual(
             token,
-            build_workflow_token("https://t.me/zhyseseb/422?comment=4978", 123),
+            hashlib.sha1(f"{user_id}:{url}".encode("utf-8")).hexdigest()[:12],
         )
         self.assertEqual(len(token), 12)
 
@@ -113,6 +116,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertEqual(clean_segment("  hello \n world  ", "fallback"), "hello world")
         self.assertEqual(clean_segment("bad/name: title", "fallback"), "bad_name_ title")
         self.assertEqual(clean_segment(" / ", "fallback"), "fallback")
+        self.assertEqual(clean_segment(" / ", " bad/name "), "bad_name")
         self.assertEqual(clean_segment("123456789", "fallback", max_len=5), "12345")
 
 

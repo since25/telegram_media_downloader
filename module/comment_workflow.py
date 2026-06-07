@@ -164,13 +164,19 @@ def parse_callback_data(data: str) -> Optional[tuple[str, NamingStrategy]]:
 def clean_segment(value: Optional[str], fallback: str, max_len: int = 40) -> str:
     """Clean one filename/path segment with deterministic fallback."""
 
-    text = " ".join((value or "").split())
-    text = validate_title(text).strip(" .-_") if text else ""
+    text = _normalize_segment(value)
     if not text:
-        text = fallback
+        text = _normalize_segment(fallback)
+    if not text:
+        text = "fallback"
     return text[:max_len]
 
 
 def _media_name(comment) -> str:
     media = getattr(comment, "media", None)
     return getattr(media, "value", media)
+
+
+def _normalize_segment(value: Optional[str]) -> str:
+    text = " ".join((value or "").split())
+    return validate_title(text).strip(" .-_") if text else ""
