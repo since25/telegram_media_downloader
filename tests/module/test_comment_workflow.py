@@ -850,6 +850,85 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.app = old_app
             bot_module._bot.pending_comment_workflows = old_pending
 
+    async def test_preview_warns_when_latest_history_lookup_raises(self):
+        from module import bot as bot_module
+
+        request = build_comment_workflow_request(
+            "https://t.me/zhyseseb/422?comment=4978"
+        )
+        source_entity = SimpleNamespace(
+            id=-1001, username="zhyseseb", title="Channel Title"
+        )
+        base_message = MockMessage(id=422, text="夏日合集")
+        discussion_message = MockMessage(
+            id=5, chat_id=-200, chat_title="Discussion"
+        )
+        scanned_comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+            )
+        ]
+
+        class FakeUserClient:
+            async def get_chat(self, chat_id):
+                return source_entity
+
+            async def get_messages(self, chat_id, message_id):
+                return base_message
+
+            async def get_discussion_message(self, chat_id, message_id):
+                return discussion_message
+
+        class FakeBotClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+
+        async def fake_get_chat_history_v2(client, chat_id, limit=0, reverse=False):
+            raise RuntimeError("history unavailable")
+            yield
+
+        async def fake_scan_comment_range(*args, **kwargs):
+            return SimpleNamespace(comments=scanned_comments, failed_comment_ids=[])
+
+        old_client = bot_module._bot.client
+        old_app = bot_module._bot.app
+        old_pending = bot_module._bot.pending_comment_workflows
+        bot_client = FakeBotClient()
+        try:
+            bot_module._bot.client = FakeUserClient()
+            bot_module._bot.app = SimpleNamespace(
+                cloud_drive_config=SimpleNamespace(
+                    enable_upload_file=True, after_upload_file_delete=False
+                )
+            )
+            bot_module._bot.pending_comment_workflows = {}
+            message = MockMessage(
+                id=88,
+                text="https://t.me/zhyseseb/422?comment=4978",
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "module.bot.get_chat_history_v2", new=fake_get_chat_history_v2
+            ), patch("media_downloader.scan_comment_range", new=fake_scan_comment_range):
+                await bot_module.preview_comment_workflow(bot_client, message, request)
+
+            pending = next(iter(bot_module._bot.pending_comment_workflows.values()))
+            self.assertEqual(pending["latest_comment_id"], 4978)
+            self.assertEqual(
+                pending["scan_warning"], "最新评论定位失败，预览范围可能不完整。"
+            )
+            self.assertIn("扫描警告：", bot_client.sent_messages[0][1])
+        finally:
+            bot_module._bot.client = old_client
+            bot_module._bot.app = old_app
+            bot_module._bot.pending_comment_workflows = old_pending
+
 
 if __name__ == "__main__":
     unittest.main()
