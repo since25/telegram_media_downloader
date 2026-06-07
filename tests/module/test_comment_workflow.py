@@ -191,6 +191,49 @@ class CommentWorkflowTestCase(unittest.TestCase):
             "zhyseseb/2026_06/post-422/5000 - no-caption.jpg",
         )
 
+    def test_build_naming_previews_falls_back_for_extension_only_filename(self):
+        comments = [
+            MockMessage(
+                id=1,
+                media="video",
+                video=MockVideo(file_name="?.mp4", mime_type="video/mp4"),
+                date=datetime.datetime(2026, 6, 7),
+            )
+        ]
+
+        previews = build_naming_previews(
+            comments,
+            channel="zhyseseb",
+            post_id=422,
+            post_title="post title",
+            sample_size=1,
+        )
+
+        self.assertEqual(
+            previews[0].examples[0],
+            "zhyseseb/422-post title/1 - comment-1-video.mp4",
+        )
+
+    def test_build_naming_previews_keeps_options_for_non_media_comments(self):
+        comments = [
+            MockMessage(id=1, text="hello"),
+            MockMessage(id=2, empty=True),
+        ]
+
+        previews = build_naming_previews(
+            comments,
+            channel="zhyseseb",
+            post_id=422,
+            post_title="post title",
+            sample_size=1,
+        )
+
+        self.assertEqual(
+            [preview.strategy.value for preview in previews],
+            ["C", "A", "B", "D"],
+        )
+        self.assertEqual([preview.examples for preview in previews], [[], [], [], []])
+
 
 if __name__ == "__main__":
     unittest.main()

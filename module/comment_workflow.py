@@ -186,13 +186,14 @@ def original_file_name_for_comment(comment: CommentLike) -> str:
 
     media_name = _media_name(comment)
     media = getattr(comment, media_name, None)
-    file_name = _normalize_segment(getattr(media, "file_name", None))
-    if file_name:
-        file_name = file_name[:80]
-        return file_name
-
     extension = _extension_for_comment(comment)
-    return f"comment-{comment.id}-{media_name}.{extension}"
+    fallback = f"comment-{comment.id}-{media_name}.{extension}"
+    raw_file_name = getattr(media, "file_name", None)
+    raw_stem = os.path.splitext(raw_file_name or "")[0]
+    if _normalize_segment(raw_stem):
+        return clean_segment(raw_file_name, fallback, 80)
+
+    return fallback
 
 
 def caption_summary_for_comment(comment: CommentLike) -> str:
