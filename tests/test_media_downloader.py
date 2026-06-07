@@ -39,6 +39,7 @@ from .test_common import (
     MockDocument,
     MockMessage,
     MockPhoto,
+    MockUser,
     MockVideo,
     MockVideoNote,
     MockVoice,
@@ -634,6 +635,52 @@ class MediaDownloaderTestCase(unittest.TestCase):
                 "mp4",
             ),
             result,
+        )
+
+    def test_get_media_meta_uses_comment_naming_context_for_video(self):
+        from module.comment_workflow import CommentNamingContext, NamingStrategy
+
+        rest_app(MOCK_CONF)
+        app.save_path = MOCK_DIR
+        app.temp_save_path = os.path.join(MOCK_DIR, "temp")
+        app.file_path_prefix = ["chat_title", "media_datetime"]
+        app.file_name_prefix = ["message_id", "file_name"]
+        app.file_name_prefix_split = " - "
+
+        message = MockMessage(
+            id=4978,
+            chat_id=-1001,
+            chat_title="Discussion",
+            media="video",
+            video=MockVideo(file_name="bad/name?.mp4", mime_type="video/mp4"),
+            caption="caption text",
+            from_user=MockUser(username="user123"),
+            date=datetime(2026, 6, 7),
+        )
+        node = TaskNode(chat_id=-1001)
+        node.comment_naming_context = CommentNamingContext(
+            strategy=NamingStrategy.RECOMMENDED,
+            channel="zhyseseb",
+            post_id=422,
+            post_title="夏日/合集 Vol.12",
+        )
+
+        file_name, temp_file_name, file_format = self.loop.run_until_complete(
+            _get_media_meta(-1001, message, message.video, "video", node=node)
+        )
+
+        self.assertEqual(file_format, "mp4")
+        self.assertEqual(
+            file_name,
+            platform_generic_path(
+                f"{MOCK_DIR}/Discussion/2026_06/zhyseseb/422-夏日_合集 Vol.12/4978 - bad_name_.mp4"
+            ),
+        )
+        self.assertEqual(
+            temp_file_name,
+            platform_generic_path(
+                f"{MOCK_DIR}/temp/Discussion/zhyseseb/422-夏日_合集 Vol.12/4978 - bad_name_.mp4"
+            ),
         )
 
     @mock.patch("media_downloader.app.save_path", new=MOCK_DIR)

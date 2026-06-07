@@ -331,6 +331,13 @@ async def _get_media_meta(
             else:
                 gen_file_name = f"{message.id} - {combined_tag} - {gen_file_name}"
 
+        if node and getattr(node, "comment_naming_context", None):
+            from module.comment_workflow import build_name_for_strategy
+
+            gen_file_name = build_name_for_strategy(
+                message, node.comment_naming_context
+            )
+
         file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
 
         temp_file_name = os.path.join(app.temp_save_path, dirname, gen_file_name)

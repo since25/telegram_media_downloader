@@ -185,6 +185,8 @@ class TaskNode:
         
         # 文件名标签：用于在下载评论时添加到文件名中
         self.file_name_tag: Optional[str] = None
+        # Comment-link guided workflow naming context.
+        self.comment_naming_context = None
 
     def skip_msg_id(self, msg_id: int):
         """Skip if message id out of range"""
