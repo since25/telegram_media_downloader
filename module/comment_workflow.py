@@ -218,7 +218,7 @@ def looks_like_private_message_link(text: str) -> bool:
     if not url.startswith("https://t.me"):
         return False
     path_parts = [part for part in urlparse(url).path.split("/") if part]
-    return len(path_parts) >= 3 and path_parts[0] == "c"
+    return len(path_parts) >= 1 and path_parts[0] == "c"
 
 
 def _message_caption(message: CommentLike) -> Optional[str]:
