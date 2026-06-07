@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
@@ -180,9 +181,126 @@ def clean_segment(value: Optional[str], fallback: str, max_len: int = 40) -> str
     return text[:max_len]
 
 
+def original_file_name_for_comment(comment: CommentLike) -> str:
+    """Return cleaned original media filename or a stable fallback."""
+
+    media_name = _media_name(comment)
+    media = getattr(comment, media_name, None)
+    file_name = _normalize_segment(getattr(media, "file_name", None))
+    if file_name:
+        file_name = file_name[:80]
+        return file_name
+
+    extension = _extension_for_comment(comment)
+    return f"comment-{comment.id}-{media_name}.{extension}"
+
+
+def caption_summary_for_comment(comment: CommentLike) -> str:
+    """Return cleaned caption summary fallback."""
+
+    return clean_segment(getattr(comment, "caption", None), "no-caption", 40)
+
+
+def author_for_comment(comment: CommentLike) -> str:
+    """Return cleaned author display fallback."""
+
+    user = getattr(comment, "from_user", None)
+    author = getattr(user, "username", None) or getattr(user, "first_name", None)
+    return clean_segment(author, "anonymous", 40)
+
+
+def month_for_comment(comment: CommentLike) -> str:
+    """Return comment month partition or a stable fallback."""
+
+    date = getattr(comment, "date", None)
+    if not date:
+        return "0000_00"
+    return date.strftime("%Y_%m")
+
+
+def build_name_for_strategy(
+    comment: CommentLike,
+    context: CommentNamingContext,
+) -> str:
+    """Build a relative display path for a comment and naming context."""
+
+    channel = clean_segment(context.channel, "channel", 40)
+    post_title = clean_segment(context.post_title, f"post-{context.post_id}", 60)
+    original_file_name = original_file_name_for_comment(comment)
+    caption_summary = caption_summary_for_comment(comment)
+    extension = _extension_for_comment(comment)
+
+    if context.strategy is NamingStrategy.AUTHOR:
+        return f"{post_title}/{comment.id} - {author_for_comment(comment)} - {original_file_name}"
+    if context.strategy is NamingStrategy.CAPTION:
+        return f"{post_title}/{comment.id} - {caption_summary} - {original_file_name}"
+    if context.strategy is NamingStrategy.MONTH_CAPTION:
+        return f"{channel}/{month_for_comment(comment)}/{post_title}/{comment.id} - {caption_summary}.{extension}"
+    return f"{channel}/{context.post_id}-{post_title}/{comment.id} - {original_file_name}"
+
+
+def build_naming_previews(
+    comments: Sequence[CommentLike],
+    channel: str,
+    post_id: int,
+    post_title: str,
+    sample_size: int = 3,
+) -> List[NamingPreview]:
+    """Build concrete preview examples for all naming strategies."""
+
+    sample_comments = filter_media_comments(comments)[:sample_size]
+    strategies = [
+        (NamingStrategy.RECOMMENDED, "推荐C：频道/原帖ID-标题/评论ID - 原文件名"),
+        (NamingStrategy.AUTHOR, "A：原帖标题/评论ID - 作者 - 原文件名"),
+        (NamingStrategy.CAPTION, "B：原帖标题/评论ID - caption摘要 - 原文件名"),
+        (NamingStrategy.MONTH_CAPTION, "D：频道/年月/原帖标题/评论ID - caption摘要"),
+    ]
+
+    previews: List[NamingPreview] = []
+    for strategy, title in strategies:
+        context = CommentNamingContext(
+            strategy=strategy,
+            channel=channel,
+            post_id=post_id,
+            post_title=post_title,
+        )
+        previews.append(
+            NamingPreview(
+                strategy=strategy,
+                title=title,
+                examples=[
+                    build_name_for_strategy(comment, context)
+                    for comment in sample_comments
+                ],
+            )
+        )
+
+    return previews
+
+
 def _media_name(comment: CommentLike) -> str:
     media = getattr(comment, "media", None)
     return getattr(media, "value", media)
+
+
+def _extension_for_comment(comment: CommentLike) -> str:
+    media_name = _media_name(comment)
+    media = getattr(comment, media_name, None)
+    file_name = getattr(media, "file_name", None)
+    if file_name:
+        extension = os.path.splitext(file_name)[1].lstrip(".")
+        if extension:
+            return clean_segment(extension, "bin", 16)
+
+    if media_name == "photo":
+        return "jpg"
+    if media_name in ("video", "video_note"):
+        return "mp4"
+    if media_name == "voice":
+        return "ogg"
+    if media_name == "audio":
+        return "mp3"
+    return "bin"
 
 
 def _normalize_segment(value: Optional[str]) -> str:

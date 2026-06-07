@@ -12,6 +12,7 @@ from module.comment_workflow import (
     NamingStrategy,
     build_callback_data,
     build_comment_workflow_request,
+    build_naming_previews,
     build_workflow_token,
     clean_segment,
     filter_media_comments,
@@ -122,6 +123,73 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertEqual(clean_segment(" / ", "fallback"), "fallback")
         self.assertEqual(clean_segment(" / ", " bad/name "), "bad_name")
         self.assertEqual(clean_segment("123456789", "fallback", max_len=5), "12345")
+
+    def test_build_naming_previews_generates_four_clean_options(self):
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(file_name="bad/name?.mp4", mime_type="video/mp4"),
+                caption="第三张是重点，后面还有说明",
+                from_user=MockUser(username="user/name"),
+                date=datetime.datetime(2026, 6, 7),
+            )
+        ]
+
+        previews = build_naming_previews(
+            comments,
+            channel="zhyseseb",
+            post_id=422,
+            post_title="夏日/合集 Vol.12",
+            sample_size=1,
+        )
+
+        self.assertEqual(
+            [preview.strategy.value for preview in previews],
+            ["C", "A", "B", "D"],
+        )
+        self.assertEqual(
+            [preview.examples[0] for preview in previews],
+            [
+                "zhyseseb/422-夏日_合集 Vol.12/4978 - bad_name_.mp4",
+                "夏日_合集 Vol.12/4978 - user_name - bad_name_.mp4",
+                "夏日_合集 Vol.12/4978 - 第三张是重点，后面还有说明 - bad_name_.mp4",
+                "zhyseseb/2026_06/夏日_合集 Vol.12/4978 - 第三张是重点，后面还有说明.mp4",
+            ],
+        )
+
+    def test_build_naming_previews_uses_fallbacks(self):
+        comments = [
+            MockMessage(
+                id=5000,
+                media="photo",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="photo-id",
+                ),
+                date=datetime.datetime(2026, 6, 7),
+            )
+        ]
+
+        previews = build_naming_previews(
+            comments,
+            channel="zhyseseb",
+            post_id=422,
+            post_title="",
+            sample_size=1,
+        )
+
+        examples_by_strategy = {
+            preview.strategy.value: preview.examples[0] for preview in previews
+        }
+        self.assertEqual(
+            examples_by_strategy["C"],
+            "zhyseseb/422-post-422/5000 - comment-5000-photo.jpg",
+        )
+        self.assertEqual(
+            examples_by_strategy["D"],
+            "zhyseseb/2026_06/post-422/5000 - no-caption.jpg",
+        )
 
 
 if __name__ == "__main__":
