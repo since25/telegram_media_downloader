@@ -1223,6 +1223,111 @@ async def scan_comment_range(
     return CommentScanResult(discussion_group_id, comments, failed_comment_ids)
 
 
+async def download_prepared_comments(
+    comments,
+    download_filter,
+    node,
+    failed_comment_ids=None,
+):
+    """Download already-scanned comment media and preserve preview scan failures."""
+    from module.download_stat import remove_active_task_node
+    from module.pyrogram_extension import report_bot_status, set_meta_data
+    from utils.meta_data import MetaData
+    from utils.format import validate_title
+
+    failed_comment_ids = list(failed_comment_ids or [])
+
+    try:
+        if download_filter:
+            from module.app import app
+
+            class TempChatDownloadConfig:
+                def __init__(self):
+                    self.download_filter = download_filter
+
+            temp_config = TempChatDownloadConfig()
+            filtered_comments = []
+            for comment in comments:
+                meta_data = MetaData()
+                caption = comment.caption
+                if caption:
+                    caption = validate_title(caption)
+                set_meta_data(meta_data, comment, caption)
+
+                if app.exec_filter(temp_config, meta_data):
+                    filtered_comments.append(comment)
+
+            comments = filtered_comments
+
+        expected_comment_tasks = len(comments) + len(failed_comment_ids)
+        logger.info(f"设置预期评论任务数: {expected_comment_tasks}")
+
+        if failed_comment_ids:
+            node.failed_download_task += len(failed_comment_ids)
+            node.total_download_task += len(failed_comment_ids)
+            node.total_task += len(failed_comment_ids)
+            await report_bot_status(node.bot, node)
+
+        logger.info(f"开始下载评论媒体，共 {len(comments)} 条评论")
+        for i, comment in enumerate(comments):
+            if not node.is_running:
+                logger.info("任务已停止，中断下载")
+                break
+
+            logger.info(f"处理评论 {i+1}/{len(comments)}: id={comment.id}, has_media={comment.media is not None}, type={type(comment)}")
+
+            try:
+                comment_chat_id = comment.chat.id if comment.chat else "未知"
+                logger.info(f"准备添加下载任务: comment_id={comment.id}, chat_id={comment_chat_id}")
+                total_task_before_enqueue = node.total_task
+                total_download_task_before_enqueue = node.total_download_task
+                result = await add_download_task(comment, node)
+                logger.info(f"添加下载任务结果: {result}")
+                if result is False:
+                    node.failed_download_task += 1
+                    if node.total_task == total_task_before_enqueue:
+                        node.total_task += 1
+                    if node.total_download_task == total_download_task_before_enqueue:
+                        node.total_download_task += 1
+                    await report_bot_status(node.bot, node)
+            except Exception as e:
+                logger.error(f"处理评论 {comment.id} 失败: {e}")
+                import traceback
+                traceback.print_exc()
+                node.failed_download_task += 1
+                if node.total_task == total_task_before_enqueue:
+                    node.total_task += 1
+                if node.total_download_task == total_download_task_before_enqueue:
+                    node.total_download_task += 1
+                await report_bot_status(node.bot, node)
+
+        logger.info(f"评论下载任务已添加 {len(comments)} 条评论到下载队列，等待下载完成")
+
+        while True:
+            completed_tasks = (
+                node.success_download_task
+                + node.failed_download_task
+                + node.skip_download_task
+            )
+            logger.info(f"下载进度: 已完成 {completed_tasks}/{expected_comment_tasks} 个任务")
+
+            if completed_tasks >= expected_comment_tasks:
+                logger.info("所有下载任务已完成")
+                break
+
+            if not node.is_running or node.is_stop_transmission:
+                logger.info("任务已停止，结束评论下载等待")
+                break
+
+            await report_bot_status(node.bot, node)
+            await asyncio.sleep(5)
+
+        await report_bot_status(node.bot, node)
+        logger.info(f"评论下载任务已全部完成 - 成功: {node.success_download_task}, 失败: {node.failed_download_task}, 跳过: {node.skip_download_task}")
+    finally:
+        remove_active_task_node(node.task_id)
+
+
 async def download_comments(
     client: PyrogramClient,
     chat_id: int,
@@ -1233,11 +1338,8 @@ async def download_comments(
     node: TaskNode,
 ):
     """Download comments for a specific message"""
-    from module.download_stat import remove_active_task_node
-    from module.pyrogram_extension import report_bot_status, set_meta_data
-    from utils.meta_data import MetaData
-    from utils.format import validate_title
-    
+    from module.pyrogram_extension import report_bot_status
+
     try:
         logger.info(f"download_comments: 开始下载评论 - chat_id={chat_id}, base_message_id={base_message_id}, start_comment_id={start_comment_id}, end_comment_id={end_comment_id}")
         logger.info(f"download_comments: 任务节点信息 - task_id={node.task_id}, is_running={node.is_running}, is_stop_transmission={node.is_stop_transmission}")
@@ -1258,99 +1360,12 @@ async def download_comments(
             return
 
         logger.info(f"共找到 {len(comments)} 条符合条件的评论")
-        
-        # 处理下载过滤
-        if download_filter:
-            from utils.format import replace_date_time
-            from module.app import app
-            
-            # 创建临时ChatDownloadConfig用于过滤
-            class TempChatDownloadConfig:
-                def __init__(self):
-                    self.download_filter = download_filter
-            
-            temp_config = TempChatDownloadConfig()
-            
-            # 应用过滤
-            filtered_comments = []
-            for comment in comments:
-                meta_data = MetaData()
-                caption = comment.caption
-                if caption:
-                    caption = validate_title(caption)
-                set_meta_data(meta_data, comment, caption)
-                
-                if app.exec_filter(temp_config, meta_data):
-                    filtered_comments.append(comment)
-            
-            comments = filtered_comments
-
-        expected_comment_tasks = len(comments) + len(failed_comment_ids)
-        logger.info(f"设置预期评论任务数: {expected_comment_tasks}")
-
-        if failed_comment_ids:
-            node.failed_download_task += len(failed_comment_ids)
-            node.total_download_task += len(failed_comment_ids)
-            node.total_task += len(failed_comment_ids)
-            await report_bot_status(node.bot, node)
-        
-        # 下载评论中的媒体
-        logger.info(f"开始下载评论媒体，共 {len(comments)} 条评论")
-        for i, comment in enumerate(comments):
-            if not node.is_running:
-                logger.info(f"任务已停止，中断下载")
-                break
-            
-            logger.info(f"处理评论 {i+1}/{len(comments)}: id={comment.id}, has_media={comment.media is not None}, type={type(comment)}")
-            
-            try:
-                # 确保comment.chat存在
-                chat_id = comment.chat.id if comment.chat else "未知"
-                logger.info(f"准备添加下载任务: comment_id={comment.id}, chat_id={chat_id}")
-                total_task_before_enqueue = node.total_task
-                total_download_task_before_enqueue = node.total_download_task
-                result = await add_download_task(comment, node)
-                logger.info(f"添加下载任务结果: {result}")
-                if result is False:
-                    node.failed_download_task += 1
-                    if node.total_task == total_task_before_enqueue:
-                        node.total_task += 1
-                    if node.total_download_task == total_download_task_before_enqueue:
-                        node.total_download_task += 1
-                    await report_bot_status(node.bot, node)
-            except Exception as e:
-                logger.error(f"处理评论 {comment.id} 失败: {e}")
-                import traceback
-                traceback.print_exc()
-                node.failed_download_task += 1
-                await report_bot_status(node.bot, node)
-        
-        # 等待所有下载任务完成
-        logger.info(f"评论下载任务已添加 {len(comments)} 条评论到下载队列，等待下载完成")
-        
-        # 定期检查下载状态，直到所有任务完成
-        while True:
-            # 计算已完成的任务数
-            completed_tasks = node.success_download_task + node.failed_download_task + node.skip_download_task
-            logger.info(f"下载进度: 已完成 {completed_tasks}/{expected_comment_tasks} 个任务")
-            
-            if completed_tasks >= expected_comment_tasks:
-                logger.info("所有下载任务已完成")
-                break
-                
-            # 更新状态报告
-            await report_bot_status(node.bot, node)
-            
-            # 等待5秒后再次检查
-            await asyncio.sleep(5)
-        
-        # 所有任务完成后，报告最终状态
-        await report_bot_status(node.bot, node)
-        logger.info(f"评论下载任务已全部完成 - 成功: {node.success_download_task}, 失败: {node.failed_download_task}, 跳过: {node.skip_download_task}")
-        
-        # 清理任务节点
-        from module.download_stat import remove_active_task_node
-        remove_active_task_node(node.task_id)
+        await download_prepared_comments(
+            comments,
+            download_filter,
+            node,
+            failed_comment_ids=failed_comment_ids,
+        )
         
     except Exception as e:
         logger.error(f"Error downloading comments: {e}")

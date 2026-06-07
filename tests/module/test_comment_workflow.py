@@ -930,5 +930,199 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.pending_comment_workflows = old_pending
 
 
+class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_cancel_callback_removes_pending_workflow_and_edits_message(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+        token = "abc123"
+        old_pending = bot_module._bot.pending_comment_workflows
+        try:
+            bot_module._bot.pending_comment_workflows = {token: {"comments": []}}
+            query = SimpleNamespace(
+                data=f"{COMMENT_WORKFLOW_PREFIX}:{token}:cancel",
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+            )
+            client = FakeClient()
+
+            handled = await bot_module.handle_comment_workflow_callback(client, query)
+
+            self.assertTrue(handled)
+            self.assertEqual(bot_module._bot.pending_comment_workflows, {})
+            self.assertEqual(client.edits[0][0], 123)
+            self.assertEqual(client.edits[0][1], 10)
+            self.assertIn("已取消评论媒体下载。", client.edits[0][2])
+        finally:
+            bot_module._bot.pending_comment_workflows = old_pending
+
+    async def test_confirm_callback_starts_prepared_download_with_naming_context(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+                self.sent_messages = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+            async def send_message(self, chat_id, text, **kwargs):
+                message = MockMessage(id=77, chat_id=chat_id, text=text)
+                self.sent_messages.append((chat_id, text, kwargs, message))
+                return message
+
+        class FakeLoop:
+            def __init__(self):
+                self.created = []
+
+            def create_task(self, coroutine):
+                self.created.append(coroutine)
+                return coroutine
+
+        token = "abc123"
+        request = build_comment_workflow_request(
+            "https://t.me/zhyseseb/422?comment=4978"
+        )
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+            )
+        ]
+        pending = {
+            "request": request,
+            "entity_id": -1001,
+            "channel": "zhyseseb",
+            "post_title": "夏日合集",
+            "comments": comments,
+            "failed_comment_ids": [4980],
+            "source_message_id": 88,
+        }
+        recorded = {}
+
+        async def fake_download_prepared_comments(
+            prepared_comments, download_filter, node, failed_comment_ids=None
+        ):
+            recorded["comments"] = prepared_comments
+            recorded["download_filter"] = download_filter
+            recorded["node"] = node
+            recorded["failed_comment_ids"] = failed_comment_ids
+
+        active_nodes = []
+
+        def fake_add_active_task_node(node):
+            active_nodes.append(node)
+
+        old_pending = bot_module._bot.pending_comment_workflows
+        old_app = bot_module._bot.app
+        old_bot = bot_module._bot.bot
+        old_task_node = bot_module._bot.task_node
+        old_task_id = bot_module._bot.task_id
+        try:
+            fake_loop = FakeLoop()
+            bot_module._bot.pending_comment_workflows = {token: pending}
+            bot_module._bot.app = SimpleNamespace(loop=fake_loop)
+            bot_module._bot.bot = object()
+            bot_module._bot.task_node = {}
+            bot_module._bot.task_id = 0
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=f"{COMMENT_WORKFLOW_PREFIX}:{token}:C",
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "media_downloader.download_prepared_comments",
+                new=fake_download_prepared_comments,
+            ), patch("module.bot.add_active_task_node", new=fake_add_active_task_node):
+                handled = await bot_module.handle_comment_workflow_callback(
+                    client, query
+                )
+                await fake_loop.created[0]
+
+            self.assertTrue(handled)
+            self.assertEqual(bot_module._bot.pending_comment_workflows, {})
+            node = recorded["node"]
+            self.assertIs(recorded["comments"], comments)
+            self.assertIsNone(recorded["download_filter"])
+            self.assertEqual(recorded["failed_comment_ids"], [4980])
+            self.assertTrue(node.is_running)
+            self.assertEqual(node.chat_id, -1001)
+            self.assertEqual(node.from_user_id, 123)
+            self.assertEqual(node.reply_message_id, 77)
+            self.assertEqual(node.comment_naming_context.strategy, NamingStrategy.RECOMMENDED)
+            self.assertEqual(node.comment_naming_context.channel, "zhyseseb")
+            self.assertEqual(node.comment_naming_context.post_id, 422)
+            self.assertEqual(node.comment_naming_context.post_title, "夏日合集")
+            self.assertEqual(active_nodes, [node])
+            self.assertIn(node.task_id, bot_module._bot.task_node)
+        finally:
+            bot_module._bot.pending_comment_workflows = old_pending
+            bot_module._bot.app = old_app
+            bot_module._bot.bot = old_bot
+            bot_module._bot.task_node = old_task_node
+            bot_module._bot.task_id = old_task_id
+
+    async def test_expired_token_callback_is_handled_without_starting_download(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+        started = False
+
+        async def fake_download_prepared_comments(*args, **kwargs):
+            nonlocal started
+            started = True
+
+        old_pending = bot_module._bot.pending_comment_workflows
+        try:
+            bot_module._bot.pending_comment_workflows = {}
+            query = SimpleNamespace(
+                data=f"{COMMENT_WORKFLOW_PREFIX}:missing:C",
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+            client = FakeClient()
+
+            with patch(
+                "media_downloader.download_prepared_comments",
+                new=fake_download_prepared_comments,
+            ):
+                handled = await bot_module.handle_comment_workflow_callback(
+                    client, query
+                )
+
+            self.assertTrue(handled)
+            self.assertFalse(started)
+            self.assertIn("任务已过期，请重新发送链接", client.edits[0][2])
+        finally:
+            bot_module._bot.pending_comment_workflows = old_pending
+
+    async def test_non_comment_workflow_callback_is_not_handled(self):
+        from module import bot as bot_module
+
+        query = SimpleNamespace(
+            data="stop task all",
+            message=MockMessage(id=10, from_user=MockUser(id=123)),
+        )
+
+        handled = await bot_module.handle_comment_workflow_callback(object(), query)
+
+        self.assertFalse(handled)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -25,6 +25,7 @@ from module.app import (
 )
 from module.comment_workflow import (
     COMMENT_WORKFLOW_PREFIX,
+    CommentNamingContext,
     NamingStrategy,
     build_callback_data,
     build_comment_workflow_request,
@@ -32,6 +33,7 @@ from module.comment_workflow import (
     build_workflow_token,
     filter_media_comments,
     format_preview_message,
+    parse_callback_data,
     summarize_comments,
 )
 from module.filter import Filter
@@ -1745,6 +1747,93 @@ async def stop_task(
         _bot.stop_task(task_id)
 
 
+def _callback_chat_id(query):
+    message = getattr(query, "message", None)
+    user = getattr(query, "from_user", None) or getattr(message, "from_user", None)
+    return getattr(user, "id", None)
+
+
+async def handle_comment_workflow_callback(client, query):
+    """Handle guided comment media workflow confirmation callbacks."""
+    data = getattr(query, "data", None)
+    if not data or not data.startswith(f"{COMMENT_WORKFLOW_PREFIX}:"):
+        return False
+
+    message = getattr(query, "message", None)
+    chat_id = _callback_chat_id(query)
+    message_id = getattr(message, "id", None)
+
+    parts = data.split(":")
+    if len(parts) == 3 and parts[2] == "cancel" and parts[1]:
+        _bot.pending_comment_workflows.pop(parts[1], None)
+        await client.edit_message_text(
+            chat_id,
+            message_id,
+            "已取消评论媒体下载。",
+        )
+        return True
+
+    parsed = parse_callback_data(data)
+    if not parsed:
+        await client.edit_message_text(
+            chat_id,
+            message_id,
+            "无效的评论媒体下载操作。",
+        )
+        return True
+
+    token, strategy = parsed
+    pending = _bot.pending_comment_workflows.pop(token, None)
+    if not pending:
+        await client.edit_message_text(
+            chat_id,
+            message_id,
+            "任务已过期，请重新发送链接",
+        )
+        return True
+
+    request = pending["request"]
+    await client.edit_message_text(
+        chat_id,
+        message_id,
+        f"已确认命名策略 {strategy.value}，开始下载评论媒体。",
+    )
+    status_message = await client.send_message(
+        chat_id,
+        f"评论媒体下载任务已启动：{pending['channel']}/{request.post_id}",
+        reply_to_message_id=pending.get("source_message_id"),
+    )
+
+    node = TaskNode(
+        chat_id=pending["entity_id"],
+        from_user_id=chat_id,
+        reply_message_id=status_message.id,
+        bot=_bot.bot,
+        task_id=_bot.gen_task_id(),
+    )
+    node.comment_naming_context = CommentNamingContext(
+        strategy=strategy,
+        channel=pending["channel"],
+        post_id=request.post_id,
+        post_title=pending["post_title"],
+    )
+    node.is_running = True
+    _bot.add_task_node(node)
+    add_active_task_node(node)
+
+    from media_downloader import download_prepared_comments
+
+    _bot.app.loop.create_task(
+        download_prepared_comments(
+            pending["comments"],
+            None,
+            node,
+            failed_comment_ids=pending.get("failed_comment_ids"),
+        )
+    )
+    return True
+
+
 async def on_query_handler(
     client: pyrogram.Client, query: pyrogram.types.CallbackQuery
 ):
@@ -1758,6 +1847,9 @@ async def on_query_handler(
     Returns:
         None
     """
+
+    if await handle_comment_workflow_callback(client, query):
+        return
 
     for it in QueryHandler:
         queryHandler = QueryHandlerStr.get_str(it.value)
