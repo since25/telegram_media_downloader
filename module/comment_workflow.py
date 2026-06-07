@@ -145,8 +145,6 @@ def build_message_package_workflow_request(
     link = extract_info_from_link(url)
     if link.group_id is None or link.post_id is None or link.comment_id is not None:
         return None
-    if "comment" in url:
-        return None
 
     return MessagePackageWorkflowRequest(
         url=url,
