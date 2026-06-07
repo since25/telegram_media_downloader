@@ -23,6 +23,17 @@ from module.app import (
     TaskType,
     UploadStatus,
 )
+from module.comment_workflow import (
+    COMMENT_WORKFLOW_PREFIX,
+    NamingStrategy,
+    build_callback_data,
+    build_comment_workflow_request,
+    build_naming_previews,
+    build_workflow_token,
+    filter_media_comments,
+    format_preview_message,
+    summarize_comments,
+)
 from module.filter import Filter
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import Language, _t
@@ -69,6 +80,7 @@ class DownloadBot:
         self.download_filter: List[str] = []
         self.task_id: int = 0
         self.reply_task = None
+        self.pending_comment_workflows: dict = {}
 
     def gen_task_id(self) -> int:
         """Gen task id"""
@@ -642,6 +654,11 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
     if not message.text or not message.text.startswith("https://t.me"):
         return
 
+    workflow_request = build_comment_workflow_request(message.text.strip())
+    if workflow_request:
+        await preview_comment_workflow(client, message, workflow_request)
+        return
+
     msg = (
         f"1. {_t('Directly download a single message')}\n"
         "<i>https://t.me/12000000/1</i>\n\n"
@@ -786,6 +803,159 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
     await client.send_message(
         message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
     )
+
+
+async def preview_comment_workflow(client, message, workflow_request):
+    """Scan a pasted comment link and show guided download naming previews."""
+
+    from media_downloader import scan_comment_range
+
+    try:
+        entity = await _bot.client.get_chat(workflow_request.source_chat)
+        base_message = await _bot.client.get_messages(
+            entity.id, workflow_request.post_id
+        )
+        post_title = ""
+        if base_message:
+            post_title = base_message.text or base_message.caption or ""
+
+        discussion_message = await _bot.client.get_discussion_message(
+            entity.id, workflow_request.post_id
+        )
+        if not discussion_message:
+            await client.send_message(
+                message.from_user.id,
+                "无法获取原帖讨论区，不能预览评论媒体。",
+                reply_to_message_id=message.id,
+            )
+            return
+
+        latest_comment_id = workflow_request.start_comment_id
+        found_latest_from_history = False
+        try:
+            async for latest_msg in get_chat_history_v2(
+                _bot.client,
+                discussion_message.chat.id,
+                limit=1,
+                reverse=False,
+            ):
+                latest_comment_id = max(
+                    workflow_request.start_comment_id, latest_msg.id
+                )
+                found_latest_from_history = True
+                break
+        except Exception as history_error:
+            logger.warning(
+                f"preview_comment_workflow: latest history lookup failed: {history_error}"
+            )
+
+        if not found_latest_from_history:
+            latest_comment_id = max(
+                workflow_request.start_comment_id,
+                getattr(discussion_message, "id", workflow_request.start_comment_id),
+            )
+
+        scan_result = await scan_comment_range(
+            _bot.client,
+            entity.id,
+            workflow_request.post_id,
+            workflow_request.start_comment_id,
+            latest_comment_id,
+        )
+        comments = scan_result.comments
+        media_comments = filter_media_comments(comments)
+        summary = summarize_comments(comments)
+
+        if not media_comments:
+            await client.send_message(
+                message.from_user.id,
+                "未找到可下载的媒体评论。",
+                reply_to_message_id=message.id,
+            )
+            return
+
+        token = build_workflow_token(workflow_request.url, message.from_user.id)
+        channel = entity.username or entity.title or str(entity.id)
+        previews = build_naming_previews(
+            media_comments,
+            channel=channel,
+            post_id=workflow_request.post_id,
+            post_title=post_title,
+        )
+
+        _bot.pending_comment_workflows[token] = {
+            "request": workflow_request,
+            "entity_id": entity.id,
+            "channel": channel,
+            "post_title": post_title,
+            "comments": media_comments,
+            "source_message_id": message.id,
+        }
+
+        cloud_drive_config = getattr(_bot.app, "cloud_drive_config", None)
+        upload_enabled = bool(
+            getattr(cloud_drive_config, "enable_upload_file", False)
+        )
+        delete_after_upload = bool(
+            getattr(cloud_drive_config, "after_upload_file_delete", False)
+        )
+        preview_text = format_preview_message(
+            channel=channel,
+            post_id=workflow_request.post_id,
+            post_title=post_title,
+            start_comment_id=workflow_request.start_comment_id,
+            summary=summary,
+            previews=previews,
+            upload_enabled=upload_enabled,
+            delete_after_upload=delete_after_upload,
+        )
+        buttons = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "采用推荐C",
+                        callback_data=build_callback_data(
+                            token, NamingStrategy.RECOMMENDED
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "采用A",
+                        callback_data=build_callback_data(token, NamingStrategy.AUTHOR),
+                    ),
+                    InlineKeyboardButton(
+                        "采用B",
+                        callback_data=build_callback_data(token, NamingStrategy.CAPTION),
+                    ),
+                    InlineKeyboardButton(
+                        "采用D",
+                        callback_data=build_callback_data(
+                            token, NamingStrategy.MONTH_CAPTION
+                        ),
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "取消",
+                        callback_data=f"{COMMENT_WORKFLOW_PREFIX}:{token}:cancel",
+                    )
+                ],
+            ]
+        )
+        await client.send_message(
+            message.from_user.id,
+            preview_text,
+            reply_markup=buttons,
+            reply_to_message_id=message.id,
+        )
+    except Exception as error:
+        logger.error(f"preview_comment_workflow: failed: {error}", exc_info=True)
+        await client.send_message(
+            message.from_user.id,
+            f"预览评论媒体失败：{error}",
+            reply_to_message_id=message.id,
+        )
 
 
 # pylint: disable = R0912, R0915,R0914

@@ -279,6 +279,55 @@ def build_naming_previews(
     return previews
 
 
+def format_preview_message(
+    channel: str,
+    post_id: int,
+    post_title: str,
+    start_comment_id: int,
+    summary: CommentScanSummary,
+    previews: Sequence[NamingPreview],
+    upload_enabled: bool,
+    delete_after_upload: bool,
+) -> str:
+    """Format the guided comment workflow preview shown before download."""
+
+    cleaned_title = clean_segment(post_title, f"post-{post_id}", 60)
+    last_comment_id = summary.last_comment_id or start_comment_id
+    media_type_counts = (
+        "、".join(
+            f"{media_type}:{count}"
+            for media_type, count in sorted(summary.media_type_counts.items())
+        )
+        or "无"
+    )
+    lines = [
+        "评论媒体下载预览",
+        f"频道：{channel}",
+        f"原帖：{post_id}",
+        f"标题：{cleaned_title}",
+        f"范围：{start_comment_id}→{last_comment_id}",
+        f"扫描评论：{summary.scanned_count}",
+        f"媒体评论：{summary.media_count}",
+        f"媒体类型：{media_type_counts}",
+        f"上传：{'enabled' if upload_enabled else 'disabled'}",
+        f"删除源文件：{'enabled' if delete_after_upload else 'disabled'}",
+        "",
+        "命名预览：",
+    ]
+
+    for preview in previews:
+        title = preview.title
+        if preview.strategy is NamingStrategy.RECOMMENDED:
+            title = f"{title}（采用推荐C）"
+        lines.append(title)
+        if preview.examples:
+            lines.extend(f"- {example}" for example in preview.examples)
+        else:
+            lines.append("- 无示例")
+
+    return "\n".join(lines)
+
+
 def _media_name(comment: CommentLike) -> str:
     media = getattr(comment, "media", None)
     return getattr(media, "value", media)
