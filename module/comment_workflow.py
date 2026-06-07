@@ -241,8 +241,16 @@ def plan_message_package(
     scanned_messages = candidates[:max_scan_count]
     scan_limit_hit = max_scan_count > 0 and len(scanned_messages) >= max_scan_count
 
-    items: List[PackageMediaItem] = []
     group_captions: Dict[str, str] = {}
+    for message in scanned_messages:
+        media_group_id = getattr(message, "media_group_id", None)
+        if not media_group_id or media_group_id in group_captions:
+            continue
+        caption = _message_caption(message)
+        if caption:
+            group_captions[media_group_id] = caption
+
+    items: List[PackageMediaItem] = []
     package_title: Optional[str] = None
     current_caption: Optional[str] = None
     next_package_message: Optional[CommentLike] = None
@@ -262,9 +270,6 @@ def plan_message_package(
             if not captions_are_similar(current_caption, candidate_caption):
                 next_package_message = message
                 break
-
-        if raw_caption and media_group_id:
-            group_captions[media_group_id] = raw_caption
 
         effective_caption = raw_caption
         if not effective_caption and media_group_id:

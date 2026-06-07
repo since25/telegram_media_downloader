@@ -302,6 +302,52 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIsNone(plan.next_package_message)
         self.assertEqual(plan.scan_warning, "未发现下一包边界，已达到扫描上限 2 条。")
 
+    def test_plan_message_package_shares_album_caption_when_caption_appears_later(self):
+        from module.comment_workflow import plan_message_package
+
+        messages = [
+            MockMessage(
+                id=10,
+                media="photo",
+                media_group_id="album1",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p10",
+                    file_size=10,
+                ),
+            ),
+            MockMessage(
+                id=11,
+                media="photo",
+                media_group_id="album1",
+                caption="相册标题 EP01",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p11",
+                    file_size=11,
+                ),
+            ),
+            MockMessage(
+                id=12,
+                media="photo",
+                media_group_id="album1",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p12",
+                    file_size=12,
+                ),
+            ),
+        ]
+
+        plan = plan_message_package(messages, start_message_id=10)
+
+        self.assertEqual(
+            [item.caption_for_naming for item in plan.items],
+            ["相册标题 EP01", "相册标题 EP01", "相册标题 EP01"],
+        )
+        self.assertEqual([item.inherited_caption for item in plan.items], [True, False, True])
+        self.assertEqual(plan.inherited_caption_count, 2)
+
     def test_filter_media_comments_skips_text_and_empty_messages(self):
         comments = [
             MockMessage(id=1, text="hello"),
