@@ -373,12 +373,137 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("126713 - 某某课程 第02章", preview_text)
         self.assertIn("不会纳入本次下载。", preview_text)
         self.assertIn("推荐C：频道/起始ID-标题/消息ID - 原文件名", preview_text)
+        self.assertIn(
+            "推荐C：频道/起始ID-标题/消息ID - 原文件名（采用推荐C）",
+            preview_text,
+        )
         self.assertIn("A：标题/消息ID - 作者 - 原文件名", preview_text)
         self.assertIn("B：标题/消息ID - caption摘要 - 原文件名", preview_text)
         self.assertIn("D：频道/年月/标题/消息ID - caption摘要", preview_text)
         self.assertIn(
             "私密频道/126711-某某课程 第01章/126711 - 001_bad_.mp4",
             preview_text,
+        )
+
+    def test_format_package_preview_inherits_next_album_caption(self):
+        from module.comment_workflow import (
+            build_package_naming_previews,
+            format_package_preview_message,
+            plan_message_package,
+        )
+
+        messages = [
+            MockMessage(
+                id=10,
+                media="photo",
+                media_group_id="album1",
+                caption="当前相册 EP01",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p10",
+                    file_size=10,
+                ),
+            ),
+            MockMessage(
+                id=11,
+                media="photo",
+                media_group_id="album1",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p11",
+                    file_size=11,
+                ),
+            ),
+            MockMessage(
+                id=20,
+                media="photo",
+                media_group_id="album2",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p20",
+                    file_size=20,
+                ),
+            ),
+            MockMessage(
+                id=21,
+                media="photo",
+                media_group_id="album2",
+                caption="下一相册 EP02",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p21",
+                    file_size=21,
+                ),
+            ),
+        ]
+
+        package_plan = plan_message_package(messages, start_message_id=10)
+        previews = build_package_naming_previews(
+            package_plan.items,
+            channel="私密频道",
+            start_message_id=10,
+            package_title=package_plan.package_title,
+        )
+
+        preview_text = format_package_preview_message(
+            channel="私密频道",
+            start_message_id=10,
+            package_plan=package_plan,
+            previews=previews,
+            upload_enabled=True,
+            delete_after_upload=False,
+        )
+
+        self.assertEqual([item.message.id for item in package_plan.items], [10, 11])
+        self.assertEqual(package_plan.next_package_message.id, 20)
+        self.assertIn("20 - 下一相册 EP02", preview_text)
+        self.assertNotIn("20 - message-20", preview_text)
+
+    def test_package_naming_previews_use_extension_fallbacks(self):
+        from module.comment_workflow import (
+            build_package_naming_previews,
+            media_file_name_for_message,
+            plan_message_package,
+        )
+
+        messages = [
+            MockMessage(
+                id=200,
+                media="video",
+                caption="资源包",
+                video=MockVideo(mime_type="video/mp4", file_size=200),
+            ),
+            MockMessage(
+                id=201,
+                media="photo",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7),
+                    file_unique_id="p201",
+                    file_size=201,
+                ),
+            ),
+        ]
+
+        package_plan = plan_message_package(messages, start_message_id=200)
+        previews = build_package_naming_previews(
+            package_plan.items,
+            channel="私密频道",
+            start_message_id=200,
+            package_title=package_plan.package_title,
+        )
+
+        self.assertEqual(
+            media_file_name_for_message(messages[0]), "message-200-video.mp4"
+        )
+        self.assertEqual(
+            media_file_name_for_message(messages[1]), "message-201-photo.jpg"
+        )
+        self.assertEqual(
+            previews[0].examples,
+            [
+                "私密频道/200-资源包/200 - message-200-video.mp4",
+                "私密频道/200-资源包/201 - message-201-photo.jpg",
+            ],
         )
 
     def test_plan_message_package_shares_album_caption_when_caption_appears_later(self):

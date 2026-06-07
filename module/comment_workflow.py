@@ -149,6 +149,7 @@ class MessagePackagePlan:
     size_summary: SizeSummary
     inherited_caption_count: int = 0
     next_package_message: Optional[CommentLike] = None
+    next_package_caption: Optional[str] = None
     scan_warning: Optional[str] = None
 
 
@@ -265,6 +266,7 @@ def plan_message_package(
     package_title: Optional[str] = None
     current_caption: Optional[str] = None
     next_package_message: Optional[CommentLike] = None
+    next_package_caption: Optional[str] = None
     inherited_caption_count = 0
 
     for message in scanned_messages:
@@ -280,6 +282,7 @@ def plan_message_package(
         if items and candidate_caption and current_caption:
             if not captions_are_similar(current_caption, candidate_caption):
                 next_package_message = message
+                next_package_caption = candidate_caption
                 break
 
         effective_caption = raw_caption
@@ -334,6 +337,7 @@ def plan_message_package(
         size_summary=build_size_summary(package_messages),
         inherited_caption_count=inherited_caption_count,
         next_package_message=next_package_message,
+        next_package_caption=next_package_caption,
         scan_warning=scan_warning,
     )
 
@@ -356,13 +360,13 @@ def media_file_name_for_message(message: CommentLike) -> str:
     """Return a stable display filename for size previews."""
 
     media_name, media_obj = media_payload_for_message(message)
+    extension = _extension_for_comment(message)
+    fallback = f"message-{message.id}-{media_name}.{extension}"
     raw_file_name = getattr(media_obj, "file_name", None)
-    if raw_file_name:
+    raw_stem = os.path.splitext(raw_file_name or "")[0]
+    if _normalize_segment(raw_stem):
         return clean_segment(raw_file_name, f"message-{message.id}-{media_name}", 80)
-    if media_name == "photo":
-        unique_id = getattr(media_obj, "file_unique_id", None)
-        return clean_segment(unique_id, f"message-{message.id}-photo", 80)
-    return clean_segment(None, f"message-{message.id}-{media_name}", 80)
+    return fallback
 
 
 def build_size_summary(
@@ -730,8 +734,8 @@ def _format_size_details(summary: SizeSummary) -> List[str]:
     return lines
 
 
-def _preview_caption(message: CommentLike) -> str:
-    caption = getattr(message, "caption", None)
+def _preview_caption(message: CommentLike, caption: Optional[str] = None) -> str:
+    caption = caption or getattr(message, "caption", None)
     if caption:
         return clean_segment(caption, f"message-{message.id}", 60)
     return clean_segment(None, f"message-{message.id}", 60)
@@ -770,21 +774,25 @@ def format_package_preview_message(
     if package_plan.scan_warning:
         lines.append(f"提示：{package_plan.scan_warning}")
     if package_plan.next_package_message:
+        next_caption = _preview_caption(
+            package_plan.next_package_message,
+            package_plan.next_package_caption,
+        )
         lines.extend(
             [
                 "",
                 "下一包起点预览：",
-                (
-                    f"{package_plan.next_package_message.id} - "
-                    f"{_preview_caption(package_plan.next_package_message)}"
-                ),
+                f"{package_plan.next_package_message.id} - {next_caption}",
                 "不会纳入本次下载。",
             ]
         )
     lines.append("")
     lines.append("命名预览：")
     for preview in previews:
-        lines.append(preview.title)
+        title = preview.title
+        if preview.strategy is NamingStrategy.RECOMMENDED:
+            title = f"{title}（采用推荐C）"
+        lines.append(title)
         if preview.examples:
             lines.extend(f"- {example}" for example in preview.examples)
         else:
