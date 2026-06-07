@@ -481,6 +481,27 @@ def parse_callback_data(data: str) -> Optional[tuple[str, NamingStrategy]]:
     return parts[1], strategy
 
 
+def build_package_callback_data(token: str, strategy: NamingStrategy) -> str:
+    """Build package workflow callback data that fits Telegram's limit."""
+
+    return f"{PACKAGE_WORKFLOW_PREFIX}:{token}:{strategy.value}"
+
+
+def parse_package_callback_data(data: str) -> Optional[tuple[str, NamingStrategy]]:
+    """Parse package workflow callback data into token and naming strategy."""
+
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != PACKAGE_WORKFLOW_PREFIX or not parts[1]:
+        return None
+
+    try:
+        strategy = NamingStrategy(parts[2])
+    except ValueError:
+        return None
+
+    return parts[1], strategy
+
+
 def clean_segment(value: Optional[str], fallback: str, max_len: int = 40) -> str:
     """Clean one filename/path segment with deterministic fallback."""
 

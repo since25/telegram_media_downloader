@@ -143,6 +143,27 @@ class CommentWorkflowTestCase(unittest.TestCase):
             )
         )
 
+    def test_package_callback_data_round_trips_token_and_strategy(self):
+        from module.comment_workflow import (
+            build_package_callback_data,
+            parse_package_callback_data,
+        )
+
+        data = build_package_callback_data("pkg123", NamingStrategy.RECOMMENDED)
+
+        self.assertEqual(data, "pw:pkg123:C")
+        self.assertEqual(
+            parse_package_callback_data(data),
+            ("pkg123", NamingStrategy.RECOMMENDED),
+        )
+
+    def test_package_callback_data_rejects_non_package_payloads(self):
+        from module.comment_workflow import parse_package_callback_data
+
+        self.assertIsNone(parse_package_callback_data("cw:pkg123:C"))
+        self.assertIsNone(parse_package_callback_data("pw::C"))
+        self.assertIsNone(parse_package_callback_data("pw:pkg123:Z"))
+
     def test_build_size_summary_counts_known_unknown_and_largest(self):
         from module.comment_workflow import build_size_summary, format_size_summary
 
@@ -1300,41 +1321,123 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview_calls[0][2].start_comment_id, 4978)
         parse_link.assert_not_called()
 
-    async def test_download_from_link_does_not_route_normal_link_to_preview(self):
+    async def test_download_from_link_routes_private_message_link_to_package_preview(self):
         from module import bot as bot_module
 
-        preview_calls = []
-        sent_messages = []
-
-        class FakeBotClient:
-            async def send_message(self, chat_id, text, **kwargs):
-                sent_messages.append((chat_id, text, kwargs))
+        comment_preview_calls = []
+        package_preview_calls = []
 
         async def fake_preview_comment_workflow(client, message, workflow_request):
-            preview_calls.append((client, message, workflow_request))
+            comment_preview_calls.append((client, message, workflow_request))
 
-        async def fake_parse_link(client, url):
-            return None, None, None
+        async def fake_preview_package_workflow(client, message, workflow_request):
+            package_preview_calls.append((client, message, workflow_request))
+
+        message = MockMessage(
+            id=89,
+            text="https://t.me/c/1298283297/126711",
+            from_user=MockUser(id=123),
+        )
+        bot_client = SimpleNamespace()
+
+        with patch(
+            "module.bot.preview_comment_workflow",
+            new=fake_preview_comment_workflow,
+        ), patch(
+            "module.bot.preview_package_workflow",
+            new=fake_preview_package_workflow,
+        ), patch("module.bot.parse_link") as parse_link:
+            await bot_module.download_from_link(bot_client, message)
+
+        self.assertEqual(comment_preview_calls, [])
+        self.assertEqual(len(package_preview_calls), 1)
+        self.assertIs(package_preview_calls[0][0], bot_client)
+        self.assertIs(package_preview_calls[0][1], message)
+        self.assertEqual(package_preview_calls[0][2].source_chat, -1001298283297)
+        self.assertEqual(package_preview_calls[0][2].start_message_id, 126711)
+        parse_link.assert_not_called()
+
+    async def test_preview_package_workflow_stores_plan_items_and_buttons(self):
+        from module import bot as bot_module
+        from module.comment_workflow import build_message_package_workflow_request
+        from media_downloader import MessagePackageScanResult
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        source_entity = SimpleNamespace(
+            id=-1001298283297, username=None, title="Private Course"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                caption="课程 第01章 01_40",
+                media="video",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+
+        class FakeUserClient:
+            async def get_chat(self, chat_id):
+                return source_entity
+
+        class FakeBotClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+
+        async def fake_scan_message_package(client, chat_id, start_message_id):
+            from module.comment_workflow import plan_message_package
+
+            package_plan = plan_message_package(messages, start_message_id)
+            return MessagePackageScanResult(chat_id, messages, package_plan, [126712])
 
         old_client = bot_module._bot.client
+        old_app = bot_module._bot.app
+        old_pending = getattr(bot_module._bot, "pending_package_workflows", None)
+        bot_client = FakeBotClient()
         try:
-            bot_module._bot.client = object()
+            bot_module._bot.client = FakeUserClient()
+            bot_module._bot.app = SimpleNamespace(
+                cloud_drive_config=SimpleNamespace(
+                    enable_upload_file=True,
+                    after_upload_file_delete=True,
+                )
+            )
+            bot_module._bot.pending_package_workflows = {}
             message = MockMessage(
-                id=89,
-                text="https://t.me/zhyseseb/422",
+                id=90,
+                text="https://t.me/c/1298283297/126711",
                 from_user=MockUser(id=123),
             )
 
             with patch(
-                "module.bot.preview_comment_workflow",
-                new=fake_preview_comment_workflow,
-            ), patch("module.bot.parse_link", new=fake_parse_link):
-                await bot_module.download_from_link(FakeBotClient(), message)
+                "media_downloader.scan_message_package", new=fake_scan_message_package
+            ):
+                await bot_module.preview_package_workflow(bot_client, message, request)
 
-            self.assertEqual(preview_calls, [])
-            self.assertEqual(len(sent_messages), 1)
+            self.assertEqual(len(bot_module._bot.pending_package_workflows), 1)
+            pending = next(iter(bot_module._bot.pending_package_workflows.values()))
+            self.assertIs(pending["request"], request)
+            self.assertEqual(pending["entity_id"], -1001298283297)
+            self.assertEqual(pending["channel"], "Private Course")
+            self.assertEqual(pending["package_title"], "课程 第01章 01_40")
+            self.assertIs(pending["messages"], messages)
+            self.assertEqual(pending["failed_message_ids"], [126712])
+            self.assertIs(pending["package_plan"].items[0].message, messages[0])
+            self.assertIs(pending["package_media_items"][126711].message, messages[0])
+            self.assertIn("识别到连续资源包", bot_client.sent_messages[0][1])
+            markup = bot_client.sent_messages[0][2]["reply_markup"]
+            self.assertIn("pw:", markup.inline_keyboard[0][0].callback_data)
         finally:
             bot_module._bot.client = old_client
+            bot_module._bot.app = old_app
+            if old_pending is None:
+                delattr(bot_module._bot, "pending_package_workflows")
+            else:
+                bot_module._bot.pending_package_workflows = old_pending
 
     async def test_preview_uses_latest_discussion_history_message_for_scan_end(self):
         from module import bot as bot_module
@@ -1716,6 +1819,39 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
         finally:
             bot_module._bot.pending_comment_workflows = old_pending
 
+    async def test_package_cancel_callback_removes_pending_workflow_and_edits_message(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+        token = "pkg123"
+        old_pending = getattr(bot_module._bot, "pending_package_workflows", None)
+        try:
+            bot_module._bot.pending_package_workflows = {token: {"messages": []}}
+            query = SimpleNamespace(
+                data=f"pw:{token}:cancel",
+                message=MockMessage(id=11, from_user=MockUser(id=123)),
+            )
+            client = FakeClient()
+
+            handled = await bot_module.handle_package_workflow_callback(client, query)
+
+            self.assertTrue(handled)
+            self.assertEqual(bot_module._bot.pending_package_workflows, {})
+            self.assertEqual(client.edits[0][0], 123)
+            self.assertEqual(client.edits[0][1], 11)
+            self.assertIn("已取消连续资源包下载。", client.edits[0][2])
+        finally:
+            if old_pending is None:
+                delattr(bot_module._bot, "pending_package_workflows")
+            else:
+                bot_module._bot.pending_package_workflows = old_pending
+
     async def test_confirm_callback_starts_prepared_download_with_naming_context(self):
         from module import bot as bot_module
 
@@ -1823,6 +1959,148 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.pending_comment_workflows = old_pending
             bot_module._bot.app = old_app
             bot_module._bot.bot = old_bot
+            bot_module._bot.task_node = old_task_node
+            bot_module._bot.task_id = old_task_id
+
+    async def test_package_confirm_callback_starts_prepared_download_with_naming_context(self):
+        from module import bot as bot_module
+        from module.comment_workflow import (
+            build_message_package_workflow_request,
+            build_package_callback_data,
+            plan_message_package,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+                self.sent_messages = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+            async def send_message(self, chat_id, text, **kwargs):
+                message = MockMessage(id=78, chat_id=chat_id, text=text)
+                self.sent_messages.append((chat_id, text, kwargs, message))
+                return message
+
+        class FakeLoop:
+            def __init__(self):
+                self.created = []
+
+            def create_task(self, coroutine):
+                self.created.append(coroutine)
+                return coroutine
+
+        token = "pkg123"
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                caption="课程 第01章 01_40",
+                media="video",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=126712,
+                caption=None,
+                media="video",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            ),
+        ]
+        package_plan = plan_message_package(messages, start_message_id=126711)
+        package_media_items = {item.message.id: item for item in package_plan.items}
+        pending = {
+            "request": request,
+            "entity_id": -1001298283297,
+            "channel": "Private Course",
+            "package_title": "课程 第01章 01_40",
+            "messages": messages,
+            "failed_message_ids": [126713],
+            "source_message_id": 90,
+            "package_plan": package_plan,
+            "package_media_items": package_media_items,
+        }
+        recorded = {}
+
+        async def fake_download_prepared_messages(
+            prepared_messages, download_filter, node, failed_message_ids=None
+        ):
+            recorded["messages"] = prepared_messages
+            recorded["download_filter"] = download_filter
+            recorded["node"] = node
+            recorded["failed_message_ids"] = failed_message_ids
+
+        active_nodes = []
+
+        def fake_add_active_task_node(node):
+            active_nodes.append(node)
+
+        client_for_node = object()
+        old_pending = getattr(bot_module._bot, "pending_package_workflows", None)
+        old_app = bot_module._bot.app
+        old_bot = bot_module._bot.bot
+        old_user_client = bot_module._bot.client
+        old_task_node = bot_module._bot.task_node
+        old_task_id = bot_module._bot.task_id
+        try:
+            fake_loop = FakeLoop()
+            bot_module._bot.pending_package_workflows = {token: pending}
+            bot_module._bot.app = SimpleNamespace(loop=fake_loop)
+            bot_module._bot.bot = object()
+            bot_module._bot.client = client_for_node
+            bot_module._bot.task_node = {}
+            bot_module._bot.task_id = 0
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=build_package_callback_data(token, NamingStrategy.RECOMMENDED),
+                message=MockMessage(id=11, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "media_downloader.download_prepared_messages",
+                new=fake_download_prepared_messages,
+            ), patch("module.bot.add_active_task_node", new=fake_add_active_task_node):
+                handled = await bot_module.handle_package_workflow_callback(
+                    client, query
+                )
+                await fake_loop.created[0]
+
+            self.assertTrue(handled)
+            self.assertEqual(bot_module._bot.pending_package_workflows, {})
+            node = recorded["node"]
+            self.assertIs(recorded["messages"], messages)
+            self.assertIsNone(recorded["download_filter"])
+            self.assertEqual(recorded["failed_message_ids"], [126713])
+            self.assertTrue(node.is_running)
+            self.assertEqual(node.chat_id, -1001298283297)
+            self.assertEqual(node.from_user_id, 123)
+            self.assertEqual(node.reply_message_id, 78)
+            self.assertIs(node.client, client_for_node)
+            self.assertEqual(
+                node.package_naming_context.strategy, NamingStrategy.RECOMMENDED
+            )
+            self.assertEqual(node.package_naming_context.channel, "Private Course")
+            self.assertEqual(node.package_naming_context.start_message_id, 126711)
+            self.assertEqual(
+                node.package_naming_context.package_title, "课程 第01章 01_40"
+            )
+            self.assertIs(node.package_plan, package_plan)
+            self.assertIs(node.package_media_items, package_media_items)
+            self.assertIs(node.package_media_items[126712], package_plan.items[1])
+            self.assertTrue(node.package_media_items[126712].inherited_caption)
+            self.assertEqual(active_nodes, [node])
+            self.assertIn(node.task_id, bot_module._bot.task_node)
+        finally:
+            if old_pending is None:
+                delattr(bot_module._bot, "pending_package_workflows")
+            else:
+                bot_module._bot.pending_package_workflows = old_pending
+            bot_module._bot.app = old_app
+            bot_module._bot.bot = old_bot
+            bot_module._bot.client = old_user_client
             bot_module._bot.task_node = old_task_node
             bot_module._bot.task_id = old_task_id
 
@@ -2110,6 +2388,49 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
         finally:
             bot_module._bot.pending_comment_workflows = old_pending
 
+    async def test_package_expired_token_callback_is_handled_without_starting_download(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+        started = False
+
+        async def fake_download_prepared_messages(*args, **kwargs):
+            nonlocal started
+            started = True
+
+        old_pending = getattr(bot_module._bot, "pending_package_workflows", None)
+        try:
+            bot_module._bot.pending_package_workflows = {}
+            query = SimpleNamespace(
+                data="pw:missing:C",
+                message=MockMessage(id=11, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+            client = FakeClient()
+
+            with patch(
+                "media_downloader.download_prepared_messages",
+                new=fake_download_prepared_messages,
+            ):
+                handled = await bot_module.handle_package_workflow_callback(
+                    client, query
+                )
+
+            self.assertTrue(handled)
+            self.assertFalse(started)
+            self.assertIn("任务已过期，请重新发送链接", client.edits[0][2])
+        finally:
+            if old_pending is None:
+                delattr(bot_module._bot, "pending_package_workflows")
+            else:
+                bot_module._bot.pending_package_workflows = old_pending
+
     async def test_non_comment_workflow_callback_is_not_handled(self):
         from module import bot as bot_module
 
@@ -2119,6 +2440,18 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
         handled = await bot_module.handle_comment_workflow_callback(object(), query)
+
+        self.assertFalse(handled)
+
+    async def test_non_package_workflow_callback_is_not_handled(self):
+        from module import bot as bot_module
+
+        query = SimpleNamespace(
+            data="stop task all",
+            message=MockMessage(id=10, from_user=MockUser(id=123)),
+        )
+
+        handled = await bot_module.handle_package_workflow_callback(object(), query)
 
         self.assertFalse(handled)
 

@@ -25,16 +25,23 @@ from module.app import (
 )
 from module.comment_workflow import (
     COMMENT_WORKFLOW_PREFIX,
+    PACKAGE_WORKFLOW_PREFIX,
     CommentNamingContext,
     NamingStrategy,
+    PackageNamingContext,
     build_callback_data,
     build_comment_workflow_request,
+    build_message_package_workflow_request,
     build_naming_previews,
+    build_package_callback_data,
+    build_package_naming_previews,
     build_size_summary,
     build_workflow_token,
     filter_media_comments,
+    format_package_preview_message,
     format_preview_message,
     parse_callback_data,
+    parse_package_callback_data,
     summarize_comments,
 )
 from module.filter import Filter
@@ -84,6 +91,7 @@ class DownloadBot:
         self.task_id: int = 0
         self.reply_task = None
         self.pending_comment_workflows: dict = {}
+        self.pending_package_workflows: dict = {}
 
     def gen_task_id(self) -> int:
         """Gen task id"""
@@ -662,6 +670,11 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
         await preview_comment_workflow(client, message, workflow_request)
         return
 
+    package_request = build_message_package_workflow_request(message.text.strip())
+    if package_request:
+        await preview_package_workflow(client, message, package_request)
+        return
+
     msg = (
         f"1. {_t('Directly download a single message')}\n"
         "<i>https://t.me/12000000/1</i>\n\n"
@@ -967,6 +980,124 @@ async def preview_comment_workflow(client, message, workflow_request):
         await client.send_message(
             message.from_user.id,
             f"预览评论媒体失败：{error}",
+            reply_to_message_id=message.id,
+        )
+
+
+async def preview_package_workflow(client, message, workflow_request):
+    """Scan a pasted ordinary message link and show package naming previews."""
+
+    from media_downloader import scan_message_package
+
+    try:
+        entity = await _bot.client.get_chat(workflow_request.source_chat)
+        scan_result = await scan_message_package(
+            _bot.client,
+            entity.id,
+            workflow_request.start_message_id,
+        )
+        package_plan = scan_result.package_plan
+        package_items = list(getattr(package_plan, "items", []) or [])
+        if not package_items:
+            await client.send_message(
+                message.from_user.id,
+                "未找到可下载的连续资源包媒体。",
+                reply_to_message_id=message.id,
+            )
+            return
+
+        token = build_workflow_token(workflow_request.url, message.from_user.id)
+        channel = entity.username or entity.title or str(entity.id)
+        package_title = package_plan.package_title
+        previews = build_package_naming_previews(
+            package_items,
+            channel=channel,
+            start_message_id=workflow_request.start_message_id,
+            package_title=package_title,
+        )
+        package_media_items = {
+            item.message.id: item
+            for item in package_items
+        }
+
+        _bot.pending_package_workflows[token] = {
+            "request": workflow_request,
+            "entity_id": entity.id,
+            "channel": channel,
+            "package_title": package_title,
+            "messages": scan_result.messages,
+            "failed_message_ids": list(
+                getattr(scan_result, "failed_message_ids", []) or []
+            ),
+            "source_message_id": message.id,
+            "package_plan": package_plan,
+            "package_media_items": package_media_items,
+        }
+
+        cloud_drive_config = getattr(_bot.app, "cloud_drive_config", None)
+        upload_enabled = bool(
+            getattr(cloud_drive_config, "enable_upload_file", False)
+        )
+        delete_after_upload = bool(
+            getattr(cloud_drive_config, "after_upload_file_delete", False)
+        )
+        preview_text = format_package_preview_message(
+            channel=channel,
+            start_message_id=workflow_request.start_message_id,
+            package_plan=package_plan,
+            previews=previews,
+            upload_enabled=upload_enabled,
+            delete_after_upload=delete_after_upload,
+        )
+        buttons = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "采用推荐C",
+                        callback_data=build_package_callback_data(
+                            token, NamingStrategy.RECOMMENDED
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "采用A",
+                        callback_data=build_package_callback_data(
+                            token, NamingStrategy.AUTHOR
+                        ),
+                    ),
+                    InlineKeyboardButton(
+                        "采用B",
+                        callback_data=build_package_callback_data(
+                            token, NamingStrategy.CAPTION
+                        ),
+                    ),
+                    InlineKeyboardButton(
+                        "采用D",
+                        callback_data=build_package_callback_data(
+                            token, NamingStrategy.MONTH_CAPTION
+                        ),
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "取消",
+                        callback_data=f"{PACKAGE_WORKFLOW_PREFIX}:{token}:cancel",
+                    )
+                ],
+            ]
+        )
+        await client.send_message(
+            message.from_user.id,
+            preview_text,
+            reply_markup=buttons,
+            reply_to_message_id=message.id,
+        )
+    except Exception as error:
+        logger.error(f"preview_package_workflow: failed: {error}", exc_info=True)
+        await client.send_message(
+            message.from_user.id,
+            f"预览连续资源包失败：{error}",
             reply_to_message_id=message.id,
         )
 
@@ -1755,6 +1886,104 @@ def _callback_chat_id(query):
     return getattr(user, "id", None)
 
 
+async def handle_package_workflow_callback(client, query):
+    """Handle guided ordinary message package workflow confirmation callbacks."""
+    data = getattr(query, "data", None)
+    if not data or not data.startswith(f"{PACKAGE_WORKFLOW_PREFIX}:"):
+        return False
+
+    message = getattr(query, "message", None)
+    chat_id = _callback_chat_id(query)
+    message_id = getattr(message, "id", None)
+
+    parts = data.split(":")
+    if len(parts) == 3 and parts[2] == "cancel" and parts[1]:
+        _bot.pending_package_workflows.pop(parts[1], None)
+        await client.edit_message_text(
+            chat_id,
+            message_id,
+            "已取消连续资源包下载。",
+        )
+        return True
+
+    parsed = parse_package_callback_data(data)
+    if not parsed:
+        await client.edit_message_text(
+            chat_id,
+            message_id,
+            "无效的连续资源包下载操作。",
+        )
+        return True
+
+    token, strategy = parsed
+    pending = _bot.pending_package_workflows.get(token)
+    if not pending:
+        await client.edit_message_text(
+            chat_id,
+            message_id,
+            "任务已过期，请重新发送链接",
+        )
+        return True
+
+    request = pending["request"]
+    confirm_text = f"已确认命名策略 {strategy.value}，开始下载连续资源包。"
+    try:
+        await client.edit_message_text(chat_id, message_id, confirm_text)
+    except Exception as error:
+        logger.warning(f"package workflow confirm edit failed: {error}")
+        await client.send_message(
+            chat_id,
+            confirm_text,
+            reply_to_message_id=pending.get("source_message_id"),
+        )
+
+    status_message = await client.send_message(
+        chat_id,
+        (
+            "连续资源包下载任务已启动："
+            f"{pending['channel']}/{request.start_message_id}"
+        ),
+        reply_to_message_id=pending.get("source_message_id"),
+    )
+
+    node = TaskNode(
+        chat_id=pending["entity_id"],
+        from_user_id=chat_id,
+        reply_message_id=status_message.id,
+        bot=_bot.bot,
+        task_id=_bot.gen_task_id(),
+    )
+    node.client = _bot.client
+    node.package_naming_context = PackageNamingContext(
+        strategy=strategy,
+        channel=pending["channel"],
+        start_message_id=request.start_message_id,
+        package_title=pending["package_title"],
+    )
+    node.package_plan = pending.get("package_plan")
+    node.package_media_items = pending.get("package_media_items")
+    node.is_running = True
+
+    from media_downloader import download_prepared_messages
+
+    download_coroutine = download_prepared_messages(
+        pending["messages"],
+        None,
+        node,
+        failed_message_ids=pending.get("failed_message_ids"),
+    )
+    try:
+        _bot.app.loop.create_task(download_coroutine)
+    except Exception:
+        download_coroutine.close()
+        raise
+
+    _bot.add_task_node(node)
+    add_active_task_node(node)
+    _bot.pending_package_workflows.pop(token, None)
+    return True
+
+
 async def handle_comment_workflow_callback(client, query):
     """Handle guided comment media workflow confirmation callbacks."""
     data = getattr(query, "data", None)
@@ -1860,6 +2089,9 @@ async def on_query_handler(
     Returns:
         None
     """
+
+    if await handle_package_workflow_callback(client, query):
+        return
 
     if await handle_comment_workflow_callback(client, query):
         return
