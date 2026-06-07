@@ -832,6 +832,7 @@ async def preview_comment_workflow(client, message, workflow_request):
 
         latest_comment_id = workflow_request.start_comment_id
         found_latest_from_history = False
+        scan_warning = None
         try:
             async for latest_msg in get_chat_history_v2(
                 _bot.client,
@@ -848,12 +849,12 @@ async def preview_comment_workflow(client, message, workflow_request):
             logger.warning(
                 f"preview_comment_workflow: latest history lookup failed: {history_error}"
             )
+            scan_warning = "最新评论定位失败，预览范围可能不完整。"
 
         if not found_latest_from_history:
-            latest_comment_id = max(
-                workflow_request.start_comment_id,
-                getattr(discussion_message, "id", workflow_request.start_comment_id),
-            )
+            latest_comment_id = workflow_request.start_comment_id
+            if not scan_warning:
+                scan_warning = "未找到最新评论，预览范围可能不完整。"
 
         scan_result = await scan_comment_range(
             _bot.client,
@@ -863,8 +864,11 @@ async def preview_comment_workflow(client, message, workflow_request):
             latest_comment_id,
         )
         comments = scan_result.comments
+        failed_comment_ids = list(getattr(scan_result, "failed_comment_ids", []) or [])
         media_comments = filter_media_comments(comments)
         summary = summarize_comments(comments)
+        if failed_comment_ids:
+            scan_warning = scan_warning or "部分评论扫描失败，预览结果可能不完整。"
 
         if not media_comments:
             await client.send_message(
@@ -889,6 +893,9 @@ async def preview_comment_workflow(client, message, workflow_request):
             "channel": channel,
             "post_title": post_title,
             "comments": media_comments,
+            "failed_comment_ids": failed_comment_ids,
+            "scan_warning": scan_warning,
+            "latest_comment_id": latest_comment_id,
             "source_message_id": message.id,
         }
 
@@ -908,6 +915,8 @@ async def preview_comment_workflow(client, message, workflow_request):
             previews=previews,
             upload_enabled=upload_enabled,
             delete_after_upload=delete_after_upload,
+            failed_comment_ids=failed_comment_ids,
+            scan_warning=scan_warning,
         )
         buttons = InlineKeyboardMarkup(
             [

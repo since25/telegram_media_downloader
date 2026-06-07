@@ -288,6 +288,8 @@ def format_preview_message(
     previews: Sequence[NamingPreview],
     upload_enabled: bool,
     delete_after_upload: bool,
+    failed_comment_ids: Optional[Sequence[int]] = None,
+    scan_warning: Optional[str] = None,
 ) -> str:
     """Format the guided comment workflow preview shown before download."""
 
@@ -311,9 +313,12 @@ def format_preview_message(
         f"类型：{media_type_counts}",
         f"上传：{'enabled' if upload_enabled else 'disabled'}",
         f"上传后删除本地：{'enabled' if delete_after_upload else 'disabled'}",
-        "",
-        "命名预览：",
     ]
+    if scan_warning:
+        lines.append(f"扫描警告：{scan_warning}")
+    if failed_comment_ids:
+        lines.append(f"扫描失败评论：{len(failed_comment_ids)}")
+    lines.extend(["", "命名预览："])
 
     for preview in previews:
         title = preview.title
