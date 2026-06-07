@@ -273,7 +273,7 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         ]
         client = FakeDiscussionClient(comments)
 
-        discussion_group_id, scanned_comments, failed_comment_ids = await scan_comment_range(
+        scan_result = await scan_comment_range(
             client=client,
             chat_id=-1001,
             base_message_id=422,
@@ -281,9 +281,9 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             end_comment_id=4979,
         )
 
-        self.assertEqual(discussion_group_id, -200)
-        self.assertEqual([comment.id for comment in scanned_comments], [4978, 4979])
-        self.assertEqual(failed_comment_ids, [])
+        self.assertEqual(scan_result.discussion_group_id, -200)
+        self.assertEqual([comment.id for comment in scan_result.comments], [4978, 4979])
+        self.assertEqual(scan_result.failed_comment_ids, [])
 
     async def test_scan_comment_range_returns_failed_ids_from_individual_retries(self):
         from media_downloader import scan_comment_range
@@ -302,7 +302,7 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             individual_failures={4979},
         )
 
-        discussion_group_id, scanned_comments, failed_comment_ids = await scan_comment_range(
+        scan_result = await scan_comment_range(
             client=client,
             chat_id=-1001,
             base_message_id=422,
@@ -310,9 +310,76 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             end_comment_id=4979,
         )
 
-        self.assertEqual(discussion_group_id, -200)
-        self.assertEqual([comment.id for comment in scanned_comments], [4978])
-        self.assertEqual(failed_comment_ids, [4979])
+        self.assertEqual(scan_result.discussion_group_id, -200)
+        self.assertEqual([comment.id for comment in scan_result.comments], [4978])
+        self.assertEqual(scan_result.failed_comment_ids, [4979])
+
+    async def test_download_comments_counts_scan_failures_in_progress_totals(self):
+        from module.app import TaskNode
+        from media_downloader import CommentScanResult, download_comments
+
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(file_name="clip-a.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=4979,
+                media="video",
+                video=MockVideo(file_name="clip-b.mp4", mime_type="video/mp4"),
+            ),
+        ]
+        node = TaskNode(chat_id=-1001, bot=None, task_id=7)
+        node.is_running = True
+        report_calls = []
+
+        async def fake_scan_comment_range(*args, **kwargs):
+            return CommentScanResult(-200, comments, [4980])
+
+        async def fake_add_download_task(comment, task_node):
+            task_node.total_task += 1
+            task_node.total_download_task += 1
+            task_node.success_download_task += 1
+            return True
+
+        async def fake_report_bot_status(bot, task_node):
+            report_calls.append(
+                (
+                    task_node.success_download_task,
+                    task_node.failed_download_task,
+                    task_node.total_download_task,
+                )
+            )
+
+        async def fake_sleep(seconds):
+            raise AssertionError("download_comments should not sleep after all expected tasks finish")
+
+        with patch("media_downloader.scan_comment_range", new=fake_scan_comment_range), patch(
+            "media_downloader.add_download_task", new=fake_add_download_task
+        ), patch(
+            "module.pyrogram_extension.report_bot_status", new=fake_report_bot_status
+        ), patch(
+            "module.download_stat.remove_active_task_node"
+        ), patch(
+            "media_downloader.asyncio.sleep", new=fake_sleep
+        ):
+            await download_comments(
+                client=object(),
+                chat_id=-1001,
+                base_message_id=422,
+                start_comment_id=4978,
+                end_comment_id=4980,
+                download_filter="",
+                node=node,
+            )
+
+        self.assertEqual(node.failed_download_task, 1)
+        self.assertEqual(node.success_download_task, 2)
+        self.assertEqual(node.total_download_task, 3)
+        self.assertEqual(node.total_task, 3)
+        self.assertTrue(report_calls)
+        self.assertEqual(report_calls[-1], (2, 1, 3))
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ import aiohttp
 import json
 import datetime
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Union
+from typing import Dict, Any, List, NamedTuple, Optional, Tuple, Union
 import shutil
 import time
 import sys
@@ -47,6 +47,12 @@ from utils.updates import check_for_updates
 # ---- stall watchdog state ----
 DOWNLOAD_LAST_PROGRESS_TS: dict[int, float] = {}
 DOWNLOAD_LAST_PROGRESS_BYTES: dict[int, int] = {}
+
+
+class CommentScanResult(NamedTuple):
+    discussion_group_id: int
+    comments: list
+    failed_comment_ids: list
 
 # ---- performance monitoring ----
 PERFORMANCE_STATS: dict[str, float] = {
@@ -1214,7 +1220,7 @@ async def scan_comment_range(
     comments.sort(key=lambda x: x.id)
     logger.info(f"评论排序完成，顺序: {[c.id for c in comments]}")
 
-    return discussion_group_id, comments, failed_comment_ids
+    return CommentScanResult(discussion_group_id, comments, failed_comment_ids)
 
 
 async def download_comments(
@@ -1237,28 +1243,21 @@ async def download_comments(
         logger.info(f"download_comments: 任务节点信息 - task_id={node.task_id}, is_running={node.is_running}, is_stop_transmission={node.is_stop_transmission}")
 
         try:
-            _discussion_group_id, comments, failed_comment_ids = await scan_comment_range(
+            scan_result = await scan_comment_range(
                 client,
                 chat_id,
                 base_message_id,
                 start_comment_id,
                 end_comment_id,
             )
+            comments = scan_result.comments
+            failed_comment_ids = scan_result.failed_comment_ids
         except ValueError:
             return
         except Exception:
             return
 
-        if failed_comment_ids:
-            node.failed_download_task += len(failed_comment_ids)
-            await report_bot_status(node.bot, node)
-
         logger.info(f"共找到 {len(comments)} 条符合条件的评论")
-
-        # 设置总任务数
-        node.total_download_task = len(comments)
-        logger.info(f"设置总任务数: {len(comments)}")
-        await report_bot_status(node.bot, node)
         
         # 处理下载过滤
         if download_filter:
@@ -1285,7 +1284,14 @@ async def download_comments(
                     filtered_comments.append(comment)
             
             comments = filtered_comments
-            node.total_download_task = len(comments)
+
+        expected_comment_tasks = len(comments) + len(failed_comment_ids)
+        logger.info(f"设置预期评论任务数: {expected_comment_tasks}")
+
+        if failed_comment_ids:
+            node.failed_download_task += len(failed_comment_ids)
+            node.total_download_task += len(failed_comment_ids)
+            node.total_task += len(failed_comment_ids)
             await report_bot_status(node.bot, node)
         
         # 下载评论中的媒体
@@ -1317,9 +1323,9 @@ async def download_comments(
         while True:
             # 计算已完成的任务数
             completed_tasks = node.success_download_task + node.failed_download_task + node.skip_download_task
-            logger.info(f"下载进度: 已完成 {completed_tasks}/{len(comments)} 个任务")
+            logger.info(f"下载进度: 已完成 {completed_tasks}/{expected_comment_tasks} 个任务")
             
-            if completed_tasks >= len(comments):
+            if completed_tasks >= expected_comment_tasks:
                 logger.info("所有下载任务已完成")
                 break
                 
