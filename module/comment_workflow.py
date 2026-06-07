@@ -295,7 +295,7 @@ def format_preview_message(
     last_comment_id = summary.last_comment_id or start_comment_id
     media_type_counts = (
         "、".join(
-            f"{media_type}:{count}"
+            f"{media_type} {count}"
             for media_type, count in sorted(summary.media_type_counts.items())
         )
         or "无"
@@ -304,13 +304,13 @@ def format_preview_message(
         "评论媒体下载预览",
         f"频道：{channel}",
         f"原帖：{post_id}",
-        f"标题：{cleaned_title}",
-        f"范围：{start_comment_id}→{last_comment_id}",
+        f"原帖标题：{cleaned_title}",
+        f"评论范围：{start_comment_id} → {last_comment_id}",
         f"扫描评论：{summary.scanned_count}",
         f"媒体评论：{summary.media_count}",
-        f"媒体类型：{media_type_counts}",
+        f"类型：{media_type_counts}",
         f"上传：{'enabled' if upload_enabled else 'disabled'}",
-        f"删除源文件：{'enabled' if delete_after_upload else 'disabled'}",
+        f"上传后删除本地：{'enabled' if delete_after_upload else 'disabled'}",
         "",
         "命名预览：",
     ]

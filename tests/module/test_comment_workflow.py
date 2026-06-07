@@ -175,13 +175,18 @@ class CommentWorkflowTestCase(unittest.TestCase):
             summary=summary,
             previews=previews,
             upload_enabled=True,
-            delete_after_upload=False,
+            delete_after_upload=True,
         )
 
         self.assertIn("频道：zhyseseb", message)
         self.assertIn("原帖：422", message)
+        self.assertIn("原帖标题：夏日合集", message)
+        self.assertIn("评论范围：4978 → 4978", message)
+        self.assertIn("扫描评论：1", message)
         self.assertIn("媒体评论：1", message)
+        self.assertIn("类型：video 1", message)
         self.assertIn("上传：enabled", message)
+        self.assertIn("上传后删除本地：enabled", message)
         self.assertIn("采用推荐C", message)
         self.assertIn("zhyseseb/422-夏日合集/4978 - clip.mp4", message)
 
@@ -479,6 +484,70 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_download_from_link_routes_direct_comment_link_to_preview(self):
+        from module import bot as bot_module
+
+        preview_calls = []
+
+        async def fake_preview_comment_workflow(client, message, workflow_request):
+            preview_calls.append((client, message, workflow_request))
+
+        bot_client = SimpleNamespace()
+        message = MockMessage(
+            id=88,
+            text="https://t.me/zhyseseb/422?comment=4978",
+            from_user=MockUser(id=123),
+        )
+
+        with patch(
+            "module.bot.preview_comment_workflow", new=fake_preview_comment_workflow
+        ), patch("module.bot.parse_link") as parse_link:
+            await bot_module.download_from_link(bot_client, message)
+
+        self.assertEqual(len(preview_calls), 1)
+        self.assertIs(preview_calls[0][0], bot_client)
+        self.assertIs(preview_calls[0][1], message)
+        self.assertEqual(preview_calls[0][2].source_chat, "zhyseseb")
+        self.assertEqual(preview_calls[0][2].post_id, 422)
+        self.assertEqual(preview_calls[0][2].start_comment_id, 4978)
+        parse_link.assert_not_called()
+
+    async def test_download_from_link_does_not_route_normal_link_to_preview(self):
+        from module import bot as bot_module
+
+        preview_calls = []
+        sent_messages = []
+
+        class FakeBotClient:
+            async def send_message(self, chat_id, text, **kwargs):
+                sent_messages.append((chat_id, text, kwargs))
+
+        async def fake_preview_comment_workflow(client, message, workflow_request):
+            preview_calls.append((client, message, workflow_request))
+
+        async def fake_parse_link(client, url):
+            return None, None, None
+
+        old_client = bot_module._bot.client
+        try:
+            bot_module._bot.client = object()
+            message = MockMessage(
+                id=89,
+                text="https://t.me/zhyseseb/422",
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "module.bot.preview_comment_workflow",
+                new=fake_preview_comment_workflow,
+            ), patch("module.bot.parse_link", new=fake_parse_link):
+                await bot_module.download_from_link(FakeBotClient(), message)
+
+            self.assertEqual(preview_calls, [])
+            self.assertEqual(len(sent_messages), 1)
+        finally:
+            bot_module._bot.client = old_client
+
     async def test_preview_uses_latest_discussion_history_message_for_scan_end(self):
         from module import bot as bot_module
 
