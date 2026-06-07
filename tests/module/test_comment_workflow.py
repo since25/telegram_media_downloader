@@ -302,6 +302,71 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIsNone(plan.next_package_message)
         self.assertEqual(plan.scan_warning, "未发现下一包边界，已达到扫描上限 2 条。")
 
+    def test_build_package_naming_previews_and_preview_message(self):
+        from module.comment_workflow import (
+            build_package_naming_previews,
+            format_package_preview_message,
+            plan_message_package,
+        )
+
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                caption="某某课程 第01章",
+                video=MockVideo(
+                    file_name="001/bad?.mp4",
+                    mime_type="video/mp4",
+                    file_size=421 * 1024 * 1024,
+                ),
+            ),
+            MockMessage(
+                id=126712,
+                media="video",
+                video=MockVideo(
+                    file_name="002.mp4",
+                    mime_type="video/mp4",
+                    file_size=388 * 1024 * 1024,
+                ),
+            ),
+            MockMessage(
+                id=126713,
+                media="video",
+                caption="某某课程 第02章",
+                video=MockVideo(
+                    file_name="003.mp4",
+                    mime_type="video/mp4",
+                    file_size=402 * 1024 * 1024,
+                ),
+            ),
+        ]
+        package_plan = plan_message_package(messages, start_message_id=126711)
+        previews = build_package_naming_previews(
+            package_plan.items,
+            channel="私密频道",
+            start_message_id=126711,
+            package_title=package_plan.package_title,
+        )
+        preview_text = format_package_preview_message(
+            channel="私密频道",
+            start_message_id=126711,
+            package_plan=package_plan,
+            previews=previews,
+            upload_enabled=True,
+            delete_after_upload=True,
+        )
+
+        self.assertIn("识别到连续资源包", preview_text)
+        self.assertIn("范围：126711 - 126712", preview_text)
+        self.assertIn("预计大小：809.0MB", preview_text)
+        self.assertIn("继承 caption：1 个", preview_text)
+        self.assertIn("下一包起点预览：", preview_text)
+        self.assertIn("126713 - 某某课程 第02章", preview_text)
+        self.assertIn(
+            "私密频道/126711-某某课程 第01章/126711 - 001_bad_.mp4",
+            preview_text,
+        )
+
     def test_plan_message_package_shares_album_caption_when_caption_appears_later(self):
         from module.comment_workflow import plan_message_package
 

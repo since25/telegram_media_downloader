@@ -99,6 +99,16 @@ class CommentNamingContext:
 
 
 @dataclass
+class PackageNamingContext:
+    """Values used to build final names for package media files."""
+
+    strategy: NamingStrategy
+    channel: str
+    start_message_id: int
+    package_title: str
+
+
+@dataclass
 class SizePreviewItem:
     """Small size preview entry for one media message."""
 
@@ -537,6 +547,39 @@ def build_name_for_strategy(
     return f"{channel}/{context.post_id}-{post_title}/{comment.id} - {original_file_name}"
 
 
+def build_package_name_for_strategy(
+    item: PackageMediaItem,
+    context: PackageNamingContext,
+) -> str:
+    """Build a relative display path for a package media item."""
+
+    message = item.message
+    channel = clean_segment(context.channel, "channel", 40)
+    title = clean_segment(
+        context.package_title, f"message-{context.start_message_id}", 60
+    )
+    original_file_name = media_file_name_for_message(message)
+    caption_summary = clean_segment(item.caption_for_naming, "no-caption", 40)
+    extension = _extension_for_comment(message)
+
+    if context.strategy is NamingStrategy.AUTHOR:
+        return (
+            f"{title}/{message.id} - "
+            f"{author_for_comment(message)} - {original_file_name}"
+        )
+    if context.strategy is NamingStrategy.CAPTION:
+        return f"{title}/{message.id} - {caption_summary} - {original_file_name}"
+    if context.strategy is NamingStrategy.MONTH_CAPTION:
+        return (
+            f"{channel}/{month_for_comment(message)}/{title}/"
+            f"{message.id} - {caption_summary}.{extension}"
+        )
+    return (
+        f"{channel}/{context.start_message_id}-{title}/"
+        f"{message.id} - {original_file_name}"
+    )
+
+
 def build_naming_previews(
     comments: Sequence[CommentLike],
     channel: str,
@@ -569,6 +612,45 @@ def build_naming_previews(
                 examples=[
                     build_name_for_strategy(comment, context)
                     for comment in sample_comments
+                ],
+            )
+        )
+
+    return previews
+
+
+def build_package_naming_previews(
+    items: Sequence[PackageMediaItem],
+    channel: str,
+    start_message_id: int,
+    package_title: str,
+    sample_size: int = 3,
+) -> List[NamingPreview]:
+    """Build concrete preview examples for package naming strategies."""
+
+    sample_items = list(items)[:sample_size]
+    strategies = [
+        (NamingStrategy.RECOMMENDED, "推荐C：频道/起始ID-标题/消息ID - 原文件名"),
+        (NamingStrategy.AUTHOR, "A：标题/消息ID - 作者 - 原文件名"),
+        (NamingStrategy.CAPTION, "B：标题/消息ID - caption摘要 - 原文件名"),
+        (NamingStrategy.MONTH_CAPTION, "D：频道/年月/标题/消息ID - caption摘要"),
+    ]
+
+    previews: List[NamingPreview] = []
+    for strategy, title in strategies:
+        context = PackageNamingContext(
+            strategy=strategy,
+            channel=channel,
+            start_message_id=start_message_id,
+            package_title=package_title,
+        )
+        previews.append(
+            NamingPreview(
+                strategy=strategy,
+                title=title,
+                examples=[
+                    build_package_name_for_strategy(item, context)
+                    for item in sample_items
                 ],
             )
         )
@@ -627,6 +709,86 @@ def format_preview_message(
         else:
             lines.append("- 无示例")
 
+    return "\n".join(lines)
+
+
+def _format_size_details(summary: SizeSummary) -> List[str]:
+    lines = [format_size_summary(summary)]
+    if summary.largest:
+        lines.append(
+            "最大文件："
+            f"{summary.largest.message_id} "
+            f"{summary.largest.media_type} "
+            f"{format_byte(summary.largest.size)}"
+        )
+    if summary.samples:
+        lines.append("大小示例：")
+        for item in summary.samples:
+            lines.append(
+                f"- {item.message_id} {item.media_type} {format_byte(item.size)}"
+            )
+    return lines
+
+
+def _preview_caption(message: CommentLike) -> str:
+    caption = getattr(message, "caption", None)
+    if caption:
+        return clean_segment(caption, f"message-{message.id}", 60)
+    return clean_segment(None, f"message-{message.id}", 60)
+
+
+def format_package_preview_message(
+    channel: str,
+    start_message_id: int,
+    package_plan: MessagePackagePlan,
+    previews: Sequence[NamingPreview],
+    upload_enabled: bool,
+    delete_after_upload: bool,
+) -> str:
+    """Format package workflow preview text."""
+
+    del start_message_id
+
+    media_ids = [item.message.id for item in package_plan.items]
+    range_text = f"{min(media_ids)} - {max(media_ids)}" if media_ids else "无"
+    media_types = ", ".join(
+        f"{key} {value} 个"
+        for key, value in sorted(package_plan.summary.media_type_counts.items())
+    ) or "无"
+
+    lines = [
+        "识别到连续资源包：",
+        f"频道：{channel}",
+        f"标题：{package_plan.package_title}",
+        f"范围：{range_text}",
+        f"媒体：{package_plan.summary.media_count} 个（{media_types}）",
+        *_format_size_details(package_plan.size_summary),
+        f"继承 caption：{package_plan.inherited_caption_count} 个",
+        f"rclone上传：{'开启' if upload_enabled else '关闭'}",
+        f"上传后删除本地：{'开启' if delete_after_upload else '关闭'}",
+    ]
+    if package_plan.scan_warning:
+        lines.append(f"提示：{package_plan.scan_warning}")
+    if package_plan.next_package_message:
+        lines.extend(
+            [
+                "",
+                "下一包起点预览：",
+                (
+                    f"{package_plan.next_package_message.id} - "
+                    f"{_preview_caption(package_plan.next_package_message)}"
+                ),
+                "不会纳入本次下载。",
+            ]
+        )
+    lines.append("")
+    lines.append("命名预览：")
+    for preview in previews:
+        lines.append(preview.title)
+        if preview.examples:
+            lines.extend(f"- {example}" for example in preview.examples)
+        else:
+            lines.append("- 无示例")
     return "\n".join(lines)
 
 
