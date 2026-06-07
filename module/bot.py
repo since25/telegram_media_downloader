@@ -40,6 +40,7 @@ from module.comment_workflow import (
     filter_media_comments,
     format_package_preview_message,
     format_preview_message,
+    looks_like_private_message_link,
     parse_callback_data,
     parse_package_callback_data,
     summarize_comments,
@@ -673,6 +674,13 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
     package_request = build_message_package_workflow_request(message.text.strip())
     if package_request:
         await preview_package_workflow(client, message, package_request)
+        return
+    if looks_like_private_message_link(message.text.strip()):
+        await client.send_message(
+            message.from_user.id,
+            "无法解析私密消息链接，请确认链接格式类似：https://t.me/c/1298283297/126711",
+            reply_to_message_id=message.id,
+        )
         return
 
     msg = (

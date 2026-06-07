@@ -1357,6 +1357,32 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(package_preview_calls[0][2].start_message_id, 126711)
         parse_link.assert_not_called()
 
+    async def test_download_from_link_handles_malformed_private_message_link(self):
+        from module import bot as bot_module
+
+        class FakeBotClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+
+        message = MockMessage(
+            id=91,
+            text="https://t.me/c/notanint/126711",
+            from_user=MockUser(id=123),
+        )
+        bot_client = FakeBotClient()
+
+        with patch("module.bot.parse_link") as parse_link:
+            await bot_module.download_from_link(bot_client, message)
+
+        parse_link.assert_not_called()
+        self.assertEqual(len(bot_client.sent_messages), 1)
+        self.assertEqual(bot_client.sent_messages[0][0], 123)
+        self.assertIn("无法解析私密消息链接", bot_client.sent_messages[0][1])
+        self.assertEqual(bot_client.sent_messages[0][2]["reply_to_message_id"], 91)
+
     async def test_preview_package_workflow_stores_plan_items_and_buttons(self):
         from module import bot as bot_module
         from module.comment_workflow import build_message_package_workflow_request

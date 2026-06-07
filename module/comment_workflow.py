@@ -163,7 +163,10 @@ def build_comment_workflow_request(text: str) -> Optional[CommentWorkflowRequest
     if not url.startswith("https://t.me"):
         return None
 
-    link = extract_info_from_link(url)
+    try:
+        link = extract_info_from_link(url)
+    except (TypeError, ValueError):
+        return None
     if link.group_id is None or link.post_id is None or link.comment_id is None:
         return None
 
@@ -204,6 +207,18 @@ def build_message_package_workflow_request(
         source_chat=link.group_id,
         start_message_id=link.post_id,
     )
+
+
+def looks_like_private_message_link(text: str) -> bool:
+    """Return whether text has Telegram's private `/c/...` link shape."""
+
+    if not text:
+        return False
+    url = text.strip()
+    if not url.startswith("https://t.me"):
+        return False
+    path_parts = [part for part in urlparse(url).path.split("/") if part]
+    return len(path_parts) >= 3 and path_parts[0] == "c"
 
 
 def _message_caption(message: CommentLike) -> Optional[str]:
