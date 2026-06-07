@@ -54,6 +54,13 @@ class CommentScanResult(NamedTuple):
     comments: list
     failed_comment_ids: list
 
+
+class MessagePackageScanResult(NamedTuple):
+    chat_id: Union[int, str]
+    messages: list
+    package_plan: Any
+    failed_message_ids: list
+
 # ---- performance monitoring ----
 PERFORMANCE_STATS: dict[str, float] = {
     "total_download_time": 0,  # 总下载时间
@@ -345,6 +352,34 @@ async def _get_media_meta(
 
             gen_file_name = build_name_for_strategy(
                 message, node.comment_naming_context
+            )
+
+        if node and getattr(node, "package_naming_context", None):
+            from module.comment_workflow import (
+                PackageMediaItem,
+                build_package_name_for_strategy,
+            )
+
+            package_item = None
+            package_media_items = getattr(node, "package_media_items", None)
+            if isinstance(package_media_items, dict):
+                package_item = package_media_items.get(message.id)
+
+            if package_item is None:
+                raw_caption = getattr(message, "caption", None)
+                package_item = PackageMediaItem(
+                    message=message,
+                    media_type=_type,
+                    caption_for_naming=(
+                        raw_caption
+                        or node.package_naming_context.package_title
+                    ),
+                    original_caption=raw_caption,
+                    inherited_caption=not bool(raw_caption),
+                )
+
+            gen_file_name = build_package_name_for_strategy(
+                package_item, node.package_naming_context
             )
 
         file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
@@ -1226,6 +1261,79 @@ async def scan_comment_range(
     return CommentScanResult(discussion_group_id, comments, failed_comment_ids)
 
 
+async def scan_message_package(
+    client: PyrogramClient,
+    chat_id: Union[int, str],
+    start_message_id: int,
+    max_scan_count: int = 500,
+    batch_size: int = 50,
+) -> MessagePackageScanResult:
+    """Fetch a bounded ordinary-message window and plan one media package."""
+    from module.comment_workflow import plan_message_package
+
+    max_scan_count = max(0, max_scan_count)
+    batch_size = max(1, batch_size)
+    message_ids = list(
+        range(start_message_id, start_message_id + max_scan_count)
+    )
+    fetched_messages = []
+    failed_message_ids = []
+
+    def build_result() -> MessagePackageScanResult:
+        package_plan = plan_message_package(
+            fetched_messages,
+            start_message_id=start_message_id,
+            max_scan_count=max_scan_count,
+        )
+        package_messages = [item.message for item in package_plan.items]
+        return MessagePackageScanResult(
+            chat_id,
+            package_messages,
+            package_plan,
+            failed_message_ids,
+        )
+
+    for index in range(0, len(message_ids), batch_size):
+        batch_ids = message_ids[index:index + batch_size]
+        try:
+            batch_messages = await client.get_messages(chat_id, batch_ids)
+            if not isinstance(batch_messages, list):
+                batch_messages = [batch_messages]
+            fetched_messages.extend(
+                message
+                for message in batch_messages
+                if message and hasattr(message, "id")
+            )
+        except Exception as e:
+            logger.error(
+                "scan_message_package: batch fetch failed "
+                f"chat_id={chat_id} ids={batch_ids}: {e}"
+            )
+            for message_id in batch_ids:
+                try:
+                    message = await client.get_messages(chat_id, message_id)
+                    if message and hasattr(message, "id"):
+                        fetched_messages.append(message)
+                except Exception as single_e:
+                    logger.error(
+                        "scan_message_package: single fetch failed "
+                        f"chat_id={chat_id} id={message_id}: {single_e}"
+                    )
+                    failed_message_ids.append(message_id)
+
+                result = build_result()
+                if result.package_plan.next_package_message:
+                    return result
+
+            continue
+
+        result = build_result()
+        if result.package_plan.next_package_message:
+            return result
+
+    return build_result()
+
+
 async def download_prepared_comments(
     comments,
     download_filter,
@@ -1325,6 +1433,147 @@ async def download_prepared_comments(
 
         await report_bot_status(node.bot, node)
         logger.info(f"评论下载任务已全部完成 - 成功: {node.success_download_task}, 失败: {node.failed_download_task}, 跳过: {node.skip_download_task}")
+    finally:
+        remove_active_task_node(node.task_id)
+
+
+async def download_prepared_messages(
+    messages,
+    download_filter,
+    node,
+    failed_message_ids=None,
+):
+    """Download already-scanned ordinary package media and preserve scan failures."""
+    from module.comment_workflow import PackageMediaItem, filter_media_comments
+    from module.download_stat import remove_active_task_node
+    from module.pyrogram_extension import report_bot_status, set_meta_data
+    from utils.format import validate_title
+    from utils.meta_data import MetaData
+
+    failed_message_ids = list(failed_message_ids or [])
+
+    try:
+        media_messages = filter_media_comments(messages)
+
+        if getattr(node, "package_naming_context", None):
+            package_media_items = getattr(node, "package_media_items", None)
+            if not isinstance(package_media_items, dict):
+                package_media_items = {}
+                node.package_media_items = package_media_items
+            for message in media_messages:
+                if message.id in package_media_items:
+                    continue
+                raw_caption = getattr(message, "caption", None)
+                package_media_items[message.id] = PackageMediaItem(
+                    message=message,
+                    media_type=getattr(message, "media", None),
+                    caption_for_naming=(
+                        raw_caption
+                        or node.package_naming_context.package_title
+                    ),
+                    original_caption=raw_caption,
+                    inherited_caption=not bool(raw_caption),
+                )
+
+        if download_filter:
+            class TempChatDownloadConfig:
+                def __init__(self):
+                    self.download_filter = download_filter
+
+            temp_config = TempChatDownloadConfig()
+            filtered_messages = []
+            for message in media_messages:
+                meta_data = MetaData()
+                caption = getattr(message, "caption", None)
+                if caption:
+                    caption = validate_title(caption)
+                set_meta_data(meta_data, message, caption)
+
+                if app.exec_filter(temp_config, meta_data):
+                    filtered_messages.append(message)
+
+            media_messages = filtered_messages
+
+        expected_message_tasks = len(media_messages) + len(failed_message_ids)
+        logger.info(f"设置预期消息任务数: {expected_message_tasks}")
+
+        if failed_message_ids:
+            if not hasattr(node, "download_status") or node.download_status is None:
+                node.download_status = {}
+            for failed_message_id in failed_message_ids:
+                node.download_status[failed_message_id] = DownloadStatus.FailedDownload
+            node.failed_download_task += len(failed_message_ids)
+            node.total_download_task += len(failed_message_ids)
+            node.total_task += len(failed_message_ids)
+            await report_bot_status(node.bot, node)
+
+        logger.info(f"开始下载消息媒体，共 {len(media_messages)} 条消息")
+        for index, message in enumerate(media_messages):
+            if not node.is_running:
+                logger.info("任务已停止，中断下载")
+                break
+
+            logger.info(
+                f"处理消息 {index + 1}/{len(media_messages)}: "
+                f"id={message.id}, has_media={message.media is not None}, "
+                f"type={type(message)}"
+            )
+
+            total_task_before_enqueue = node.total_task
+            total_download_task_before_enqueue = node.total_download_task
+            try:
+                result = await add_download_task(message, node)
+                logger.info(f"添加消息下载任务结果: {result}")
+                if result is False:
+                    node.failed_download_task += 1
+                    if node.total_task == total_task_before_enqueue:
+                        node.total_task += 1
+                    if node.total_download_task == total_download_task_before_enqueue:
+                        node.total_download_task += 1
+                    await report_bot_status(node.bot, node)
+            except Exception as e:
+                logger.error(f"处理消息 {message.id} 失败: {e}")
+                import traceback
+                traceback.print_exc()
+                node.failed_download_task += 1
+                if node.total_task == total_task_before_enqueue:
+                    node.total_task += 1
+                if node.total_download_task == total_download_task_before_enqueue:
+                    node.total_download_task += 1
+                await report_bot_status(node.bot, node)
+
+        logger.info(
+            f"消息下载任务已添加 {len(media_messages)} 条消息到下载队列，等待下载完成"
+        )
+
+        while True:
+            completed_tasks = (
+                node.success_download_task
+                + node.failed_download_task
+                + node.skip_download_task
+            )
+            logger.info(
+                f"下载进度: 已完成 {completed_tasks}/{expected_message_tasks} 个任务"
+            )
+
+            if completed_tasks >= expected_message_tasks:
+                logger.info("所有下载任务已完成")
+                break
+
+            if not node.is_running or node.is_stop_transmission:
+                logger.info("任务已停止，结束消息下载等待")
+                break
+
+            await report_bot_status(node.bot, node)
+            await asyncio.sleep(5)
+
+        await report_bot_status(node.bot, node)
+        logger.info(
+            "消息下载任务已全部完成 - "
+            f"成功: {node.success_download_task}, "
+            f"失败: {node.failed_download_task}, "
+            f"跳过: {node.skip_download_task}"
+        )
     finally:
         remove_active_task_node(node.task_id)
 

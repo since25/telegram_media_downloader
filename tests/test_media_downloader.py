@@ -688,6 +688,64 @@ class MediaDownloaderTestCase(unittest.TestCase):
             ),
         )
 
+    def test_get_media_meta_uses_package_naming_context_for_video(self):
+        from module.comment_workflow import (
+            NamingStrategy,
+            PackageMediaItem,
+            PackageNamingContext,
+        )
+
+        rest_app(MOCK_CONF)
+        app.save_path = MOCK_DIR
+        app.temp_save_path = os.path.join(MOCK_DIR, "temp")
+        app.file_path_prefix = ["chat_title", "media_datetime"]
+        app.file_name_prefix = ["message_id", "file_name"]
+        app.file_name_prefix_split = " - "
+
+        message = MockMessage(
+            id=126711,
+            chat_id=-1001,
+            chat_title="Private",
+            media="video",
+            video=MockVideo(file_name="bad/name?.mp4", mime_type="video/mp4"),
+            caption="课程/第01章",
+            from_user=MockUser(username="user123"),
+            date=datetime(2026, 6, 7),
+        )
+        node = TaskNode(chat_id=-1001)
+        node.package_naming_context = PackageNamingContext(
+            strategy=NamingStrategy.RECOMMENDED,
+            channel="私密频道",
+            start_message_id=126700,
+            package_title="课程/第01章",
+        )
+        node.package_media_items = {
+            126711: PackageMediaItem(
+                message=message,
+                media_type="video",
+                caption_for_naming="课程/第01章",
+                original_caption="课程/第01章",
+            )
+        }
+
+        file_name, temp_file_name, file_format = self.loop.run_until_complete(
+            _get_media_meta(-1001, message, message.video, "video", node=node)
+        )
+
+        self.assertEqual(file_format, "mp4")
+        self.assertEqual(
+            file_name,
+            platform_generic_path(
+                f"{MOCK_DIR}/Private/2026_06/私密频道/126700-课程_第01章/126711 - bad_name_.mp4"
+            ),
+        )
+        self.assertEqual(
+            temp_file_name,
+            platform_generic_path(
+                f"{MOCK_DIR}/temp/Private/私密频道/126700-课程_第01章/126711 - bad_name_.mp4"
+            ),
+        )
+
     @mock.patch("media_downloader.app.save_path", new=MOCK_DIR)
     @mock.patch("media_downloader.asyncio.sleep", return_value=None)
     @mock.patch("media_downloader.logger")

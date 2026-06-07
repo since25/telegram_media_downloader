@@ -937,6 +937,94 @@ class CommentWorkflowTestCase(unittest.TestCase):
 
 
 class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_scan_message_package_stops_before_next_caption(self):
+        from media_downloader import scan_message_package
+
+        messages = [
+            MockMessage(
+                id=126711,
+                chat_id=-1001,
+                chat_title="私密频道",
+                media="video",
+                caption="课程 第01章 01/40",
+                video=MockVideo(
+                    file_name="001.mp4", mime_type="video/mp4", file_size=100
+                ),
+            ),
+            MockMessage(
+                id=126712,
+                chat_id=-1001,
+                chat_title="私密频道",
+                media="video",
+                video=MockVideo(
+                    file_name="002.mp4", mime_type="video/mp4", file_size=200
+                ),
+            ),
+            MockMessage(
+                id=126713,
+                chat_id=-1001,
+                chat_title="私密频道",
+                media="video",
+                caption="课程 第01章 02/40",
+                video=MockVideo(
+                    file_name="003.mp4", mime_type="video/mp4", file_size=300
+                ),
+            ),
+            MockMessage(
+                id=126714,
+                chat_id=-1001,
+                chat_title="私密频道",
+                media="video",
+                caption="课程 第02章",
+                video=MockVideo(
+                    file_name="004.mp4", mime_type="video/mp4", file_size=400
+                ),
+            ),
+            MockMessage(
+                id=126715,
+                chat_id=-1001,
+                chat_title="私密频道",
+                media="video",
+                caption="课程 第02章 02/40",
+                video=MockVideo(
+                    file_name="005.mp4", mime_type="video/mp4", file_size=500
+                ),
+            ),
+        ]
+
+        class FakePackageClient:
+            def __init__(self, prepared_messages):
+                self.messages = {
+                    message.id: message for message in prepared_messages
+                }
+                self.calls = []
+
+            async def get_messages(self, chat_id, message_ids):
+                self.calls.append((chat_id, list(message_ids)))
+                return [
+                    self.messages.get(message_id) for message_id in message_ids
+                ]
+
+        client = FakePackageClient(messages)
+
+        scan_result = await scan_message_package(
+            client=client,
+            chat_id=-1001,
+            start_message_id=126711,
+            max_scan_count=10,
+            batch_size=4,
+        )
+
+        self.assertEqual(scan_result.chat_id, -1001)
+        self.assertEqual(
+            [message.id for message in scan_result.messages],
+            [126711, 126712, 126713],
+        )
+        self.assertEqual(scan_result.failed_message_ids, [])
+        self.assertEqual(scan_result.package_plan.next_package_message.id, 126714)
+        self.assertEqual(scan_result.package_plan.summary.media_count, 3)
+        self.assertEqual(client.calls, [(-1001, [126711, 126712, 126713, 126714])])
+
     async def test_scan_comment_range_returns_comments_and_discussion_chat(self):
         from media_downloader import scan_comment_range
 

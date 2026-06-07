@@ -187,6 +187,8 @@ class TaskNode:
         self.file_name_tag: Optional[str] = None
         # Comment-link guided workflow naming context.
         self.comment_naming_context = None
+        # Guided ordinary message package workflow naming context.
+        self.package_naming_context = None
 
     def skip_msg_id(self, msg_id: int):
         """Skip if message id out of range"""
