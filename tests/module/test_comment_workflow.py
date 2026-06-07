@@ -1209,6 +1209,85 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.task_node = old_task_node
             bot_module._bot.task_id = old_task_id
 
+    async def test_confirm_callback_keeps_pending_when_start_message_fails(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                return None
+
+            async def send_message(self, chat_id, text, **kwargs):
+                raise RuntimeError("cannot send start message")
+
+        class FakeLoop:
+            def __init__(self):
+                self.created = []
+
+            def create_task(self, coroutine):
+                self.created.append(coroutine)
+                return coroutine
+
+        token = "abc123"
+        request = build_comment_workflow_request(
+            "https://t.me/zhyseseb/422?comment=4978"
+        )
+        pending = {
+            "request": request,
+            "entity_id": -1001,
+            "channel": "zhyseseb",
+            "post_title": "夏日合集",
+            "comments": [
+                MockMessage(
+                    id=4978,
+                    media="video",
+                    video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+                )
+            ],
+            "failed_comment_ids": [4980],
+            "source_message_id": 88,
+        }
+        active_nodes = []
+
+        def fake_add_active_task_node(node):
+            active_nodes.append(node)
+
+        old_pending = bot_module._bot.pending_comment_workflows
+        old_app = bot_module._bot.app
+        old_bot = bot_module._bot.bot
+        old_task_node = bot_module._bot.task_node
+        old_task_id = bot_module._bot.task_id
+        try:
+            fake_loop = FakeLoop()
+            bot_module._bot.pending_comment_workflows = {token: pending}
+            bot_module._bot.app = SimpleNamespace(loop=fake_loop)
+            bot_module._bot.bot = object()
+            bot_module._bot.task_node = {}
+            bot_module._bot.task_id = 0
+            query = SimpleNamespace(
+                data=f"{COMMENT_WORKFLOW_PREFIX}:{token}:C",
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "module.bot.add_active_task_node", new=fake_add_active_task_node
+            ):
+                with self.assertRaises(RuntimeError):
+                    await bot_module.handle_comment_workflow_callback(
+                        FakeClient(), query
+                    )
+
+            self.assertIs(bot_module._bot.pending_comment_workflows[token], pending)
+            self.assertEqual(bot_module._bot.task_node, {})
+            self.assertEqual(active_nodes, [])
+            self.assertEqual(fake_loop.created, [])
+        finally:
+            bot_module._bot.pending_comment_workflows = old_pending
+            bot_module._bot.app = old_app
+            bot_module._bot.bot = old_bot
+            bot_module._bot.task_node = old_task_node
+            bot_module._bot.task_id = old_task_id
+
     async def test_confirm_callback_falls_back_when_preview_edit_fails(self):
         from module import bot as bot_module
 
