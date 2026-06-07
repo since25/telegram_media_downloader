@@ -22,8 +22,10 @@ from module.comment_workflow import (
 
 
 class FakeDiscussionClient:
-    def __init__(self, comments):
+    def __init__(self, comments, batch_failures=None, individual_failures=None):
         self.comments = {comment.id: comment for comment in comments}
+        self.batch_failures = set(batch_failures or [])
+        self.individual_failures = set(individual_failures or [])
         self.discussion_message = MockMessage(
             id=1, chat_id=-200, chat_title="Discussion"
         )
@@ -35,7 +37,11 @@ class FakeDiscussionClient:
 
     async def get_messages(self, chat_id, message_ids):
         if isinstance(message_ids, list):
+            if any(message_id in self.batch_failures for message_id in message_ids):
+                raise RuntimeError("batch failure")
             return [self.comments.get(message_id) for message_id in message_ids]
+        if message_ids in self.individual_failures:
+            raise RuntimeError("individual failure")
         return self.comments.get(message_ids)
 
 
@@ -267,7 +273,7 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         ]
         client = FakeDiscussionClient(comments)
 
-        discussion_group_id, scanned_comments = await scan_comment_range(
+        discussion_group_id, scanned_comments, failed_comment_ids = await scan_comment_range(
             client=client,
             chat_id=-1001,
             base_message_id=422,
@@ -277,6 +283,36 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(discussion_group_id, -200)
         self.assertEqual([comment.id for comment in scanned_comments], [4978, 4979])
+        self.assertEqual(failed_comment_ids, [])
+
+    async def test_scan_comment_range_returns_failed_ids_from_individual_retries(self):
+        from media_downloader import scan_comment_range
+
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(id=4979, text="skip"),
+        ]
+        client = FakeDiscussionClient(
+            comments,
+            batch_failures={4978},
+            individual_failures={4979},
+        )
+
+        discussion_group_id, scanned_comments, failed_comment_ids = await scan_comment_range(
+            client=client,
+            chat_id=-1001,
+            base_message_id=422,
+            start_comment_id=4978,
+            end_comment_id=4979,
+        )
+
+        self.assertEqual(discussion_group_id, -200)
+        self.assertEqual([comment.id for comment in scanned_comments], [4978])
+        self.assertEqual(failed_comment_ids, [4979])
 
 
 if __name__ == "__main__":

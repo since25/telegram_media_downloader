@@ -1160,6 +1160,7 @@ async def scan_comment_range(
 
     # 获取所有评论对象 - 使用批量获取提高效率
     comments = []
+    failed_comment_ids = []
     BATCH_SIZE = 50  # Pyrogram批量获取的建议最大限制
 
     # 将评论ID列表分成多个批次
@@ -1207,12 +1208,13 @@ async def scan_comment_range(
                         logger.info(f"download_comments: 单独获取评论 {comment.id} 成功")
                 except Exception as single_e:
                     logger.error(f"download_comments: 单独获取评论 {comment_id} 失败: {single_e}")
+                    failed_comment_ids.append(comment_id)
 
     # 按评论ID排序
     comments.sort(key=lambda x: x.id)
     logger.info(f"评论排序完成，顺序: {[c.id for c in comments]}")
 
-    return discussion_group_id, comments
+    return discussion_group_id, comments, failed_comment_ids
 
 
 async def download_comments(
@@ -1235,7 +1237,7 @@ async def download_comments(
         logger.info(f"download_comments: 任务节点信息 - task_id={node.task_id}, is_running={node.is_running}, is_stop_transmission={node.is_stop_transmission}")
 
         try:
-            _discussion_group_id, comments = await scan_comment_range(
+            _discussion_group_id, comments, failed_comment_ids = await scan_comment_range(
                 client,
                 chat_id,
                 base_message_id,
@@ -1246,6 +1248,10 @@ async def download_comments(
             return
         except Exception:
             return
+
+        if failed_comment_ids:
+            node.failed_download_task += len(failed_comment_ids)
+            await report_bot_status(node.bot, node)
 
         logger.info(f"共找到 {len(comments)} 条符合条件的评论")
 
