@@ -26,6 +26,7 @@ SUPPORTED_MEDIA_TYPES = {
 _SEQUENCE_PATTERNS = [
     re.compile(r"\d+\s*[/_]\s*\d+"),
     re.compile(r"EP\s*\d+", re.IGNORECASE),
+    re.compile(r"第\s*\d+\s*[集话]"),
     re.compile(r"^[\[【(（]?\s*\d{1,4}\s*[\]】)）]?(?:[-_.:： ]+)?"),
     re.compile(r"(?:[-_.:： ]+)?[\[【(（]?\s*\d{1,4}\s*[\]】)）]?$"),
 ]

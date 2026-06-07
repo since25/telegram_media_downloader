@@ -348,6 +348,42 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertEqual([item.inherited_caption for item in plan.items], [True, False, True])
         self.assertEqual(plan.inherited_caption_count, 2)
 
+    def test_plan_message_package_treats_chinese_episode_markers_as_same_package(self):
+        from module.comment_workflow import plan_message_package
+
+        messages = [
+            MockMessage(
+                id=30,
+                media="video",
+                caption="剧名 第1集",
+                video=MockVideo(
+                    file_name="001.mp4", mime_type="video/mp4", file_size=100
+                ),
+            ),
+            MockMessage(
+                id=31,
+                media="video",
+                caption="剧名 第2集",
+                video=MockVideo(
+                    file_name="002.mp4", mime_type="video/mp4", file_size=200
+                ),
+            ),
+            MockMessage(
+                id=32,
+                media="video",
+                caption="剧名 第3集",
+                video=MockVideo(
+                    file_name="003.mp4", mime_type="video/mp4", file_size=300
+                ),
+            ),
+        ]
+
+        plan = plan_message_package(messages, start_message_id=30)
+
+        self.assertEqual([item.message.id for item in plan.items], [30, 31, 32])
+        self.assertIsNone(plan.next_package_message)
+        self.assertEqual(plan.inherited_caption_count, 0)
+
     def test_filter_media_comments_skips_text_and_empty_messages(self):
         comments = [
             MockMessage(id=1, text="hello"),
