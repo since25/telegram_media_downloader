@@ -1292,3 +1292,35 @@ After all tasks pass locally, run the app with a real bot session and perform th
 6. Verify rclone upload runs through existing upload settings.
 7. Verify local files are deleted only after successful upload when `after_upload_file_delete: true`.
 8. Verify `/stop` can stop the active download task.
+
+## Known Baseline Issue
+
+Before implementation, venv baseline was run with:
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+Result:
+
+```text
+1 failed, 42 passed, 1 skipped
+```
+
+Known pre-existing failure to fix after the comment-link workflow is implemented:
+
+```text
+tests/test_media_downloader.py::MediaDownloaderTestCase::test_get_media_meta
+```
+
+Observed behavior: caption is duplicated in generated media filenames, for example:
+
+```text
+2 - #home #book - #home #book - ADAVKJYIFV.jpg
+```
+
+Expected behavior: caption appears once:
+
+```text
+2 - #home #book - ADAVKJYIFV.jpg
+```
