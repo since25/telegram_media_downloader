@@ -787,6 +787,44 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("扫描警告：最新评论定位失败，预览范围可能不完整。", message)
         self.assertIn("扫描失败评论：2", message)
 
+    def test_format_preview_message_preserves_legacy_optional_positions(self):
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(
+                    file_name="clip.mp4",
+                    file_size=123 * 1024 * 1024,
+                    mime_type="video/mp4",
+                ),
+            )
+        ]
+        summary = summarize_comments(comments)
+        previews = build_naming_previews(
+            comments,
+            channel="zhyseseb",
+            post_id=422,
+            post_title="夏日合集",
+            sample_size=1,
+        )
+
+        message = format_preview_message(
+            "zhyseseb",
+            422,
+            "夏日合集",
+            4978,
+            summary,
+            previews,
+            True,
+            True,
+            [4980, 4981],
+            "最新评论定位失败，预览范围可能不完整。",
+        )
+
+        self.assertIn("扫描警告：最新评论定位失败，预览范围可能不完整。", message)
+        self.assertIn("扫描失败评论：2", message)
+        self.assertNotIn("预计大小：", message)
+
     def test_build_naming_previews_generates_four_clean_options(self):
         comments = [
             MockMessage(

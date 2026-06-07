@@ -671,9 +671,9 @@ def format_preview_message(
     previews: Sequence[NamingPreview],
     upload_enabled: bool,
     delete_after_upload: bool,
-    size_summary: Optional[SizeSummary] = None,
     failed_comment_ids: Optional[Sequence[int]] = None,
     scan_warning: Optional[str] = None,
+    size_summary: Optional[SizeSummary] = None,
 ) -> str:
     """Format the guided comment workflow preview shown before download."""
 
