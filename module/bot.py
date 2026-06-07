@@ -30,6 +30,7 @@ from module.comment_workflow import (
     build_callback_data,
     build_comment_workflow_request,
     build_naming_previews,
+    build_size_summary,
     build_workflow_token,
     filter_media_comments,
     format_preview_message,
@@ -917,6 +918,7 @@ async def preview_comment_workflow(client, message, workflow_request):
             previews=previews,
             upload_enabled=upload_enabled,
             delete_after_upload=delete_after_upload,
+            size_summary=build_size_summary(media_comments),
             failed_comment_ids=failed_comment_ids,
             scan_warning=scan_warning,
         )

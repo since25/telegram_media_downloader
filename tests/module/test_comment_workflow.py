@@ -13,6 +13,7 @@ from module.comment_workflow import (
     build_callback_data,
     build_comment_workflow_request,
     build_naming_previews,
+    build_size_summary,
     build_workflow_token,
     clean_segment,
     format_preview_message,
@@ -704,7 +705,11 @@ class CommentWorkflowTestCase(unittest.TestCase):
             MockMessage(
                 id=4978,
                 media="video",
-                video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+                video=MockVideo(
+                    file_name="clip.mp4",
+                    file_size=123 * 1024 * 1024,
+                    mime_type="video/mp4",
+                ),
                 date=datetime.datetime(2026, 6, 7),
             )
         ]
@@ -724,6 +729,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
             start_comment_id=4978,
             summary=summary,
             previews=previews,
+            size_summary=build_size_summary(comments),
             upload_enabled=True,
             delete_after_upload=True,
         )
@@ -735,6 +741,9 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("扫描评论：1", message)
         self.assertIn("媒体评论：1", message)
         self.assertIn("类型：video 1", message)
+        self.assertIn("预计大小：", message)
+        self.assertIn("最大文件：", message)
+        self.assertIn("大小示例：", message)
         self.assertIn("上传：enabled", message)
         self.assertIn("上传后删除本地：enabled", message)
         self.assertIn("采用推荐C", message)
@@ -745,7 +754,11 @@ class CommentWorkflowTestCase(unittest.TestCase):
             MockMessage(
                 id=4978,
                 media="video",
-                video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+                video=MockVideo(
+                    file_name="clip.mp4",
+                    file_size=123 * 1024 * 1024,
+                    mime_type="video/mp4",
+                ),
             )
         ]
         summary = summarize_comments(comments)
@@ -764,6 +777,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
             start_comment_id=4978,
             summary=summary,
             previews=previews,
+            size_summary=build_size_summary(comments),
             upload_enabled=True,
             delete_after_upload=True,
             failed_comment_ids=[4980, 4981],

@@ -671,6 +671,7 @@ def format_preview_message(
     previews: Sequence[NamingPreview],
     upload_enabled: bool,
     delete_after_upload: bool,
+    size_summary: Optional[SizeSummary] = None,
     failed_comment_ids: Optional[Sequence[int]] = None,
     scan_warning: Optional[str] = None,
 ) -> str:
@@ -694,9 +695,15 @@ def format_preview_message(
         f"扫描评论：{summary.scanned_count}",
         f"媒体评论：{summary.media_count}",
         f"类型：{media_type_counts}",
-        f"上传：{'enabled' if upload_enabled else 'disabled'}",
-        f"上传后删除本地：{'enabled' if delete_after_upload else 'disabled'}",
     ]
+    if size_summary:
+        lines.extend(_format_size_details(size_summary))
+    lines.extend(
+        [
+            f"上传：{'enabled' if upload_enabled else 'disabled'}",
+            f"上传后删除本地：{'enabled' if delete_after_upload else 'disabled'}",
+        ]
+    )
     if scan_warning:
         lines.append(f"扫描警告：{scan_warning}")
     if failed_comment_ids:
