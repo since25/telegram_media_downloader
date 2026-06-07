@@ -381,6 +381,65 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report_calls)
         self.assertEqual(report_calls[-1], (2, 1, 3))
 
+    async def test_download_comments_counts_false_enqueue_as_failed_task(self):
+        from module.app import TaskNode
+        from media_downloader import CommentScanResult, download_comments
+
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(file_name="clip-a.mp4", mime_type="video/mp4"),
+            )
+        ]
+        node = TaskNode(chat_id=-1001, bot=None, task_id=8)
+        node.is_running = True
+        report_calls = []
+
+        async def fake_scan_comment_range(*args, **kwargs):
+            return CommentScanResult(-200, comments, [])
+
+        async def fake_add_download_task(comment, task_node):
+            return False
+
+        async def fake_report_bot_status(bot, task_node):
+            report_calls.append(
+                (
+                    task_node.success_download_task,
+                    task_node.failed_download_task,
+                    task_node.total_download_task,
+                )
+            )
+
+        async def fake_sleep(seconds):
+            raise AssertionError("download_comments should not sleep after enqueue failure")
+
+        with patch("media_downloader.scan_comment_range", new=fake_scan_comment_range), patch(
+            "media_downloader.add_download_task", new=fake_add_download_task
+        ), patch(
+            "module.pyrogram_extension.report_bot_status", new=fake_report_bot_status
+        ), patch(
+            "module.download_stat.remove_active_task_node"
+        ), patch(
+            "media_downloader.asyncio.sleep", new=fake_sleep
+        ):
+            await download_comments(
+                client=object(),
+                chat_id=-1001,
+                base_message_id=422,
+                start_comment_id=4978,
+                end_comment_id=4978,
+                download_filter="",
+                node=node,
+            )
+
+        self.assertEqual(node.failed_download_task, 1)
+        self.assertEqual(node.success_download_task, 0)
+        self.assertEqual(node.total_download_task, 1)
+        self.assertEqual(node.total_task, 1)
+        self.assertTrue(report_calls)
+        self.assertEqual(report_calls[-1], (0, 1, 1))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1307,8 +1307,17 @@ async def download_comments(
                 # 确保comment.chat存在
                 chat_id = comment.chat.id if comment.chat else "未知"
                 logger.info(f"准备添加下载任务: comment_id={comment.id}, chat_id={chat_id}")
+                total_task_before_enqueue = node.total_task
+                total_download_task_before_enqueue = node.total_download_task
                 result = await add_download_task(comment, node)
                 logger.info(f"添加下载任务结果: {result}")
+                if result is False:
+                    node.failed_download_task += 1
+                    if node.total_task == total_task_before_enqueue:
+                        node.total_task += 1
+                    if node.total_download_task == total_download_task_before_enqueue:
+                        node.total_download_task += 1
+                    await report_bot_status(node.bot, node)
             except Exception as e:
                 logger.error(f"处理评论 {comment.id} 失败: {e}")
                 import traceback
