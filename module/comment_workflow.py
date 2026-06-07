@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, Iterable, List, Optional, Sequence
-from urllib.parse import urlparse
 
 from utils.format import extract_info_from_link, validate_title
 
@@ -82,14 +80,13 @@ def build_comment_workflow_request(text: str) -> Optional[CommentWorkflowRequest
         return None
 
     link = extract_info_from_link(url)
-    post_id = link.post_id or _post_id_from_comment_url(url)
-    if link.group_id is None or post_id is None or link.comment_id is None:
+    if link.group_id is None or link.post_id is None or link.comment_id is None:
         return None
 
     return CommentWorkflowRequest(
         url=url,
         source_chat=link.group_id,
-        post_id=post_id,
+        post_id=link.post_id,
         start_comment_id=link.comment_id,
     )
 
@@ -153,7 +150,7 @@ def parse_callback_data(data: str) -> Optional[tuple[str, NamingStrategy]]:
     """Parse workflow callback data into token and naming strategy."""
 
     parts = data.split(":")
-    if len(parts) != 3 or parts[0] != COMMENT_WORKFLOW_PREFIX:
+    if len(parts) != 3 or parts[0] != COMMENT_WORKFLOW_PREFIX or not parts[1]:
         return None
 
     try:
@@ -177,15 +174,3 @@ def clean_segment(value: Optional[str], fallback: str, max_len: int = 40) -> str
 def _media_name(comment) -> str:
     media = getattr(comment, "media", None)
     return getattr(media, "value", media)
-
-
-def _post_id_from_comment_url(url: str) -> Optional[int]:
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return None
-
-    paths = [part for part in parsed.path.split("/") if part]
-    if len(paths) >= 2 and re.fullmatch(r"\d+", paths[-1]):
-        return int(paths[-1])
-    return None
