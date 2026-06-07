@@ -1783,7 +1783,7 @@ async def handle_comment_workflow_callback(client, query):
         return True
 
     token, strategy = parsed
-    pending = _bot.pending_comment_workflows.pop(token, None)
+    pending = _bot.pending_comment_workflows.get(token)
     if not pending:
         await client.edit_message_text(
             chat_id,
@@ -1793,11 +1793,17 @@ async def handle_comment_workflow_callback(client, query):
         return True
 
     request = pending["request"]
-    await client.edit_message_text(
-        chat_id,
-        message_id,
-        f"已确认命名策略 {strategy.value}，开始下载评论媒体。",
-    )
+    confirm_text = f"已确认命名策略 {strategy.value}，开始下载评论媒体。"
+    try:
+        await client.edit_message_text(chat_id, message_id, confirm_text)
+    except Exception as error:
+        logger.warning(f"comment workflow confirm edit failed: {error}")
+        await client.send_message(
+            chat_id,
+            confirm_text,
+            reply_to_message_id=pending.get("source_message_id"),
+        )
+
     status_message = await client.send_message(
         chat_id,
         f"评论媒体下载任务已启动：{pending['channel']}/{request.post_id}",
@@ -1818,19 +1824,24 @@ async def handle_comment_workflow_callback(client, query):
         post_title=pending["post_title"],
     )
     node.is_running = True
-    _bot.add_task_node(node)
-    add_active_task_node(node)
 
     from media_downloader import download_prepared_comments
 
-    _bot.app.loop.create_task(
-        download_prepared_comments(
-            pending["comments"],
-            None,
-            node,
-            failed_comment_ids=pending.get("failed_comment_ids"),
-        )
+    download_coroutine = download_prepared_comments(
+        pending["comments"],
+        None,
+        node,
+        failed_comment_ids=pending.get("failed_comment_ids"),
     )
+    try:
+        _bot.app.loop.create_task(download_coroutine)
+    except Exception:
+        download_coroutine.close()
+        raise
+
+    _bot.add_task_node(node)
+    add_active_task_node(node)
+    _bot.pending_comment_workflows.pop(token, None)
     return True
 
 

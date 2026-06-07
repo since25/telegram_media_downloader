@@ -515,6 +515,71 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(report_calls)
         self.assertEqual(report_calls[-1], (0, 1, 1))
 
+    async def test_download_prepared_comments_uses_module_app_for_filtering(self):
+        from module.app import TaskNode
+        from media_downloader import download_prepared_comments
+        import media_downloader
+
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(file_name="clip-a.mp4", mime_type="video/mp4"),
+                caption="keep",
+            ),
+            MockMessage(
+                id=4979,
+                media="video",
+                video=MockVideo(file_name="clip-b.mp4", mime_type="video/mp4"),
+                caption="drop",
+            ),
+        ]
+        node = TaskNode(chat_id=-1001, bot=None, task_id=9)
+        node.is_running = True
+        queued_ids = []
+
+        def fake_exec_filter(config, meta_data):
+            return meta_data.caption == "keep"
+
+        def fake_set_meta_data(meta_data, comment, caption):
+            meta_data.caption = caption
+
+        async def fake_add_download_task(comment, task_node):
+            queued_ids.append(comment.id)
+            task_node.total_task += 1
+            task_node.total_download_task += 1
+            task_node.success_download_task += 1
+            return True
+
+        async def fake_report_bot_status(bot, task_node):
+            return None
+
+        async def fake_sleep(seconds):
+            raise AssertionError("download_prepared_comments should not wait after filtered success")
+
+        with patch.object(
+            media_downloader.app, "exec_filter", new=fake_exec_filter
+        ), patch(
+            "media_downloader.add_download_task", new=fake_add_download_task
+        ), patch(
+            "module.pyrogram_extension.set_meta_data", new=fake_set_meta_data
+        ), patch(
+            "module.pyrogram_extension.report_bot_status", new=fake_report_bot_status
+        ), patch(
+            "module.download_stat.remove_active_task_node"
+        ), patch(
+            "media_downloader.asyncio.sleep", new=fake_sleep
+        ):
+            await download_prepared_comments(
+                comments,
+                download_filter="caption == keep",
+                node=node,
+            )
+
+        self.assertEqual(queued_ids, [4978])
+        self.assertEqual(node.success_download_task, 1)
+        self.assertEqual(node.total_download_task, 1)
+
 
 class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_download_from_link_routes_direct_comment_link_to_preview(self):
@@ -1064,6 +1129,171 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node.comment_naming_context.post_title, "夏日合集")
             self.assertEqual(active_nodes, [node])
             self.assertIn(node.task_id, bot_module._bot.task_node)
+        finally:
+            bot_module._bot.pending_comment_workflows = old_pending
+            bot_module._bot.app = old_app
+            bot_module._bot.bot = old_bot
+            bot_module._bot.task_node = old_task_node
+            bot_module._bot.task_id = old_task_id
+
+    async def test_confirm_callback_keeps_pending_when_task_registration_fails(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                return None
+
+            async def send_message(self, chat_id, text, **kwargs):
+                return MockMessage(id=77, chat_id=chat_id, text=text)
+
+        class FailingLoop:
+            def create_task(self, coroutine):
+                coroutine.close()
+                raise RuntimeError("cannot schedule task")
+
+        token = "abc123"
+        request = build_comment_workflow_request(
+            "https://t.me/zhyseseb/422?comment=4978"
+        )
+        pending = {
+            "request": request,
+            "entity_id": -1001,
+            "channel": "zhyseseb",
+            "post_title": "夏日合集",
+            "comments": [
+                MockMessage(
+                    id=4978,
+                    media="video",
+                    video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+                )
+            ],
+            "failed_comment_ids": [4980],
+            "source_message_id": 88,
+        }
+
+        async def fake_download_prepared_comments(*args, **kwargs):
+            return None
+
+        old_pending = bot_module._bot.pending_comment_workflows
+        old_app = bot_module._bot.app
+        old_bot = bot_module._bot.bot
+        old_task_node = bot_module._bot.task_node
+        old_task_id = bot_module._bot.task_id
+        try:
+            bot_module._bot.pending_comment_workflows = {token: pending}
+            bot_module._bot.app = SimpleNamespace(loop=FailingLoop())
+            bot_module._bot.bot = object()
+            bot_module._bot.task_node = {}
+            bot_module._bot.task_id = 0
+            query = SimpleNamespace(
+                data=f"{COMMENT_WORKFLOW_PREFIX}:{token}:C",
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "media_downloader.download_prepared_comments",
+                new=fake_download_prepared_comments,
+            ):
+                with self.assertRaises(RuntimeError):
+                    await bot_module.handle_comment_workflow_callback(
+                        FakeClient(), query
+                    )
+
+            self.assertIs(bot_module._bot.pending_comment_workflows[token], pending)
+            self.assertEqual(bot_module._bot.task_node, {})
+        finally:
+            bot_module._bot.pending_comment_workflows = old_pending
+            bot_module._bot.app = old_app
+            bot_module._bot.bot = old_bot
+            bot_module._bot.task_node = old_task_node
+            bot_module._bot.task_id = old_task_id
+
+    async def test_confirm_callback_falls_back_when_preview_edit_fails(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                raise RuntimeError("edit failed")
+
+            async def send_message(self, chat_id, text, **kwargs):
+                message = MockMessage(
+                    id=70 + len(self.sent_messages),
+                    chat_id=chat_id,
+                    text=text,
+                )
+                self.sent_messages.append((chat_id, text, kwargs, message))
+                return message
+
+        class FakeLoop:
+            def __init__(self):
+                self.created = []
+
+            def create_task(self, coroutine):
+                self.created.append(coroutine)
+                return coroutine
+
+        token = "abc123"
+        request = build_comment_workflow_request(
+            "https://t.me/zhyseseb/422?comment=4978"
+        )
+        pending = {
+            "request": request,
+            "entity_id": -1001,
+            "channel": "zhyseseb",
+            "post_title": "夏日合集",
+            "comments": [
+                MockMessage(
+                    id=4978,
+                    media="video",
+                    video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+                )
+            ],
+            "failed_comment_ids": [],
+            "source_message_id": 88,
+        }
+        recorded = {}
+
+        async def fake_download_prepared_comments(
+            prepared_comments, download_filter, node, failed_comment_ids=None
+        ):
+            recorded["node"] = node
+
+        old_pending = bot_module._bot.pending_comment_workflows
+        old_app = bot_module._bot.app
+        old_bot = bot_module._bot.bot
+        old_task_node = bot_module._bot.task_node
+        old_task_id = bot_module._bot.task_id
+        try:
+            fake_loop = FakeLoop()
+            bot_module._bot.pending_comment_workflows = {token: pending}
+            bot_module._bot.app = SimpleNamespace(loop=fake_loop)
+            bot_module._bot.bot = object()
+            bot_module._bot.task_node = {}
+            bot_module._bot.task_id = 0
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=f"{COMMENT_WORKFLOW_PREFIX}:{token}:C",
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "media_downloader.download_prepared_comments",
+                new=fake_download_prepared_comments,
+            ), patch("module.bot.add_active_task_node"):
+                handled = await bot_module.handle_comment_workflow_callback(
+                    client, query
+                )
+                await fake_loop.created[0]
+
+            self.assertTrue(handled)
+            self.assertEqual(bot_module._bot.pending_comment_workflows, {})
+            self.assertEqual(len(client.sent_messages), 2)
+            self.assertTrue(recorded["node"].is_running)
         finally:
             bot_module._bot.pending_comment_workflows = old_pending
             bot_module._bot.app = old_app

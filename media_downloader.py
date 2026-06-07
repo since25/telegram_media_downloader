@@ -1239,8 +1239,6 @@ async def download_prepared_comments(
 
     try:
         if download_filter:
-            from module.app import app
-
             class TempChatDownloadConfig:
                 def __init__(self):
                     self.download_filter = download_filter
