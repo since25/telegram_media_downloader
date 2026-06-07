@@ -275,6 +275,33 @@ class CommentWorkflowTestCase(unittest.TestCase):
         )
         self.assertEqual(plan.inherited_caption_count, 2)
 
+    def test_plan_message_package_warns_when_scan_reaches_exact_limit(self):
+        from module.comment_workflow import plan_message_package
+
+        messages = [
+            MockMessage(
+                id=20,
+                media="video",
+                caption="某某课程 第01章 01/40",
+                video=MockVideo(
+                    file_name="001.mp4", mime_type="video/mp4", file_size=100
+                ),
+            ),
+            MockMessage(
+                id=21,
+                media="video",
+                video=MockVideo(
+                    file_name="002.mp4", mime_type="video/mp4", file_size=200
+                ),
+            ),
+        ]
+
+        plan = plan_message_package(messages, start_message_id=20, max_scan_count=2)
+
+        self.assertEqual([item.message.id for item in plan.items], [20, 21])
+        self.assertIsNone(plan.next_package_message)
+        self.assertEqual(plan.scan_warning, "未发现下一包边界，已达到扫描上限 2 条。")
+
     def test_filter_media_comments_skips_text_and_empty_messages(self):
         comments = [
             MockMessage(id=1, text="hello"),

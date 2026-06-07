@@ -238,8 +238,8 @@ def plan_message_package(
         ],
         key=lambda message: message.id,
     )
-    scan_limit_hit = len(candidates) > max_scan_count
     scanned_messages = candidates[:max_scan_count]
+    scan_limit_hit = max_scan_count > 0 and len(scanned_messages) >= max_scan_count
 
     items: List[PackageMediaItem] = []
     group_captions: Dict[str, str] = {}
