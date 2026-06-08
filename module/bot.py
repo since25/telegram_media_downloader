@@ -64,6 +64,9 @@ from utils.meta_data import MetaData
 
 # pylint: disable = C0301, R0902
 
+COMMENT_PROBE_SCAN_LIMIT = 500
+COMMENT_MISSING_STREAK_LIMIT = 5
+
 
 class DownloadBot:
     """Download bot"""
@@ -829,6 +832,49 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
     )
 
 
+def _positive_int(value):
+    """Return positive int values from Telegram metadata."""
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    return None
+
+
+def _comment_count_from_message(message):
+    """Extract Telegram's visible comment/reply count when available."""
+
+    if not message:
+        return None
+
+    containers = [
+        getattr(message, "replies", None),
+        getattr(getattr(message, "raw", None), "replies", None),
+        message,
+    ]
+    for container in containers:
+        if not container:
+            continue
+        for attr_name in ("comments", "replies", "reply_count", "count"):
+            count = _positive_int(getattr(container, attr_name, None))
+            if count is not None:
+                return count
+
+    return None
+
+
+def _comment_scan_end_id(base_message, start_comment_id):
+    """Return a conservative probe end from the visible comment count."""
+
+    comment_count = _comment_count_from_message(base_message)
+    probe_count = COMMENT_PROBE_SCAN_LIMIT
+    if comment_count is not None:
+        probe_count = max(COMMENT_PROBE_SCAN_LIMIT, comment_count * 3)
+
+    return start_comment_id + probe_count - 1
+
+
 async def preview_comment_workflow(client, message, workflow_request):
     """Scan a pasted comment link and show guided download naming previews."""
 
@@ -843,42 +889,11 @@ async def preview_comment_workflow(client, message, workflow_request):
         if base_message:
             post_title = base_message.text or base_message.caption or ""
 
-        discussion_message = await _bot.client.get_discussion_message(
-            entity.id, workflow_request.post_id
+        expected_comment_count = _comment_count_from_message(base_message)
+        latest_comment_id = _comment_scan_end_id(
+            base_message, workflow_request.start_comment_id
         )
-        if not discussion_message:
-            await client.send_message(
-                message.from_user.id,
-                "无法获取原帖讨论区，不能预览评论媒体。",
-                reply_to_message_id=message.id,
-            )
-            return
-
-        latest_comment_id = workflow_request.start_comment_id
-        found_latest_from_history = False
         scan_warning = None
-        try:
-            async for latest_msg in get_chat_history_v2(
-                _bot.client,
-                discussion_message.chat.id,
-                limit=1,
-                reverse=False,
-            ):
-                latest_comment_id = max(
-                    workflow_request.start_comment_id, latest_msg.id
-                )
-                found_latest_from_history = True
-                break
-        except Exception as history_error:
-            logger.warning(
-                f"preview_comment_workflow: latest history lookup failed: {history_error}"
-            )
-            scan_warning = "最新评论定位失败，预览范围可能不完整。"
-
-        if not found_latest_from_history:
-            latest_comment_id = workflow_request.start_comment_id
-            if not scan_warning:
-                scan_warning = "未找到最新评论，预览范围可能不完整。"
 
         scan_result = await scan_comment_range(
             _bot.client,
@@ -886,6 +901,8 @@ async def preview_comment_workflow(client, message, workflow_request):
             workflow_request.post_id,
             workflow_request.start_comment_id,
             latest_comment_id,
+            expected_comment_count=expected_comment_count,
+            missing_streak_limit=COMMENT_MISSING_STREAK_LIMIT,
         )
         comments = scan_result.comments
         failed_comment_ids = list(getattr(scan_result, "failed_comment_ids", []) or [])
@@ -893,6 +910,9 @@ async def preview_comment_workflow(client, message, workflow_request):
         summary = summarize_comments(comments)
         if failed_comment_ids:
             scan_warning = scan_warning or "部分评论扫描失败，预览结果可能不完整。"
+        actual_latest_comment_id = summary.last_comment_id or workflow_request.start_comment_id
+        if failed_comment_ids:
+            actual_latest_comment_id = max(actual_latest_comment_id, *failed_comment_ids)
 
         if not media_comments:
             await client.send_message(
@@ -919,7 +939,7 @@ async def preview_comment_workflow(client, message, workflow_request):
             "comments": media_comments,
             "failed_comment_ids": failed_comment_ids,
             "scan_warning": scan_warning,
-            "latest_comment_id": latest_comment_id,
+            "latest_comment_id": actual_latest_comment_id,
             "source_message_id": message.id,
         }
 

@@ -1491,7 +1491,7 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             else:
                 bot_module._bot.pending_package_workflows = old_pending
 
-    async def test_preview_uses_latest_discussion_history_message_for_scan_end(self):
+    async def test_preview_uses_bounded_comment_probe_window_for_scan_end(self):
         from module import bot as bot_module
 
         request = build_comment_workflow_request(
@@ -1533,21 +1533,27 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             async def send_message(self, chat_id, text, **kwargs):
                 self.sent_messages.append((chat_id, text, kwargs))
 
-        async def fake_get_chat_history_v2(client, chat_id, limit=0, reverse=False):
-            self.assertEqual(chat_id, -200)
-            self.assertEqual(limit, 1)
-            self.assertFalse(reverse)
-            yield MockMessage(id=4999)
+        async def fake_get_chat_history_v2(*args, **kwargs):
+            raise AssertionError("comment preview should not use global discussion history")
+            yield
 
         async def fake_scan_comment_range(
-            client, chat_id, base_message_id, start_comment_id, end_comment_id
+            client,
+            chat_id,
+            base_message_id,
+            start_comment_id,
+            end_comment_id,
+            expected_comment_count=None,
+            missing_streak_limit=None,
         ):
+            del expected_comment_count
             captured_scan.update(
                 {
                     "chat_id": chat_id,
                     "base_message_id": base_message_id,
                     "start_comment_id": start_comment_id,
                     "end_comment_id": end_comment_id,
+                    "missing_streak_limit": missing_streak_limit,
                 }
             )
             return SimpleNamespace(comments=scanned_comments)
@@ -1581,7 +1587,8 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                     "chat_id": -1001,
                     "base_message_id": 422,
                     "start_comment_id": 4978,
-                    "end_comment_id": 4999,
+                    "end_comment_id": 5477,
+                    "missing_streak_limit": 5,
                 },
             )
             self.assertEqual(len(bot_module._bot.pending_comment_workflows), 1)
@@ -1590,6 +1597,136 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             sent_kwargs = bot_client.sent_messages[0][2]
             self.assertIn("采用推荐C", sent_text)
             self.assertIn("reply_markup", sent_kwargs)
+        finally:
+            bot_module._bot.client = old_client
+            bot_module._bot.app = old_app
+            bot_module._bot.pending_comment_workflows = old_pending
+
+    async def test_preview_passes_base_comment_count_to_bound_thread_scan(self):
+        from module import bot as bot_module
+
+        request = build_comment_workflow_request(
+            "https://t.me/zhyseseb/605?single&comment=6844"
+        )
+        source_entity = SimpleNamespace(
+            id=-1001, username="zhyseseb", title="Channel Title"
+        )
+        base_message = MockMessage(id=605, text="夏日合集")
+        base_message.replies = SimpleNamespace(replies=5)
+        discussion_message = MockMessage(
+            id=6050, chat_id=-200, chat_title="Discussion"
+        )
+        scanned_comments = [
+            MockMessage(
+                id=6844,
+                media="photo",
+                photo=MockPhoto(date=datetime.datetime(2026, 6, 8), file_unique_id="p1"),
+                reply_to_message_id=6050,
+            ),
+            MockMessage(
+                id=6845,
+                media="video",
+                video=MockVideo(file_name="6845.mp4", mime_type="video/mp4"),
+                reply_to_message_id=6050,
+            ),
+            MockMessage(
+                id=6846,
+                media="video",
+                video=MockVideo(file_name="6846.mp4", mime_type="video/mp4"),
+                reply_to_message_id=6050,
+            ),
+            MockMessage(
+                id=6847,
+                media="video",
+                video=MockVideo(file_name="6847.mp4", mime_type="video/mp4"),
+                reply_to_message_id=6050,
+            ),
+        ]
+        captured_scan = {}
+
+        class FakeUserClient:
+            async def get_chat(self, chat_id):
+                self.requested_chat_id = chat_id
+                return source_entity
+
+            async def get_messages(self, chat_id, message_id):
+                self.requested_message = (chat_id, message_id)
+                return base_message
+
+            async def get_discussion_message(self, chat_id, message_id):
+                self.requested_discussion = (chat_id, message_id)
+                return discussion_message
+
+        class FakeBotClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+
+        async def fake_get_chat_history_v2(*args, **kwargs):
+            raise AssertionError("comment preview should not use global discussion history")
+            yield
+
+        async def fake_scan_comment_range(
+            client,
+            chat_id,
+            base_message_id,
+            start_comment_id,
+            end_comment_id,
+            expected_comment_count=None,
+            missing_streak_limit=None,
+        ):
+            captured_scan.update(
+                {
+                    "chat_id": chat_id,
+                    "base_message_id": base_message_id,
+                    "start_comment_id": start_comment_id,
+                    "end_comment_id": end_comment_id,
+                    "expected_comment_count": expected_comment_count,
+                    "missing_streak_limit": missing_streak_limit,
+                }
+            )
+            return SimpleNamespace(comments=scanned_comments, failed_comment_ids=[])
+
+        old_client = bot_module._bot.client
+        old_app = bot_module._bot.app
+        old_pending = bot_module._bot.pending_comment_workflows
+        bot_client = FakeBotClient()
+        try:
+            bot_module._bot.client = FakeUserClient()
+            bot_module._bot.app = SimpleNamespace(
+                cloud_drive_config=SimpleNamespace(
+                    enable_upload_file=True, after_upload_file_delete=False
+                )
+            )
+            bot_module._bot.pending_comment_workflows = {}
+            message = MockMessage(
+                id=88,
+                text="https://t.me/zhyseseb/605?single&comment=6844",
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "module.bot.get_chat_history_v2", new=fake_get_chat_history_v2
+            ), patch("media_downloader.scan_comment_range", new=fake_scan_comment_range):
+                await bot_module.preview_comment_workflow(bot_client, message, request)
+
+            self.assertEqual(
+                captured_scan,
+                {
+                    "chat_id": -1001,
+                    "base_message_id": 605,
+                    "start_comment_id": 6844,
+                    "end_comment_id": 7343,
+                    "expected_comment_count": 5,
+                    "missing_streak_limit": 5,
+                },
+            )
+            self.assertEqual(len(bot_module._bot.pending_comment_workflows), 1)
+            sent_text = bot_client.sent_messages[0][1]
+            self.assertIn("媒体评论：4", sent_text)
+            self.assertIn("评论范围：6844 → 6847", sent_text)
         finally:
             bot_module._bot.client = old_client
             bot_module._bot.app = old_app
@@ -1678,7 +1815,7 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.app = old_app
             bot_module._bot.pending_comment_workflows = old_pending
 
-    async def test_preview_warns_when_latest_history_lookup_fails(self):
+    async def test_preview_does_not_need_latest_history_lookup(self):
         from module import bot as bot_module
 
         request = build_comment_workflow_request(
@@ -1722,8 +1859,16 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 yield None
 
         async def fake_scan_comment_range(
-            client, chat_id, base_message_id, start_comment_id, end_comment_id
+            client,
+            chat_id,
+            base_message_id,
+            start_comment_id,
+            end_comment_id,
+            expected_comment_count=None,
+            missing_streak_limit=None,
         ):
+            del expected_comment_count
+            del missing_streak_limit
             captured_scan["end_comment_id"] = end_comment_id
             return SimpleNamespace(comments=scanned_comments, failed_comment_ids=[])
 
@@ -1751,16 +1896,16 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 await bot_module.preview_comment_workflow(bot_client, message, request)
 
             pending = next(iter(bot_module._bot.pending_comment_workflows.values()))
-            self.assertEqual(captured_scan["end_comment_id"], 4978)
+            self.assertEqual(captured_scan["end_comment_id"], 5477)
             self.assertEqual(pending["latest_comment_id"], 4978)
-            self.assertIsNotNone(pending["scan_warning"])
-            self.assertIn("扫描警告：", bot_client.sent_messages[0][1])
+            self.assertIsNone(pending["scan_warning"])
+            self.assertNotIn("扫描警告：", bot_client.sent_messages[0][1])
         finally:
             bot_module._bot.client = old_client
             bot_module._bot.app = old_app
             bot_module._bot.pending_comment_workflows = old_pending
 
-    async def test_preview_warns_when_latest_history_lookup_raises(self):
+    async def test_preview_ignores_latest_history_lookup_errors(self):
         from module import bot as bot_module
 
         request = build_comment_workflow_request(
@@ -1830,10 +1975,8 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
 
             pending = next(iter(bot_module._bot.pending_comment_workflows.values()))
             self.assertEqual(pending["latest_comment_id"], 4978)
-            self.assertEqual(
-                pending["scan_warning"], "最新评论定位失败，预览范围可能不完整。"
-            )
-            self.assertIn("扫描警告：", bot_client.sent_messages[0][1])
+            self.assertIsNone(pending["scan_warning"])
+            self.assertNotIn("扫描警告：", bot_client.sent_messages[0][1])
         finally:
             bot_module._bot.client = old_client
             bot_module._bot.app = old_app

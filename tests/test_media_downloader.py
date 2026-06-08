@@ -746,6 +746,175 @@ class MediaDownloaderTestCase(unittest.TestCase):
             ),
         )
 
+    def test_scan_comment_range_keeps_only_comments_from_discussion_root(self):
+        from media_downloader import scan_comment_range
+        from module.comment_workflow import filter_media_comments
+
+        discussion_root_id = 6050
+        other_discussion_root_id = 6110
+        discussion_message = MockMessage(
+            id=discussion_root_id,
+            chat_id=-200,
+            chat_title="Discussion",
+        )
+        comments = {
+            6844: MockMessage(
+                id=6844,
+                media="photo",
+                photo=MockPhoto(date=datetime(2026, 6, 8), file_unique_id="p6844"),
+                reply_to_message_id=discussion_root_id,
+            ),
+            6845: MockMessage(
+                id=6845,
+                media="video",
+                video=MockVideo(file_name="6845.mp4", mime_type="video/mp4"),
+                reply_to_message_id=discussion_root_id,
+            ),
+            6846: MockMessage(
+                id=6846,
+                media="video",
+                video=MockVideo(file_name="6846.mp4", mime_type="video/mp4"),
+                reply_to_message_id=discussion_root_id,
+            ),
+            6847: MockMessage(
+                id=6847,
+                media="video",
+                video=MockVideo(file_name="6847.mp4", mime_type="video/mp4"),
+                reply_to_message_id=discussion_root_id,
+            ),
+            6848: MockMessage(
+                id=6848,
+                text="text-only comment",
+                reply_to_message_id=discussion_root_id,
+            ),
+            6886: MockMessage(
+                id=6886,
+                media="video",
+                video=MockVideo(file_name="6886.mp4", mime_type="video/mp4"),
+                reply_to_message_id=other_discussion_root_id,
+            ),
+            6887: MockMessage(
+                id=6887,
+                media="video",
+                video=MockVideo(file_name="6887.mp4", mime_type="video/mp4"),
+                reply_to_message_id=other_discussion_root_id,
+            ),
+        }
+
+        class FakeClient:
+            async def get_discussion_message(self, chat_id, base_message_id):
+                self.requested_discussion = (chat_id, base_message_id)
+                return discussion_message
+
+            async def get_messages(self, chat_id, message_ids):
+                if isinstance(message_ids, list):
+                    return [comments.get(message_id) for message_id in message_ids]
+                return comments.get(message_ids)
+
+        result = self.loop.run_until_complete(
+            scan_comment_range(
+                FakeClient(),
+                -1001,
+                605,
+                6844,
+                6887,
+                expected_comment_count=5,
+            )
+        )
+
+        self.assertEqual(
+            [comment.id for comment in result.comments],
+            [6844, 6845, 6846, 6847, 6848],
+        )
+        self.assertEqual(
+            [comment.id for comment in filter_media_comments(result.comments)],
+            [6844, 6845, 6846, 6847],
+        )
+
+    def test_scan_comment_range_uses_source_replies_before_discussion_group(self):
+        from media_downloader import scan_comment_range
+        from module.comment_workflow import filter_media_comments
+
+        comments = [
+            MockMessage(
+                id=6844,
+                media="photo",
+                photo=MockPhoto(date=datetime(2026, 6, 8), file_unique_id="p6844"),
+            ),
+            MockMessage(
+                id=6845,
+                media="video",
+                video=MockVideo(file_name="6845.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=6846,
+                media="video",
+                video=MockVideo(file_name="6846.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=6847,
+                media="video",
+                video=MockVideo(file_name="6847.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(id=6848, text="text-only comment"),
+        ]
+
+        class FakeClient:
+            def __init__(self):
+                self.invoked = []
+                self.discussion_requested = False
+                self.raw_result = object()
+
+            async def resolve_peer(self, chat_id):
+                self.resolved_chat_id = chat_id
+                return "resolved-peer"
+
+            async def invoke(self, rpc, sleep_threshold=-1):
+                self.invoked.append((rpc, sleep_threshold))
+                return self.raw_result
+
+            async def get_discussion_message(self, chat_id, base_message_id):
+                self.discussion_requested = True
+                raise AssertionError("direct source replies should be tried first")
+
+        async def fake_parse_messages(client, raw_messages, replies=0):
+            self.assertIs(raw_messages, client.raw_result)
+            self.assertEqual(replies, 0)
+            return comments
+
+        client = FakeClient()
+        with mock.patch(
+            "media_downloader.pyrogram_utils.parse_messages",
+            new=fake_parse_messages,
+        ):
+            result = self.loop.run_until_complete(
+                scan_comment_range(
+                    client,
+                    "zhyseseb",
+                    605,
+                    6844,
+                    6887,
+                    expected_comment_count=5,
+                )
+            )
+
+        rpc, sleep_threshold = client.invoked[0]
+        self.assertEqual(client.resolved_chat_id, "zhyseseb")
+        self.assertEqual(rpc.msg_id, 605)
+        self.assertEqual(rpc.min_id, 6843)
+        self.assertEqual(rpc.max_id, 6888)
+        self.assertEqual(rpc.limit, 5)
+        self.assertEqual(sleep_threshold, -1)
+        self.assertFalse(client.discussion_requested)
+        self.assertEqual(
+            [comment.id for comment in result.comments],
+            [6844, 6845, 6846, 6847, 6848],
+        )
+        self.assertEqual(
+            [comment.id for comment in filter_media_comments(result.comments)],
+            [6844, 6845, 6846, 6847],
+        )
+
     def test_download_prepared_messages_preserves_planned_later_caption_for_package_naming_context(self):
         from module.comment_workflow import (
             NamingStrategy,

@@ -14,6 +14,7 @@ import sys
 if __name__ == "__main__":
     sys.modules["media_downloader"] = sys.modules[__name__]
 import pyrogram
+from pyrogram import raw, utils as pyrogram_utils
 from loguru import logger
 from pyrogram.client import Client as PyrogramClient
 from pyrogram.types import Audio, Document, Photo, Video, VideoNote, Voice
@@ -60,6 +61,114 @@ class MessagePackageScanResult(NamedTuple):
     messages: list
     package_plan: Any
     failed_message_ids: list
+
+
+def _comment_thread_reference_ids(comment) -> List[int]:
+    """Return known discussion-root ids referenced by a comment message."""
+
+    reference_ids: List[int] = []
+    for attr_name in (
+        "reply_to_message_id",
+        "reply_to_top_message_id",
+        "message_thread_id",
+    ):
+        value = getattr(comment, attr_name, None)
+        if isinstance(value, int) and value > 0:
+            reference_ids.append(value)
+
+    for attr_name in ("reply_to_message", "reply_to_top_message"):
+        nested_message = getattr(comment, attr_name, None)
+        nested_id = getattr(nested_message, "id", None)
+        if isinstance(nested_id, int) and nested_id > 0:
+            reference_ids.append(nested_id)
+
+    return reference_ids
+
+
+def _is_comment_in_discussion_thread(comment, discussion_message) -> bool:
+    """Return whether a fetched discussion-group message belongs to this post."""
+
+    discussion_root_id = getattr(discussion_message, "id", None)
+    if not isinstance(discussion_root_id, int) or discussion_root_id <= 0:
+        return True
+
+    if getattr(comment, "id", None) == discussion_root_id:
+        return True
+
+    reference_ids = _comment_thread_reference_ids(comment)
+    if not reference_ids:
+        return True
+
+    return discussion_root_id in reference_ids
+
+
+async def _scan_comment_replies_from_source(
+    client,
+    chat_id,
+    base_message_id,
+    start_comment_id,
+    end_comment_id,
+    expected_comment_count: Optional[int] = None,
+    max_scan_count: int = 500,
+) -> CommentScanResult:
+    """Fetch comments via the source post's replies, matching t.me comment URLs."""
+
+    peer = await client.resolve_peer(chat_id)
+    min_id = max(start_comment_id - 1, 0)
+    max_id = end_comment_id + 1 if end_comment_id else 0
+    offset_id = 0
+    comments = []
+    seen_ids = set()
+    max_scan_count = max(1, max_scan_count)
+
+    while len(comments) < max_scan_count:
+        remaining = max_scan_count - len(comments)
+        if expected_comment_count is not None:
+            remaining = min(remaining, expected_comment_count - len(comments))
+        if remaining <= 0:
+            break
+
+        limit = min(100, remaining)
+        rpc = raw.functions.messages.GetReplies(
+            peer=peer,
+            msg_id=base_message_id,
+            offset_id=offset_id,
+            offset_date=0,
+            add_offset=0,
+            limit=limit,
+            max_id=max_id,
+            min_id=min_id,
+            hash=0,
+        )
+        raw_messages = await client.invoke(rpc, sleep_threshold=-1)
+        page = await pyrogram_utils.parse_messages(client, raw_messages, replies=0)
+        page_comments = [
+            message
+            for message in page
+            if message
+            and hasattr(message, "id")
+            and start_comment_id <= message.id <= end_comment_id
+            and not getattr(message, "empty", False)
+        ]
+        if not page_comments:
+            break
+
+        for comment in page_comments:
+            if comment.id in seen_ids:
+                continue
+            comments.append(comment)
+            seen_ids.add(comment.id)
+
+        if expected_comment_count is not None and len(comments) >= expected_comment_count:
+            break
+
+        next_offset_id = min(comment.id for comment in page_comments)
+        if next_offset_id <= start_comment_id or next_offset_id == offset_id:
+            break
+        offset_id = next_offset_id
+
+    comments.sort(key=lambda comment: comment.id)
+    return CommentScanResult(chat_id, comments, [])
 
 # ---- performance monitoring ----
 PERFORMANCE_STATS: dict[str, float] = {
@@ -1175,8 +1284,38 @@ async def scan_comment_range(
     base_message_id,
     start_comment_id,
     end_comment_id,
+    expected_comment_count: Optional[int] = None,
+    missing_streak_limit: Optional[int] = None,
 ):
     """Resolve a post discussion group and fetch comments in an inclusive range."""
+    if (
+        not isinstance(expected_comment_count, int)
+        or expected_comment_count <= 0
+    ):
+        expected_comment_count = None
+    if (
+        not isinstance(missing_streak_limit, int)
+        or missing_streak_limit <= 0
+    ):
+        missing_streak_limit = None
+
+    max_scan_count = max(1, end_comment_id - start_comment_id + 1)
+    try:
+        return await _scan_comment_replies_from_source(
+            client,
+            chat_id,
+            base_message_id,
+            start_comment_id,
+            end_comment_id,
+            expected_comment_count=expected_comment_count,
+            max_scan_count=max_scan_count,
+        )
+    except Exception as source_error:
+        logger.warning(
+            "scan_comment_range: source replies scan failed, "
+            f"falling back to discussion chat: {source_error}"
+        )
+
     # 获取讨论组信息
     try:
         # 使用get_discussion_message获取讨论组信息
@@ -1205,6 +1344,9 @@ async def scan_comment_range(
     # 获取所有评论对象 - 使用批量获取提高效率
     comments = []
     failed_comment_ids = []
+    matched_comment_count = 0
+    missing_streak = 0
+    scan_complete = False
     BATCH_SIZE = 50  # Pyrogram批量获取的建议最大限制
 
     # 将评论ID列表分成多个批次
@@ -1220,8 +1362,15 @@ async def scan_comment_range(
 
             # 处理批量获取的结果
             for comment in batch_comments:
-                if not comment:
+                if not comment or getattr(comment, "empty", False):
+                    missing_streak += 1
                     logger.warning(f"download_comments: 未找到评论 - 可能ID不存在")
+                    if (
+                        missing_streak_limit is not None
+                        and missing_streak >= missing_streak_limit
+                    ):
+                        scan_complete = True
+                        break
                     continue
 
                 has_comment_id = hasattr(comment, 'id')
@@ -1231,12 +1380,44 @@ async def scan_comment_range(
 
                 # 即使comment.empty为True，也尝试检查是否有有价值的信息
                 if has_comment_id:
+                    if not _is_comment_in_discussion_thread(
+                        comment, discussion_message
+                    ):
+                        logger.info(
+                            "download_comments: 评论 "
+                            f"{comment.id} 不属于当前讨论串，跳过"
+                        )
+                        missing_streak += 1
+                        if (
+                            missing_streak_limit is not None
+                            and missing_streak >= missing_streak_limit
+                        ):
+                            scan_complete = True
+                            break
+                        continue
                     # 如果评论有ID，无论是否为空，都添加到列表中
                     logger.info(f"download_comments: 评论 {comment.id} 信息可用，添加到下载列表")
                     comments.append(comment)
+                    missing_streak = 0
+                    matched_comment_count += 1
+                    if (
+                        expected_comment_count is not None
+                        and matched_comment_count >= expected_comment_count
+                    ):
+                        scan_complete = True
+                        break
                 else:
+                    missing_streak += 1
                     logger.warning(f"download_comments: 评论没有ID属性，跳过")
+                    if (
+                        missing_streak_limit is not None
+                        and missing_streak >= missing_streak_limit
+                    ):
+                        scan_complete = True
+                        break
                     continue
+            if scan_complete:
+                break
 
         except Exception as e:
             logger.error(f"download_comments: 批量获取评论失败 - 批次 {i//BATCH_SIZE + 1}: {e}")
@@ -1247,12 +1428,57 @@ async def scan_comment_range(
                 try:
                     logger.info(f"download_comments: 单独重试获取评论 - id={comment_id}")
                     comment = await client.get_messages(discussion_group_id, comment_id)
+                    if (
+                        not comment
+                        or getattr(comment, "empty", False)
+                        or not hasattr(comment, 'id')
+                    ):
+                        missing_streak += 1
+                        if (
+                            missing_streak_limit is not None
+                            and missing_streak >= missing_streak_limit
+                        ):
+                            scan_complete = True
+                            break
+                        continue
                     if comment and hasattr(comment, 'id'):
+                        if not _is_comment_in_discussion_thread(
+                            comment, discussion_message
+                        ):
+                            logger.info(
+                                "download_comments: 评论 "
+                                f"{comment.id} 不属于当前讨论串，跳过"
+                            )
+                            missing_streak += 1
+                            if (
+                                missing_streak_limit is not None
+                                and missing_streak >= missing_streak_limit
+                            ):
+                                scan_complete = True
+                                break
+                            continue
                         comments.append(comment)
+                        missing_streak = 0
+                        matched_comment_count += 1
                         logger.info(f"download_comments: 单独获取评论 {comment.id} 成功")
+                        if (
+                            expected_comment_count is not None
+                            and matched_comment_count >= expected_comment_count
+                        ):
+                            scan_complete = True
+                            break
                 except Exception as single_e:
                     logger.error(f"download_comments: 单独获取评论 {comment_id} 失败: {single_e}")
                     failed_comment_ids.append(comment_id)
+                    missing_streak += 1
+                    if (
+                        missing_streak_limit is not None
+                        and missing_streak >= missing_streak_limit
+                    ):
+                        scan_complete = True
+                        break
+            if scan_complete:
+                break
 
     # 按评论ID排序
     comments.sort(key=lambda x: x.id)
