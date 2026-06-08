@@ -402,7 +402,10 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("A：标题/消息ID - 作者 - 原文件名", preview_text)
         self.assertIn("B：标题/消息ID - caption摘要 - 原文件名", preview_text)
         self.assertIn("D：频道/年月/标题/消息ID - caption摘要", preview_text)
-        self.assertIn(
+        self.assertIn("命名预览（仅显示上级文件夹 + 文件名）", preview_text)
+        self.assertIn("夹：126711-某某课程 第01章", preview_text)
+        self.assertIn("名：126711 - 001_bad_.mp4", preview_text)
+        self.assertNotIn(
             "私密频道/126711-某某课程 第01章/126711 - 001_bad_.mp4",
             preview_text,
         )
@@ -721,7 +724,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertEqual(clean_segment(" / ", " bad/name "), "bad_name")
         self.assertEqual(clean_segment("123456789", "fallback", max_len=5), "12345")
 
-    def test_format_preview_message_contains_summary_and_examples(self):
+    def test_format_preview_message_contains_summary_and_compact_examples(self):
         comments = [
             MockMessage(
                 id=4978,
@@ -767,8 +770,54 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("大小示例：", message)
         self.assertIn("上传：enabled", message)
         self.assertIn("上传后删除本地：enabled", message)
+        self.assertIn("命名预览（仅显示上级文件夹 + 文件名）", message)
         self.assertIn("采用推荐C", message)
-        self.assertIn("zhyseseb/422-夏日合集/4978 - clip.mp4", message)
+        self.assertIn("夹：422-夏日合集", message)
+        self.assertIn("名：4978 - clip.mp4", message)
+        self.assertNotIn("zhyseseb/422-夏日合集/4978 - clip.mp4", message)
+
+    def test_format_preview_message_omits_nested_prefix_from_month_option(self):
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                video=MockVideo(
+                    file_name="clip.mp4",
+                    file_size=123 * 1024 * 1024,
+                    mime_type="video/mp4",
+                ),
+                caption="第三张是重点",
+                date=datetime.datetime(2026, 6, 7),
+            )
+        ]
+        summary = summarize_comments(comments)
+        previews = build_naming_previews(
+            comments,
+            channel="zhyseseb",
+            post_id=422,
+            post_title="夏日合集",
+            sample_size=1,
+        )
+
+        message = format_preview_message(
+            channel="zhyseseb",
+            post_id=422,
+            post_title="夏日合集",
+            start_comment_id=4978,
+            summary=summary,
+            previews=previews,
+            size_summary=build_size_summary(comments),
+            upload_enabled=True,
+            delete_after_upload=True,
+        )
+
+        self.assertIn("D：频道/年月/原帖标题/评论ID - caption摘要", message)
+        self.assertIn("夹：夏日合集", message)
+        self.assertIn("名：4978 - 第三张是重点.mp4", message)
+        self.assertNotIn(
+            "zhyseseb/2026_06/夏日合集/4978 - 第三张是重点.mp4",
+            message,
+        )
 
     def test_format_preview_message_includes_scan_warnings(self):
         comments = [

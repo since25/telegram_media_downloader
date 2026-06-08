@@ -744,19 +744,42 @@ def format_preview_message(
         lines.append(f"扫描警告：{scan_warning}")
     if failed_comment_ids:
         lines.append(f"扫描失败评论：{len(failed_comment_ids)}")
-    lines.extend(["", "命名预览："])
+    lines.extend(["", "命名预览（仅显示上级文件夹 + 文件名）："])
 
     for preview in previews:
         title = preview.title
         if preview.strategy is NamingStrategy.RECOMMENDED:
             title = f"{title}（采用推荐C）"
         lines.append(title)
-        if preview.examples:
-            lines.extend(f"- {example}" for example in preview.examples)
-        else:
-            lines.append("- 无示例")
+        lines.extend(_format_compact_preview_examples(preview.examples))
 
     return "\n".join(lines)
+
+
+def _format_compact_preview_examples(examples: Sequence[str]) -> List[str]:
+    """Show only the parent folder and file name from generated preview paths."""
+
+    if not examples:
+        return ["- 无示例"]
+
+    lines: List[str] = []
+    for example in examples:
+        parent_folder, file_name = _split_preview_tail(example)
+        if parent_folder:
+            lines.append(f"- 夹：{parent_folder}")
+            lines.append(f"  名：{file_name}")
+        else:
+            lines.append(f"- 名：{file_name}")
+    return lines
+
+
+def _split_preview_tail(path: str) -> tuple[str, str]:
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return "", "无示例"
+    if len(parts) == 1:
+        return "", parts[0]
+    return parts[-2], parts[-1]
 
 
 def _format_size_details(summary: SizeSummary) -> List[str]:
@@ -830,16 +853,13 @@ def format_package_preview_message(
             ]
         )
     lines.append("")
-    lines.append("命名预览：")
+    lines.append("命名预览（仅显示上级文件夹 + 文件名）：")
     for preview in previews:
         title = preview.title
         if preview.strategy is NamingStrategy.RECOMMENDED:
             title = f"{title}（采用推荐C）"
         lines.append(title)
-        if preview.examples:
-            lines.extend(f"- {example}" for example in preview.examples)
-        else:
-            lines.append("- 无示例")
+        lines.extend(_format_compact_preview_examples(preview.examples))
     return "\n".join(lines)
 
 
