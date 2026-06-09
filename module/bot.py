@@ -274,7 +274,7 @@ class DownloadBot:
         self.bot.add_handler(
             MessageHandler(
                 download_from_link,
-                filters=pyrogram.filters.text
+                filters=pyrogram.filters.regex(r"^https://t.me.*")
                 & pyrogram.filters.user(self.allowed_user_ids),
             )
         )
@@ -357,6 +357,13 @@ class DownloadBot:
             MessageHandler(
                 forward_to_comments,
                 filters=pyrogram.filters.command(["forward_to_comments"])
+                & pyrogram.filters.user(self.allowed_user_ids),
+            )
+        )
+        self.bot.add_handler(
+            MessageHandler(
+                handle_prescan_text,
+                filters=pyrogram.filters.text
                 & pyrogram.filters.user(self.allowed_user_ids),
             )
         )
@@ -682,6 +689,41 @@ async def start_prescan_mode(client: pyrogram.Client, message: pyrogram.types.Me
     )
 
 
+async def _handle_prescan_link_message(
+    client: pyrogram.Client, message: pyrogram.types.Message
+):
+    """Handle active prescan sessions for text or Telegram-link dispatcher paths."""
+
+    if not message.text:
+        return False
+
+    user_id = message.from_user.id
+    prescan_session = _bot.pending_prescan_sessions.get(user_id)
+    if not prescan_session or prescan_session.get("mode") != "awaiting_prescan_link":
+        return False
+
+    package_request = build_message_package_workflow_request(message.text.strip())
+    if not package_request:
+        await client.send_message(
+            user_id,
+            "预扫模式需要普通频道消息链接，例如：https://t.me/c/1446289027/156439",
+            reply_to_message_id=message.id,
+        )
+        return True
+
+    await preview_prescan_workflow(client, message, package_request)
+    _bot.pending_prescan_sessions.pop(user_id, None)
+    return True
+
+
+async def handle_prescan_text(
+    client: pyrogram.Client, message: pyrogram.types.Message
+):
+    """Handle general text while a user is awaiting a prescan link."""
+
+    await _handle_prescan_link_message(client, message)
+
+
 async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Message):
     """
     Downloads a single message from a Telegram link.
@@ -697,19 +739,7 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
     if not message.text:
         return
 
-    user_id = message.from_user.id
-    prescan_session = _bot.pending_prescan_sessions.get(user_id)
-    if prescan_session and prescan_session.get("mode") == "awaiting_prescan_link":
-        package_request = build_message_package_workflow_request(message.text.strip())
-        if not package_request:
-            await client.send_message(
-                user_id,
-                "预扫模式需要普通频道消息链接，例如：https://t.me/c/1446289027/156439",
-                reply_to_message_id=message.id,
-            )
-            return
-        await preview_prescan_workflow(client, message, package_request)
-        _bot.pending_prescan_sessions.pop(user_id, None)
+    if await _handle_prescan_link_message(client, message):
         return
 
     if not message.text.startswith("https://t.me"):

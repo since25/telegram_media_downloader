@@ -1461,7 +1461,7 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             else:
                 bot_module._bot.pending_prescan_sessions = old_sessions
 
-    async def test_download_from_link_keeps_prescan_session_when_text_handler_gets_invalid_link(self):
+    async def test_handle_prescan_text_keeps_session_when_text_handler_gets_invalid_link(self):
         from module import bot as bot_module
 
         class FakeClient:
@@ -1483,7 +1483,7 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             )
             client = FakeClient()
 
-            await bot_module.download_from_link(client, message)
+            await bot_module.handle_prescan_text(client, message)
 
             self.assertIn(123, bot_module._bot.pending_prescan_sessions)
             self.assertEqual(len(client.sent_messages), 1)
@@ -1529,6 +1529,128 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 delattr(bot_module._bot, "pending_prescan_sessions")
             else:
                 bot_module._bot.pending_prescan_sessions = old_sessions
+
+    async def test_bot_registers_prescan_text_handler_after_commands(self):
+        from module import bot as bot_module
+
+        class FakeFilter:
+            def __init__(self, label):
+                self.label = label
+
+            def __and__(self, other):
+                return FakeFilter(f"{self.label}&{other.label}")
+
+        class FakeFilters:
+            media = FakeFilter("media")
+            text = FakeFilter("text")
+
+            @staticmethod
+            def command(commands):
+                return FakeFilter(f"command:{','.join(commands)}")
+
+            @staticmethod
+            def regex(pattern):
+                return FakeFilter(f"regex:{pattern}")
+
+            @staticmethod
+            def user(user_ids):
+                return FakeFilter(f"user:{','.join(str(user_id) for user_id in user_ids)}")
+
+        class FakeMessageHandler:
+            def __init__(self, callback, filters=None):
+                self.callback = callback
+                self.filters = filters
+
+        class FakeCallbackQueryHandler(FakeMessageHandler):
+            pass
+
+        class FakeTelegramBot:
+            def __init__(self, *args, **kwargs):
+                self.handlers = []
+
+            async def start(self):
+                return None
+
+            async def get_me(self):
+                return MockUser(id=999)
+
+            async def set_bot_commands(self, commands):
+                self.commands = commands
+
+            def add_handler(self, handler):
+                self.handlers.append(handler)
+
+            async def send_message(self, *args, **kwargs):
+                return MockMessage(id=1)
+
+        class FakeUserClient:
+            def __init__(self):
+                self.handlers = []
+
+            async def get_me(self):
+                return MockUser(id=999)
+
+            async def get_chat(self, chat_id):
+                return SimpleNamespace(id=chat_id)
+
+            def add_handler(self, handler):
+                self.handlers.append(handler)
+
+        class FakeLoop:
+            def create_task(self, coro):
+                coro.close()
+                return SimpleNamespace(cancel=lambda: None)
+
+        app = SimpleNamespace(
+            application_name="test",
+            api_hash="hash",
+            api_id=1,
+            bot_token="token",
+            session_file_path=".",
+            proxy=None,
+            allowed_user_ids=[],
+            loop=FakeLoop(),
+        )
+        test_bot = bot_module.DownloadBot()
+        old_bot = bot_module._bot
+        try:
+            bot_module._bot = test_bot
+            with patch("module.bot.pyrogram.Client", new=FakeTelegramBot), patch(
+                "module.bot.pyrogram.filters", new=FakeFilters
+            ), patch("module.bot.MessageHandler", new=FakeMessageHandler), patch(
+                "module.bot.CallbackQueryHandler", new=FakeCallbackQueryHandler
+            ):
+                await test_bot.start(
+                    app,
+                    FakeUserClient(),
+                    add_download_task=lambda *args, **kwargs: None,
+                    download_chat_task=lambda *args, **kwargs: None,
+                )
+
+            message_handlers = [
+                handler
+                for handler in test_bot.bot.handlers
+                if isinstance(handler, FakeMessageHandler)
+                and not isinstance(handler, FakeCallbackQueryHandler)
+            ]
+            callbacks = [handler.callback for handler in message_handlers]
+            download_handler = message_handlers[
+                callbacks.index(bot_module.download_from_link)
+            ]
+            prescan_handler_index = callbacks.index(bot_module.handle_prescan_text)
+
+            self.assertIn("regex:^https://t.me.*", download_handler.filters.label)
+            self.assertNotIn("text", download_handler.filters.label)
+            self.assertGreater(
+                prescan_handler_index,
+                callbacks.index(bot_module.forward_to_comments),
+            )
+            self.assertIn(
+                "text",
+                message_handlers[prescan_handler_index].filters.label,
+            )
+        finally:
+            bot_module._bot = old_bot
 
 
 class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
