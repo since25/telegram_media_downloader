@@ -1496,6 +1496,36 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             else:
                 bot_module._bot.pending_prescan_sessions = old_sessions
 
+    async def test_handle_prescan_text_ignores_random_text_without_active_session(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+
+        old_sessions = getattr(bot_module._bot, "pending_prescan_sessions", None)
+        try:
+            bot_module._bot.pending_prescan_sessions = {}
+            message = MockMessage(
+                id=9,
+                text="hello",
+                from_user=MockUser(id=123),
+            )
+            client = FakeClient()
+
+            await bot_module.handle_prescan_text(client, message)
+
+            self.assertEqual(client.sent_messages, [])
+            self.assertEqual(bot_module._bot.pending_prescan_sessions, {})
+        finally:
+            if old_sessions is None:
+                delattr(bot_module._bot, "pending_prescan_sessions")
+            else:
+                bot_module._bot.pending_prescan_sessions = old_sessions
+
     async def test_download_from_link_keeps_prescan_session_when_preview_fails(self):
         from module import bot as bot_module
 
