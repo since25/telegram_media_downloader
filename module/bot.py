@@ -2282,13 +2282,50 @@ async def handle_prescan_workflow_callback(client, query):
 
 
 async def start_prescan_selected_download(client, query, token, pending):
-    """Acknowledge selected downloads before serial orchestration is added."""
+    """Create one parent task and serially download selected prescan packages."""
 
     chat_id = _callback_chat_id(query)
     message_id = getattr(getattr(query, "message", None), "id", None)
+    selected_package_ids = set(pending["selected_package_ids"])
+    selected_count = len(selected_package_ids)
     await _safe_edit_prescan_message(
-        client, chat_id, message_id, "预扫下载任务已接收。"
+        client,
+        chat_id,
+        message_id,
+        f"已确认 {selected_count} 个包，开始按推荐C格式串行下载。",
     )
+    status_message = await client.send_message(
+        chat_id,
+        f"预扫批量下载任务已启动：{pending['channel']} / {selected_count} 个包",
+        reply_to_message_id=pending.get("source_message_id"),
+    )
+
+    node = TaskNode(
+        chat_id=pending["entity_id"],
+        from_user_id=chat_id,
+        reply_message_id=status_message.id,
+        bot=_bot.bot,
+        task_id=_bot.gen_task_id(),
+    )
+    node.client = _bot.client
+    node.is_running = True
+
+    from media_downloader import download_prescan_packages
+
+    download_coroutine = download_prescan_packages(
+        pending["plan"].packages,
+        pending["channel"],
+        node,
+        selected_package_ids,
+    )
+    try:
+        _bot.app.loop.create_task(download_coroutine)
+    except Exception:
+        download_coroutine.close()
+        raise
+
+    _bot.add_task_node(node)
+    add_active_task_node(node)
     _bot.pending_prescan_workflows.pop(token, None)
 
 

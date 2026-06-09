@@ -1406,6 +1406,58 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(node.success_download_task, 1)
         self.assertEqual(node.total_download_task, 1)
 
+    async def test_download_prepared_messages_waits_from_existing_completion_baseline(self):
+        from module.app import TaskNode
+        from media_downloader import download_prepared_messages
+
+        messages = [
+            MockMessage(
+                id=120,
+                media="video",
+                caption="课程 第02章",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            )
+        ]
+        node = TaskNode(chat_id=-1001, bot=None, task_id=10)
+        node.is_running = True
+        node.success_download_task = 1
+        node.total_download_task = 1
+        node.total_task = 1
+        queued_ids = []
+        sleep_calls = []
+
+        async def fake_add_download_task(message, task_node):
+            queued_ids.append(message.id)
+            task_node.total_task += 1
+            task_node.total_download_task += 1
+            return True
+
+        async def fake_report_bot_status(bot, task_node):
+            return None
+
+        async def fake_sleep(seconds):
+            sleep_calls.append(seconds)
+            node.success_download_task += 1
+
+        with patch(
+            "media_downloader.add_download_task", new=fake_add_download_task
+        ), patch(
+            "module.pyrogram_extension.report_bot_status", new=fake_report_bot_status
+        ), patch(
+            "module.download_stat.remove_active_task_node"
+        ), patch(
+            "media_downloader.asyncio.sleep", new=fake_sleep
+        ):
+            await download_prepared_messages(
+                messages,
+                download_filter=None,
+                node=node,
+            )
+
+        self.assertEqual(queued_ids, [120])
+        self.assertEqual(sleep_calls, [5])
+        self.assertEqual(node.success_download_task, 2)
+
 
 class PrescanScannerTestCase(unittest.IsolatedAsyncioTestCase):
     class FakePrescanClient:
@@ -2495,33 +2547,117 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
         finally:
             bot_module._bot.pending_prescan_workflows = old_pending
 
-    async def test_start_prescan_selected_download_clears_pending_workflow(self):
+    async def test_start_prescan_selected_download_schedules_serial_download(self):
         from module import bot as bot_module
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.prescan_workflow import PrescanLimits, plan_prescan_packages
 
         class FakeClient:
             def __init__(self):
                 self.edits = []
+                self.sent_messages = []
 
             async def edit_message_text(self, chat_id, message_id, text, **kwargs):
                 self.edits.append((chat_id, message_id, text, kwargs))
 
+            async def send_message(self, chat_id, text, **kwargs):
+                message = MockMessage(id=88, chat_id=chat_id, text=text)
+                self.sent_messages.append((chat_id, text, kwargs, message))
+                return message
+
+        class FakeLoop:
+            def __init__(self):
+                self.created = []
+
+            def create_task(self, coroutine):
+                self.created.append(coroutine)
+                return coroutine
+
         token = "prescan123"
-        pending = {"selected_package_ids": {1}}
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        plan = plan_prescan_packages(messages, 126711, PrescanLimits())
+        pending = {
+            "request": request,
+            "entity_id": -1001298283297,
+            "channel": "Private Course",
+            "plan": plan,
+            "selected_package_ids": {1},
+            "source_message_id": 9,
+        }
+        recorded = {}
+
+        async def fake_download_prescan_packages(
+            packages, channel, parent_node, selected_package_ids
+        ):
+            recorded["packages"] = packages
+            recorded["channel"] = channel
+            recorded["node"] = parent_node
+            recorded["selected_package_ids"] = selected_package_ids
+
+        active_nodes = []
+
+        def fake_add_active_task_node(node):
+            active_nodes.append(node)
+
         old_pending = bot_module._bot.pending_prescan_workflows
+        old_app = bot_module._bot.app
+        old_bot = bot_module._bot.bot
+        old_user_client = bot_module._bot.client
+        old_task_node = bot_module._bot.task_node
+        old_task_id = bot_module._bot.task_id
         try:
+            fake_loop = FakeLoop()
             bot_module._bot.pending_prescan_workflows = {token: pending}
+            bot_module._bot.app = SimpleNamespace(loop=fake_loop)
+            bot_module._bot.bot = object()
+            bot_module._bot.client = object()
+            bot_module._bot.task_node = {}
+            bot_module._bot.task_id = 0
             query = SimpleNamespace(
                 message=MockMessage(id=10, from_user=MockUser(id=123)),
                 from_user=MockUser(id=123),
             )
+            client = FakeClient()
 
-            await bot_module.start_prescan_selected_download(
-                FakeClient(), query, token, pending
-            )
+            with patch(
+                "media_downloader.download_prescan_packages",
+                new=fake_download_prescan_packages,
+            ), patch("module.bot.add_active_task_node", new=fake_add_active_task_node):
+                await bot_module.start_prescan_selected_download(
+                    client, query, token, pending
+                )
+                await fake_loop.created[0]
 
             self.assertNotIn(token, bot_module._bot.pending_prescan_workflows)
+            self.assertEqual(recorded["packages"], plan.packages)
+            self.assertEqual(recorded["channel"], "Private Course")
+            self.assertEqual(recorded["selected_package_ids"], {1})
+            node = recorded["node"]
+            self.assertEqual(node.chat_id, -1001298283297)
+            self.assertEqual(node.from_user_id, 123)
+            self.assertEqual(node.reply_message_id, 88)
+            self.assertTrue(node.is_running)
+            self.assertEqual(active_nodes, [node])
+            self.assertIn(node.task_id, bot_module._bot.task_node)
+            self.assertIn("已确认 1 个包", client.edits[0][2])
+            self.assertIn("串行下载", client.edits[0][2])
         finally:
             bot_module._bot.pending_prescan_workflows = old_pending
+            bot_module._bot.app = old_app
+            bot_module._bot.bot = old_bot
+            bot_module._bot.client = old_user_client
+            bot_module._bot.task_node = old_task_node
+            bot_module._bot.task_id = old_task_id
 
     async def test_bot_registers_prescan_text_handler_after_commands(self):
         from module import bot as bot_module
@@ -3356,6 +3492,90 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
 
 
 class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_download_prescan_packages_runs_selected_packages_serially(self):
+        from media_downloader import download_prescan_packages
+        from module.app import TaskNode
+        from module.comment_workflow import NamingStrategy, plan_message_package
+        from module.prescan_workflow import PrescanPackage
+
+        first_messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        second_messages = [
+            MockMessage(
+                id=120,
+                media="video",
+                caption="课程 第02章",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            )
+        ]
+        first_plan = plan_message_package(first_messages, 100)
+        second_plan = plan_message_package(second_messages, 120)
+        packages = [
+            PrescanPackage(
+                1,
+                "课程 第01章",
+                100,
+                100,
+                first_plan.items,
+                first_plan,
+                first_messages,
+            ),
+            PrescanPackage(
+                2,
+                "课程 第02章",
+                120,
+                120,
+                second_plan.items,
+                second_plan,
+                second_messages,
+            ),
+        ]
+        node = TaskNode(chat_id=-1001, bot=None, task_id=99)
+        node.client = object()
+        calls = []
+
+        async def fake_download_prepared_messages(
+            messages, download_filter, package_node, failed_message_ids=None
+        ):
+            calls.append(
+                (
+                    [message.id for message in messages],
+                    download_filter,
+                    package_node.package_naming_context.start_message_id,
+                    package_node.package_naming_context.package_title,
+                    failed_message_ids,
+                )
+            )
+
+        with patch(
+            "media_downloader.download_prepared_messages",
+            new=fake_download_prepared_messages,
+        ):
+            await download_prescan_packages(
+                packages,
+                channel="Private Course",
+                parent_node=node,
+                selected_package_ids={1, 2},
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ([100], None, 100, "课程 第01章", []),
+                ([120], None, 120, "课程 第02章", []),
+            ],
+        )
+        self.assertEqual(
+            node.package_naming_context.strategy, NamingStrategy.RECOMMENDED
+        )
+        self.assertEqual(node.package_naming_context.channel, "Private Course")
+
     async def test_cancel_callback_removes_pending_workflow_and_edits_message(self):
         from module import bot as bot_module
 

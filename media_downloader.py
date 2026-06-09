@@ -1890,7 +1890,16 @@ async def download_prepared_messages(
 
             media_messages = filtered_messages
 
-        expected_message_tasks = len(media_messages) + len(failed_message_ids)
+        completed_tasks_baseline = (
+            node.success_download_task
+            + node.failed_download_task
+            + node.skip_download_task
+        )
+        expected_message_tasks = (
+            completed_tasks_baseline
+            + len(media_messages)
+            + len(failed_message_ids)
+        )
         logger.info(f"设置预期消息任务数: {expected_message_tasks}")
 
         if failed_message_ids:
@@ -1993,6 +2002,57 @@ async def download_prepared_messages(
         )
     finally:
         remove_active_task_node(node.task_id)
+
+
+async def download_prescan_packages(
+    packages,
+    channel: str,
+    parent_node,
+    selected_package_ids,
+):
+    """Download selected prescan packages one by one using recommended naming."""
+
+    from module.comment_workflow import NamingStrategy, PackageNamingContext
+    from module.download_stat import add_active_task_node
+
+    selected_ids = set(selected_package_ids)
+    ordered_packages = [
+        package
+        for package in sorted(packages, key=lambda item: item.start_message_id)
+        if package.package_id in selected_ids
+    ]
+    if not parent_node.is_stop_transmission:
+        parent_node.is_running = True
+
+    for index, package in enumerate(ordered_packages, start=1):
+        if not parent_node.is_running or parent_node.is_stop_transmission:
+            logger.info(
+                f"Prescan parent task stopped before package {package.package_id}"
+            )
+            break
+
+        parent_node.package_naming_context = PackageNamingContext(
+            strategy=NamingStrategy.RECOMMENDED,
+            channel=channel,
+            start_message_id=package.start_message_id,
+            package_title=package.title,
+        )
+        parent_node.package_plan = package.package_plan
+        parent_node.package_media_items = {
+            item.message.id: item
+            for item in package.items
+        }
+        parent_node.replay_message = (
+            f"批量下载中：包 {index}/{len(ordered_packages)} "
+            f"{package.start_message_id}-{package.end_message_id} {package.title}"
+        )
+        add_active_task_node(parent_node)
+        await download_prepared_messages(
+            package.messages,
+            None,
+            parent_node,
+            failed_message_ids=list(package.failed_message_ids),
+        )
 
 
 async def download_comments(
