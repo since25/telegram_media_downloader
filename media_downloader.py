@@ -6,6 +6,7 @@ import os
 import aiohttp
 import json
 import datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, List, NamedTuple, Optional, Tuple, Union
 import shutil
@@ -60,6 +61,14 @@ class MessagePackageScanResult(NamedTuple):
     chat_id: Union[int, str]
     messages: list
     package_plan: Any
+    failed_message_ids: list
+
+
+@dataclass
+class PrescanScanResult:
+    chat_id: Union[int, str]
+    prescan_plan: Any
+    messages: list
     failed_message_ids: list
 
 
@@ -1558,6 +1567,137 @@ async def scan_message_package(
             return result
 
     return build_result()
+
+
+async def scan_prescan_packages(
+    client: PyrogramClient,
+    chat_id: Union[int, str],
+    start_message_id: int,
+    max_messages: int = 5000,
+    max_packages: int = 50,
+    missing_streak_limit: int = 200,
+    batch_size: int = 50,
+    batch_delay_seconds: int = 1,
+    sleep=asyncio.sleep,
+    progress_callback=None,
+) -> PrescanScanResult:
+    """Slowly fetch ordinary messages and build a multi-package prescan plan."""
+    from module.prescan_workflow import PrescanLimits, plan_prescan_packages
+
+    max_messages = max(0, max_messages)
+    batch_size = max(1, batch_size)
+    limits = PrescanLimits(
+        max_messages=max_messages,
+        max_packages=max_packages,
+        missing_streak_limit=missing_streak_limit,
+    )
+    message_ids = list(range(start_message_id, start_message_id + max_messages))
+    fetched_messages = []
+    failed_message_ids = []
+    saw_message = False
+    missing_streak = 0
+
+    def build_plan():
+        return plan_prescan_packages(
+            fetched_messages,
+            start_message_id=start_message_id,
+            limits=limits,
+        )
+
+    async def report_progress(rate_limited_seconds=None):
+        if progress_callback is None:
+            return build_plan()
+
+        current_plan = build_plan()
+        latest_package = (
+            current_plan.packages[-1] if current_plan.packages else None
+        )
+        result = progress_callback(
+            {
+                "scanned_count": current_plan.scanned_count,
+                "package_count": len(current_plan.packages),
+                "latest_package": latest_package,
+                "rate_limited_seconds": rate_limited_seconds,
+            }
+        )
+        if hasattr(result, "__await__"):
+            await result
+        return current_plan
+
+    def flood_wait_value(error):
+        value = getattr(error, "value", None)
+        if isinstance(value, int) and value > 0:
+            return value
+        return None
+
+    def add_batch_messages(batch_messages):
+        if not isinstance(batch_messages, list):
+            batch_messages = [batch_messages]
+        valid_messages = [
+            message
+            for message in batch_messages
+            if message and hasattr(message, "id")
+        ]
+        fetched_messages.extend(valid_messages)
+        return {message.id for message in valid_messages}
+
+    def track_missing_streak(batch_ids, present_ids):
+        nonlocal saw_message, missing_streak
+        for message_id in batch_ids:
+            if message_id in present_ids:
+                saw_message = True
+                missing_streak = 0
+            elif saw_message:
+                missing_streak += 1
+
+    async def fetch_batch(batch_ids):
+        batch_messages = await client.get_messages(chat_id, batch_ids)
+        present_ids = add_batch_messages(batch_messages)
+        track_missing_streak(batch_ids, present_ids)
+
+    for index in range(0, len(message_ids), batch_size):
+        batch_ids = message_ids[index:index + batch_size]
+        try:
+            await fetch_batch(batch_ids)
+        except Exception as e:
+            wait_seconds = flood_wait_value(e)
+            if wait_seconds is None:
+                logger.error(
+                    "scan_prescan_packages: batch fetch failed "
+                    f"chat_id={chat_id} ids={batch_ids}: {e}"
+                )
+                failed_message_ids.extend(batch_ids)
+                track_missing_streak(batch_ids, set())
+            else:
+                rate_limited_seconds = wait_seconds + 1
+                await report_progress(rate_limited_seconds=rate_limited_seconds)
+                await sleep(rate_limited_seconds)
+                try:
+                    await fetch_batch(batch_ids)
+                except Exception as retry_e:
+                    logger.error(
+                        "scan_prescan_packages: retry after FloodWait failed "
+                        f"chat_id={chat_id} ids={batch_ids}: {retry_e}"
+                    )
+                    failed_message_ids.extend(batch_ids)
+                    track_missing_streak(batch_ids, set())
+
+        await report_progress()
+        should_stop_for_missing = (
+            saw_message and missing_streak >= missing_streak_limit
+        )
+        is_final_batch = index + batch_size >= len(message_ids)
+        if should_stop_for_missing:
+            break
+        if not is_final_batch and batch_delay_seconds > 0:
+            await sleep(batch_delay_seconds)
+
+    return PrescanScanResult(
+        chat_id=chat_id,
+        prescan_plan=build_plan(),
+        messages=fetched_messages,
+        failed_message_ids=failed_message_ids,
+    )
 
 
 async def download_prepared_comments(

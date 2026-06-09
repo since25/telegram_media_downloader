@@ -47,6 +47,20 @@ class FakeDiscussionClient:
         return self.comments.get(message_ids)
 
 
+class FakeSleepRecorder:
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self, seconds):
+        self.calls.append(seconds)
+
+
+class FloodWaitLike(Exception):
+    def __init__(self, value):
+        super().__init__(f"FloodWait {value}")
+        self.value = value
+
+
 class CommentWorkflowTestCase(unittest.TestCase):
     def test_build_comment_workflow_request_from_comment_link(self):
         request = build_comment_workflow_request(
@@ -1391,6 +1405,143 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(queued_ids, [4978])
         self.assertEqual(node.success_download_task, 1)
         self.assertEqual(node.total_download_task, 1)
+
+
+class PrescanScannerTestCase(unittest.IsolatedAsyncioTestCase):
+    class FakePrescanClient:
+        def __init__(self, messages, failures=None):
+            self.messages = {message.id: message for message in messages}
+            self.failures = list(failures or [])
+            self.calls = []
+
+        async def get_messages(self, chat_id, message_ids):
+            self.calls.append((chat_id, message_ids))
+            if self.failures:
+                raise self.failures.pop(0)
+            if isinstance(message_ids, list):
+                return [self.messages.get(message_id) for message_id in message_ids]
+            return self.messages.get(message_ids)
+
+    async def test_scan_prescan_packages_fetches_batches_and_sleeps_between_batches(self):
+        from media_downloader import scan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=120,
+                media="video",
+                caption="课程 第02章",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            ),
+        ]
+        client = self.FakePrescanClient(messages)
+        sleep = FakeSleepRecorder()
+        progress_events = []
+
+        async def record_progress(event):
+            progress_events.append(event)
+
+        result = await scan_prescan_packages(
+            client=client,
+            chat_id=-1001,
+            start_message_id=100,
+            max_messages=60,
+            batch_size=20,
+            sleep=sleep,
+            progress_callback=record_progress,
+        )
+
+        self.assertEqual(
+            [message_ids for _, message_ids in client.calls],
+            [
+                list(range(100, 120)),
+                list(range(120, 140)),
+                list(range(140, 160)),
+            ],
+        )
+        self.assertEqual(sleep.calls, [1, 1])
+        self.assertEqual([message.id for message in result.messages], [100, 120])
+        self.assertEqual(result.failed_message_ids, [])
+        self.assertEqual(len(result.prescan_plan.packages), 2)
+        self.assertEqual(len(progress_events), 3)
+        self.assertEqual(progress_events[-1]["scanned_count"], 2)
+        self.assertEqual(progress_events[-1]["package_count"], 2)
+        self.assertEqual(progress_events[-1]["latest_package"].start_message_id, 120)
+        self.assertIsNone(progress_events[-1]["rate_limited_seconds"])
+
+    async def test_scan_prescan_packages_sleeps_and_retries_after_floodwait(self):
+        from media_downloader import scan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        client = self.FakePrescanClient(messages, failures=[FloodWaitLike(3)])
+        sleep = FakeSleepRecorder()
+        progress_events = []
+
+        async def record_progress(event):
+            progress_events.append(event)
+
+        result = await scan_prescan_packages(
+            client=client,
+            chat_id=-1001,
+            start_message_id=100,
+            max_messages=20,
+            batch_size=20,
+            sleep=sleep,
+            progress_callback=record_progress,
+        )
+
+        self.assertEqual(
+            [message_ids for _, message_ids in client.calls],
+            [list(range(100, 120)), list(range(100, 120))],
+        )
+        self.assertEqual(sleep.calls, [4])
+        self.assertEqual([message.id for message in result.messages], [100])
+        self.assertEqual(result.failed_message_ids, [])
+        self.assertEqual(len(result.prescan_plan.packages), 1)
+        self.assertEqual(progress_events[0]["rate_limited_seconds"], 4)
+        self.assertEqual(progress_events[-1]["package_count"], 1)
+
+    async def test_scan_prescan_packages_stops_after_missing_streak_once_media_seen(self):
+        from media_downloader import scan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        client = self.FakePrescanClient(messages)
+        sleep = FakeSleepRecorder()
+
+        result = await scan_prescan_packages(
+            client=client,
+            chat_id=-1001,
+            start_message_id=100,
+            max_messages=500,
+            batch_size=50,
+            missing_streak_limit=80,
+            sleep=sleep,
+        )
+
+        self.assertEqual(len(client.calls), 2)
+        self.assertLess(len(client.calls), 10)
+        self.assertEqual(sleep.calls, [1])
+        self.assertEqual([message.id for message in result.messages], [100])
+        self.assertEqual(len(result.prescan_plan.packages), 1)
 
 
 class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
