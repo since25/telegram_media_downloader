@@ -1461,7 +1461,7 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             else:
                 bot_module._bot.pending_prescan_sessions = old_sessions
 
-    async def test_download_from_link_keeps_prescan_session_for_invalid_link(self):
+    async def test_download_from_link_keeps_prescan_session_when_text_handler_gets_invalid_link(self):
         from module import bot as bot_module
 
         class FakeClient:
@@ -1490,6 +1490,40 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(client.sent_messages[0][0], 123)
             self.assertIn("预扫模式需要普通频道消息链接", client.sent_messages[0][1])
             self.assertEqual(client.sent_messages[0][2]["reply_to_message_id"], 7)
+        finally:
+            if old_sessions is None:
+                delattr(bot_module._bot, "pending_prescan_sessions")
+            else:
+                bot_module._bot.pending_prescan_sessions = old_sessions
+
+    async def test_download_from_link_keeps_prescan_session_when_preview_fails(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            pass
+
+        old_sessions = getattr(bot_module._bot, "pending_prescan_sessions", None)
+        try:
+            bot_module._bot.pending_prescan_sessions = {
+                123: {"mode": "awaiting_prescan_link"}
+            }
+            message = MockMessage(
+                id=8,
+                text="https://t.me/c/1298283297/126711",
+                from_user=MockUser(id=123),
+            )
+
+            async def fake_preview_prescan_workflow(client, routed_message, package_request):
+                raise RuntimeError("preview failed")
+
+            with patch(
+                "module.bot.preview_prescan_workflow",
+                new=fake_preview_prescan_workflow,
+            ):
+                with self.assertRaises(RuntimeError):
+                    await bot_module.download_from_link(FakeClient(), message)
+
+            self.assertIn(123, bot_module._bot.pending_prescan_sessions)
         finally:
             if old_sessions is None:
                 delattr(bot_module._bot, "pending_prescan_sessions")

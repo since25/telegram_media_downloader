@@ -274,7 +274,7 @@ class DownloadBot:
         self.bot.add_handler(
             MessageHandler(
                 download_from_link,
-                filters=pyrogram.filters.regex(r"^https://t.me.*")
+                filters=pyrogram.filters.text
                 & pyrogram.filters.user(self.allowed_user_ids),
             )
         )
@@ -708,8 +708,8 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
                 reply_to_message_id=message.id,
             )
             return
-        _bot.pending_prescan_sessions.pop(user_id, None)
         await preview_prescan_workflow(client, message, package_request)
+        _bot.pending_prescan_sessions.pop(user_id, None)
         return
 
     if not message.text.startswith("https://t.me"):
