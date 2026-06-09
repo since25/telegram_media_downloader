@@ -126,6 +126,27 @@ class PrescanWorkflowTestCase(unittest.TestCase):
         self.assertEqual(len(plan.packages), 1)
         self.assertEqual(plan.warning, "预扫已达到包数量上限，结果可能不是频道最新消息。")
 
+    def test_plan_prescan_packages_zero_package_limit_returns_empty_without_warning(self):
+        from module.prescan_workflow import PrescanLimits, plan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+            ),
+        ]
+
+        plan = plan_prescan_packages(
+            messages,
+            start_message_id=100,
+            limits=PrescanLimits(max_packages=0),
+        )
+
+        self.assertEqual(plan.packages, [])
+        self.assertIsNone(plan.warning)
+
     def test_plan_prescan_packages_ignores_no_media_without_warning(self):
         from module.prescan_workflow import PrescanLimits, plan_prescan_packages
 
