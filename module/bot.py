@@ -1249,6 +1249,15 @@ def _build_prescan_selection_buttons(token, plan, selected_package_ids, page):
     return InlineKeyboardMarkup(rows)
 
 
+def _build_prescan_workflow_token(workflow_request, message, status_message):
+    """Build a callback token unique to one prescan preview instance."""
+
+    base_token = build_workflow_token(workflow_request.url, message.from_user.id)
+    source_message_id = getattr(message, "id", 0) or 0
+    status_message_id = getattr(status_message, "id", 0) or 0
+    return f"{base_token}-{source_message_id}-{status_message_id}"
+
+
 async def preview_prescan_workflow(client, message, workflow_request):
     """Scan forward from an ordinary link and show package selection controls."""
 
@@ -1294,24 +1303,12 @@ async def preview_prescan_workflow(client, message, workflow_request):
             )
             return False
 
-        token = build_workflow_token(workflow_request.url, message.from_user.id)
+        token = _build_prescan_workflow_token(
+            workflow_request, message, status_message
+        )
         channel = entity.username or entity.title or str(entity.id)
         selected_package_ids = set()
-        _bot.pending_prescan_workflows[token] = {
-            "request": workflow_request,
-            "entity_id": entity.id,
-            "channel": channel,
-            "plan": plan,
-            "messages": scan_result.messages,
-            "failed_message_ids": list(
-                getattr(scan_result, "failed_message_ids", []) or []
-            ),
-            "selected_package_ids": selected_package_ids,
-            "page": 0,
-            "source_message_id": message.id,
-            "status_message_id": status_message.id,
-        }
-        await client.send_message(
+        selection_message = await client.send_message(
             message.from_user.id,
             format_prescan_selection_page(
                 plan,
@@ -1324,6 +1321,23 @@ async def preview_prescan_workflow(client, message, workflow_request):
             ),
             reply_to_message_id=message.id,
         )
+        _bot.pending_prescan_workflows[token] = {
+            "request": workflow_request,
+            "entity_id": entity.id,
+            "channel": channel,
+            "plan": plan,
+            "messages": scan_result.messages,
+            "failed_message_ids": list(
+                getattr(scan_result, "failed_message_ids", []) or []
+            ),
+            "selected_package_ids": selected_package_ids,
+            "page": 0,
+            "from_user_id": message.from_user.id,
+            "source_message_id": message.id,
+            "status_message_id": status_message.id,
+            "selection_chat_id": message.from_user.id,
+            "selection_message_id": selection_message.id,
+        }
         return True
     except Exception as error:
         logger.error(f"preview_prescan_workflow: failed: {error}", exc_info=True)
@@ -2129,6 +2143,32 @@ def _parse_prescan_callback_int(value):
     return parsed
 
 
+async def _safe_edit_prescan_message(client, chat_id, message_id, text, **kwargs):
+    """Edit a prescan callback message without surfacing duplicate-edit errors."""
+
+    try:
+        await client.edit_message_text(chat_id, message_id, text, **kwargs)
+    except Exception as error:
+        logger.warning(f"prescan callback edit failed: {error}")
+
+
+def _prescan_callback_matches_pending(pending, query, chat_id, message_id):
+    expected_user_id = pending.get("from_user_id")
+    actual_user_id = getattr(getattr(query, "from_user", None), "id", None)
+    if expected_user_id is not None and actual_user_id != expected_user_id:
+        return False
+
+    expected_chat_id = pending.get("selection_chat_id")
+    if expected_chat_id is not None and chat_id != expected_chat_id:
+        return False
+
+    expected_message_id = pending.get("selection_message_id")
+    if expected_message_id is not None and message_id != expected_message_id:
+        return False
+
+    return True
+
+
 async def handle_prescan_workflow_callback(client, query):
     """Handle prescan selection, pagination, cancellation, and download."""
 
@@ -2141,13 +2181,18 @@ async def handle_prescan_workflow_callback(client, query):
     message_id = getattr(message, "id", None)
     parsed = parse_prescan_callback_data(data)
     if not parsed:
-        await client.edit_message_text(chat_id, message_id, "无效的预扫操作。")
+        await _safe_edit_prescan_message(
+            client, chat_id, message_id, "无效的预扫操作。"
+        )
         return True
 
     token, action, value = parsed
     pending = _bot.pending_prescan_workflows.get(token)
-    if not pending:
-        await client.edit_message_text(
+    if not pending or not _prescan_callback_matches_pending(
+        pending, query, chat_id, message_id
+    ):
+        await _safe_edit_prescan_message(
+            client,
             chat_id,
             message_id,
             "预扫任务已过期，请重新开始。",
@@ -2167,7 +2212,8 @@ async def handle_prescan_workflow_callback(client, query):
         )
         if extra_text:
             text = f"{text}\n\n{extra_text}"
-        return client.edit_message_text(
+        return _safe_edit_prescan_message(
+            client,
             chat_id,
             message_id,
             text,
@@ -2178,14 +2224,18 @@ async def handle_prescan_workflow_callback(client, query):
 
     if action == "cancel":
         _bot.pending_prescan_workflows.pop(token, None)
-        await client.edit_message_text(chat_id, message_id, "已取消预扫任务。")
+        await _safe_edit_prescan_message(
+            client, chat_id, message_id, "已取消预扫任务。"
+        )
         return True
 
     if action == "toggle":
         package_id = _parse_prescan_callback_int(value)
         valid_package_ids = {package.package_id for package in plan.packages}
         if package_id is None or package_id not in valid_package_ids:
-            await client.edit_message_text(chat_id, message_id, "无效的预扫操作。")
+            await _safe_edit_prescan_message(
+                client, chat_id, message_id, "无效的预扫操作。"
+            )
             return True
         if package_id in selected_package_ids:
             selected_package_ids.remove(package_id)
@@ -2194,7 +2244,9 @@ async def handle_prescan_workflow_callback(client, query):
     elif action == "page":
         parsed_page = _parse_prescan_callback_int(value)
         if parsed_page is None:
-            await client.edit_message_text(chat_id, message_id, "无效的预扫操作。")
+            await _safe_edit_prescan_message(
+                client, chat_id, message_id, "无效的预扫操作。"
+            )
             return True
         page = parsed_page
         pending["page"] = page
@@ -2203,7 +2255,9 @@ async def handle_prescan_workflow_callback(client, query):
 
         parsed_page = _parse_prescan_callback_int(value)
         if parsed_page is None:
-            await client.edit_message_text(chat_id, message_id, "无效的预扫操作。")
+            await _safe_edit_prescan_message(
+                client, chat_id, message_id, "无效的预扫操作。"
+            )
             return True
         page = parsed_page
         pending["page"] = page
@@ -2218,7 +2272,9 @@ async def handle_prescan_workflow_callback(client, query):
         await start_prescan_selected_download(client, query, token, pending)
         return True
     else:
-        await client.edit_message_text(chat_id, message_id, "无效的预扫操作。")
+        await _safe_edit_prescan_message(
+            client, chat_id, message_id, "无效的预扫操作。"
+        )
         return True
 
     await render_selection()
@@ -2230,7 +2286,10 @@ async def start_prescan_selected_download(client, query, token, pending):
 
     chat_id = _callback_chat_id(query)
     message_id = getattr(getattr(query, "message", None), "id", None)
-    await client.edit_message_text(chat_id, message_id, "预扫下载任务已接收。")
+    await _safe_edit_prescan_message(
+        client, chat_id, message_id, "预扫下载任务已接收。"
+    )
+    _bot.pending_prescan_workflows.pop(token, None)
 
 
 async def handle_package_workflow_callback(client, query):
