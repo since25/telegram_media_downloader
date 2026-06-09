@@ -240,6 +240,8 @@ class PrescanWorkflowTestCase(unittest.TestCase):
         self.assertEqual(parse_prescan_callback_data(data), ("abc123", "toggle", "7"))
         self.assertIsNone(parse_prescan_callback_data("pw:abc123:C"))
         self.assertIsNone(parse_prescan_callback_data("ps::toggle:7"))
+        self.assertIsNone(parse_prescan_callback_data("ps:abc:toggle:"))
+        self.assertIsNone(parse_prescan_callback_data("ps:abc:toggle:1:2"))
 
     def test_prescan_callback_data_rejects_empty_builder_inputs(self):
         from module.prescan_workflow import build_prescan_callback_data

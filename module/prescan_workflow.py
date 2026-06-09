@@ -158,6 +158,8 @@ def parse_prescan_callback_data(data: str) -> Optional[Tuple[str, str, str]]:
         return None
     if parts[0] != PRESCAN_WORKFLOW_PREFIX or not parts[1] or not parts[2]:
         return None
+    if len(parts) == 4 and not parts[3]:
+        return None
 
     value = parts[3] if len(parts) == 4 else ""
     return parts[1], parts[2], value
