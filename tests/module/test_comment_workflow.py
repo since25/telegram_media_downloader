@@ -324,9 +324,65 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIsNone(plan.next_package_message)
         self.assertEqual(plan.scan_warning, "未发现下一包边界，已达到扫描上限 2 条。")
 
+    def test_build_recommended_naming_previews_only_returns_c_for_comments(self):
+        from module.comment_workflow import build_recommended_naming_previews
+
+        comments = [
+            MockMessage(
+                id=4978,
+                media="video",
+                caption="夏日合集",
+                video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+            )
+        ]
+
+        previews = build_recommended_naming_previews(
+            comments,
+            channel="zhyseseb",
+            post_id=422,
+            post_title="夏日合集",
+        )
+
+        self.assertEqual(len(previews), 1)
+        self.assertEqual(previews[0].strategy, NamingStrategy.RECOMMENDED)
+        self.assertEqual(
+            previews[0].title,
+            "推荐C：频道/原帖ID-标题/评论ID - 原文件名",
+        )
+
+    def test_build_recommended_package_naming_previews_only_returns_c(self):
+        from module.comment_workflow import (
+            build_recommended_package_naming_previews,
+            plan_message_package,
+        )
+
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        package_plan = plan_message_package(messages, start_message_id=126711)
+
+        previews = build_recommended_package_naming_previews(
+            package_plan.items,
+            channel="Private Course",
+            start_message_id=126711,
+            package_title=package_plan.package_title,
+        )
+
+        self.assertEqual(len(previews), 1)
+        self.assertEqual(previews[0].strategy, NamingStrategy.RECOMMENDED)
+        self.assertEqual(
+            previews[0].title,
+            "推荐C：频道/起始ID-标题/消息ID - 原文件名",
+        )
+
     def test_build_package_naming_previews_and_preview_message(self):
         from module.comment_workflow import (
-            build_package_naming_previews,
+            build_recommended_package_naming_previews,
             format_package_preview_message,
             plan_message_package,
         )
@@ -363,7 +419,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
             ),
         ]
         package_plan = plan_message_package(messages, start_message_id=126711)
-        previews = build_package_naming_previews(
+        previews = build_recommended_package_naming_previews(
             package_plan.items,
             channel="私密频道",
             start_message_id=126711,
@@ -395,13 +451,9 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("126713 - 某某课程 第02章", preview_text)
         self.assertIn("不会纳入本次下载。", preview_text)
         self.assertIn("推荐C：频道/起始ID-标题/消息ID - 原文件名", preview_text)
-        self.assertIn(
-            "推荐C：频道/起始ID-标题/消息ID - 原文件名（采用推荐C）",
-            preview_text,
-        )
-        self.assertIn("A：标题/消息ID - 作者 - 原文件名", preview_text)
-        self.assertIn("B：标题/消息ID - caption摘要 - 原文件名", preview_text)
-        self.assertIn("D：频道/年月/标题/消息ID - caption摘要", preview_text)
+        self.assertNotIn("A：标题/消息ID - 作者 - 原文件名", preview_text)
+        self.assertNotIn("B：标题/消息ID - caption摘要 - 原文件名", preview_text)
+        self.assertNotIn("D：频道/年月/标题/消息ID - caption摘要", preview_text)
         self.assertIn("命名预览（仅显示上级文件夹 + 文件名）", preview_text)
         self.assertIn("夹：126711-某某课程 第01章", preview_text)
         self.assertIn("名：126711 - 001_bad_.mp4", preview_text)
@@ -1531,7 +1583,15 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertIs(pending["package_media_items"][126711].message, messages[0])
             self.assertIn("识别到连续资源包", bot_client.sent_messages[0][1])
             markup = bot_client.sent_messages[0][2]["reply_markup"]
+            self.assertEqual(
+                [[button.text for button in row] for row in markup.inline_keyboard],
+                [["开始下载"], ["取消"]],
+            )
             self.assertIn("pw:", markup.inline_keyboard[0][0].callback_data)
+            self.assertTrue(markup.inline_keyboard[0][0].callback_data.endswith(":C"))
+            self.assertTrue(
+                markup.inline_keyboard[1][0].callback_data.endswith(":cancel")
+            )
         finally:
             bot_module._bot.client = old_client
             bot_module._bot.app = old_app
@@ -1646,6 +1706,16 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             sent_kwargs = bot_client.sent_messages[0][2]
             self.assertIn("采用推荐C", sent_text)
             self.assertIn("reply_markup", sent_kwargs)
+            markup = sent_kwargs["reply_markup"]
+            self.assertEqual(
+                [[button.text for button in row] for row in markup.inline_keyboard],
+                [["开始下载"], ["取消"]],
+            )
+            self.assertIn("cw:", markup.inline_keyboard[0][0].callback_data)
+            self.assertTrue(markup.inline_keyboard[0][0].callback_data.endswith(":C"))
+            self.assertTrue(
+                markup.inline_keyboard[1][0].callback_data.endswith(":cancel")
+            )
         finally:
             bot_module._bot.client = old_client
             bot_module._bot.app = old_app
@@ -2199,6 +2269,10 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node.comment_naming_context.post_title, "夏日合集")
             self.assertEqual(active_nodes, [node])
             self.assertIn(node.task_id, bot_module._bot.task_node)
+            self.assertEqual(
+                client.edits[0][2],
+                "已确认，开始按推荐C格式下载评论媒体。",
+            )
         finally:
             bot_module._bot.pending_comment_workflows = old_pending
             bot_module._bot.app = old_app
@@ -2337,6 +2411,10 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(node.package_media_items[126712].inherited_caption)
             self.assertEqual(active_nodes, [node])
             self.assertIn(node.task_id, bot_module._bot.task_node)
+            self.assertEqual(
+                client.edits[0][2],
+                "已确认，开始按推荐C格式下载连续资源包。",
+            )
         finally:
             if old_pending is None:
                 delattr(bot_module._bot, "pending_package_workflows")

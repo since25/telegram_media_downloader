@@ -32,9 +32,9 @@ from module.comment_workflow import (
     build_callback_data,
     build_comment_workflow_request,
     build_message_package_workflow_request,
-    build_naming_previews,
     build_package_callback_data,
-    build_package_naming_previews,
+    build_recommended_naming_previews,
+    build_recommended_package_naming_previews,
     build_size_summary,
     build_workflow_token,
     filter_media_comments,
@@ -924,7 +924,7 @@ async def preview_comment_workflow(client, message, workflow_request):
 
         token = build_workflow_token(workflow_request.url, message.from_user.id)
         channel = entity.username or entity.title or str(entity.id)
-        previews = build_naming_previews(
+        previews = build_recommended_naming_previews(
             media_comments,
             channel=channel,
             post_id=workflow_request.post_id,
@@ -967,27 +967,11 @@ async def preview_comment_workflow(client, message, workflow_request):
             [
                 [
                     InlineKeyboardButton(
-                        "采用推荐C",
+                        "开始下载",
                         callback_data=build_callback_data(
                             token, NamingStrategy.RECOMMENDED
                         ),
                     )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "采用A",
-                        callback_data=build_callback_data(token, NamingStrategy.AUTHOR),
-                    ),
-                    InlineKeyboardButton(
-                        "采用B",
-                        callback_data=build_callback_data(token, NamingStrategy.CAPTION),
-                    ),
-                    InlineKeyboardButton(
-                        "采用D",
-                        callback_data=build_callback_data(
-                            token, NamingStrategy.MONTH_CAPTION
-                        ),
-                    ),
                 ],
                 [
                     InlineKeyboardButton(
@@ -1037,7 +1021,7 @@ async def preview_package_workflow(client, message, workflow_request):
         token = build_workflow_token(workflow_request.url, message.from_user.id)
         channel = entity.username or entity.title or str(entity.id)
         package_title = package_plan.package_title
-        previews = build_package_naming_previews(
+        previews = build_recommended_package_naming_previews(
             package_items,
             channel=channel,
             start_message_id=workflow_request.start_message_id,
@@ -1081,31 +1065,11 @@ async def preview_package_workflow(client, message, workflow_request):
             [
                 [
                     InlineKeyboardButton(
-                        "采用推荐C",
+                        "开始下载",
                         callback_data=build_package_callback_data(
                             token, NamingStrategy.RECOMMENDED
                         ),
                     )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "采用A",
-                        callback_data=build_package_callback_data(
-                            token, NamingStrategy.AUTHOR
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        "采用B",
-                        callback_data=build_package_callback_data(
-                            token, NamingStrategy.CAPTION
-                        ),
-                    ),
-                    InlineKeyboardButton(
-                        "采用D",
-                        callback_data=build_package_callback_data(
-                            token, NamingStrategy.MONTH_CAPTION
-                        ),
-                    ),
                 ],
                 [
                     InlineKeyboardButton(
@@ -1954,7 +1918,7 @@ async def handle_package_workflow_callback(client, query):
         return True
 
     request = pending["request"]
-    confirm_text = f"已确认命名策略 {strategy.value}，开始下载连续资源包。"
+    confirm_text = "已确认，开始按推荐C格式下载连续资源包。"
     try:
         await client.edit_message_text(chat_id, message_id, confirm_text)
     except Exception as error:
@@ -2052,7 +2016,7 @@ async def handle_comment_workflow_callback(client, query):
         return True
 
     request = pending["request"]
-    confirm_text = f"已确认命名策略 {strategy.value}，开始下载评论媒体。"
+    confirm_text = "已确认，开始按推荐C格式下载评论媒体。"
     try:
         await client.edit_message_text(chat_id, message_id, confirm_text)
     except Exception as error:

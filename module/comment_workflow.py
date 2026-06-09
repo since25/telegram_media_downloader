@@ -698,6 +698,62 @@ def build_package_naming_previews(
     return previews
 
 
+def build_recommended_naming_previews(
+    comments: Sequence[CommentLike],
+    channel: str,
+    post_id: int,
+    post_title: str,
+    sample_size: int = 3,
+) -> List[NamingPreview]:
+    """Build only the recommended C naming preview for comment media."""
+
+    sample_comments = filter_media_comments(comments)[:sample_size]
+    context = CommentNamingContext(
+        strategy=NamingStrategy.RECOMMENDED,
+        channel=channel,
+        post_id=post_id,
+        post_title=post_title,
+    )
+    return [
+        NamingPreview(
+            strategy=NamingStrategy.RECOMMENDED,
+            title="推荐C：频道/原帖ID-标题/评论ID - 原文件名",
+            examples=[
+                build_name_for_strategy(comment, context)
+                for comment in sample_comments
+            ],
+        )
+    ]
+
+
+def build_recommended_package_naming_previews(
+    items: Sequence[PackageMediaItem],
+    channel: str,
+    start_message_id: int,
+    package_title: str,
+    sample_size: int = 3,
+) -> List[NamingPreview]:
+    """Build only the recommended C naming preview for package media."""
+
+    sample_items = list(items)[:sample_size]
+    context = PackageNamingContext(
+        strategy=NamingStrategy.RECOMMENDED,
+        channel=channel,
+        start_message_id=start_message_id,
+        package_title=package_title,
+    )
+    return [
+        NamingPreview(
+            strategy=NamingStrategy.RECOMMENDED,
+            title="推荐C：频道/起始ID-标题/消息ID - 原文件名",
+            examples=[
+                build_package_name_for_strategy(item, context)
+                for item in sample_items
+            ],
+        )
+    ]
+
+
 def format_preview_message(
     channel: str,
     post_id: int,
