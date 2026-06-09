@@ -3518,15 +3518,6 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
         second_plan = plan_message_package(second_messages, 120)
         packages = [
             PrescanPackage(
-                1,
-                "课程 第01章",
-                100,
-                100,
-                first_plan.items,
-                first_plan,
-                first_messages,
-            ),
-            PrescanPackage(
                 2,
                 "课程 第02章",
                 120,
@@ -3534,6 +3525,15 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
                 second_plan.items,
                 second_plan,
                 second_messages,
+            ),
+            PrescanPackage(
+                1,
+                "课程 第01章",
+                100,
+                100,
+                first_plan.items,
+                first_plan,
+                first_messages,
             ),
         ]
         node = TaskNode(chat_id=-1001, bot=None, task_id=99)
