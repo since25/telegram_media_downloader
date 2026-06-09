@@ -132,6 +132,10 @@ def plan_prescan_packages(
 def build_prescan_callback_data(token: str, action: str, value: Any = "") -> str:
     """Build compact callback data for prescan controls."""
 
+    if not token:
+        raise ValueError("prescan callback token must not be empty")
+    if not action:
+        raise ValueError("prescan callback action must not be empty")
     if value == "" or value is None:
         return f"{PRESCAN_WORKFLOW_PREFIX}:{token}:{action}"
     return f"{PRESCAN_WORKFLOW_PREFIX}:{token}:{action}:{value}"
