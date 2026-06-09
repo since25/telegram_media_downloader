@@ -901,7 +901,11 @@ async def _report_bot_status(
         finished_tasks = node.success_download_task + node.failed_download_task + node.skip_download_task
         if hasattr(node, 'skip_not_found_download_task'):
             finished_tasks += node.skip_not_found_download_task
-        is_completed = node.total_download_task > 0 and finished_tasks == node.total_download_task
+        is_completed = (
+            node.total_download_task > 0
+            and finished_tasks == node.total_download_task
+            and not getattr(node, "prescan_batch_in_progress", False)
+        )
         task_status = _t('Completed') if is_completed else _t('In Progress')
         
         # 简化消息格式，只显示核心信息
@@ -1022,6 +1026,8 @@ async def _send_finish_summary(client: pyrogram.Client, node: "TaskNode"):
     """
     任务完成后发送汇总（可能分多条），只用于 bot 私聊/回执聊天。
     """
+    if getattr(node, "prescan_batch_in_progress", False):
+        return
     # 防重复（兼容没改 TaskNode 的情况）
     if getattr(node, "summary_sent", False):
         return

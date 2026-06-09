@@ -189,6 +189,7 @@ class TaskNode:
         self.comment_naming_context = None
         # Guided ordinary message package workflow naming context.
         self.package_naming_context = None
+        self.prescan_batch_in_progress = False
 
     def skip_msg_id(self, msg_id: int):
         """Skip if message id out of range"""
@@ -202,7 +203,11 @@ class TaskNode:
 
     def is_finish(self):
         """If is finish"""
-        return self.is_stop_transmission or (
+        if self.is_stop_transmission:
+            return True
+        if self.prescan_batch_in_progress:
+            return False
+        return (
             self.is_running
             and self.task_type != TaskType.ListenForward
             and self.total_task == self.total_download_task

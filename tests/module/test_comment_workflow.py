@@ -3576,6 +3576,155 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(node.package_naming_context.channel, "Private Course")
 
+    async def test_prescan_batch_node_does_not_finish_until_outer_batch_finishes(self):
+        from module.app import TaskNode
+
+        node = TaskNode(chat_id=-1001, bot=None, task_id=99)
+        node.is_running = True
+        node.total_task = 1
+        node.total_download_task = 1
+        node.success_download_task = 1
+        node.prescan_batch_in_progress = True
+
+        self.assertFalse(node.is_finish())
+
+        node.prescan_batch_in_progress = False
+
+        self.assertTrue(node.is_finish())
+
+    async def test_prescan_batch_finish_summary_waits_until_outer_batch_finishes(self):
+        from module.app import TaskNode
+        from module.pyrogram_extension import _send_finish_summary
+
+        class FakeClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                message = MockMessage(id=len(self.sent_messages) + 1, text=text)
+                self.sent_messages.append((chat_id, text, kwargs, message))
+                return message
+
+        node = TaskNode(chat_id=-1001, from_user_id=123, reply_message_id=10, task_id=99)
+        node.total_download_task = 1
+        node.success_download_task = 1
+        node.prescan_batch_in_progress = True
+        client = FakeClient()
+
+        await _send_finish_summary(client, node)
+
+        self.assertEqual(client.sent_messages, [])
+        self.assertFalse(node.summary_sent)
+
+        node.prescan_batch_in_progress = False
+
+        await _send_finish_summary(client, node)
+
+        self.assertEqual(len(client.sent_messages), 1)
+        self.assertTrue(node.summary_sent)
+
+    async def test_prescan_batch_status_stays_in_progress_until_outer_batch_finishes(self):
+        from module.app import TaskNode
+        from module.download_stat import (
+            add_active_task_node,
+            get_active_task_nodes,
+            remove_active_task_node,
+        )
+        from module.pyrogram_extension import report_bot_status
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+                self.sent_messages = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+            async def send_message(self, chat_id, text, **kwargs):
+                message = MockMessage(id=len(self.sent_messages) + 1, text=text)
+                self.sent_messages.append((chat_id, text, kwargs, message))
+                return message
+
+        node = TaskNode(
+            chat_id=-1001,
+            from_user_id=123,
+            reply_message_id=10,
+            bot=object(),
+            task_id=99,
+        )
+        node.is_running = True
+        node.total_download_task = 1
+        node.success_download_task = 1
+        node.prescan_batch_in_progress = True
+        client = FakeClient()
+        add_active_task_node(node)
+
+        try:
+            await report_bot_status(client, node, immediate_reply=True)
+
+            self.assertIn("In Progress", client.edits[-1][2])
+            self.assertIn(node.task_id, get_active_task_nodes())
+
+            node.prescan_batch_in_progress = False
+
+            await report_bot_status(client, node, immediate_reply=True)
+
+            self.assertIn("Completed", client.edits[-1][2])
+            self.assertNotIn(node.task_id, get_active_task_nodes())
+        finally:
+            remove_active_task_node(node.task_id)
+
+    async def test_download_prescan_packages_stops_before_next_package(self):
+        from media_downloader import download_prescan_packages
+        from module.app import TaskNode
+        from module.comment_workflow import plan_message_package
+        from module.prescan_workflow import PrescanPackage
+
+        first_messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        second_messages = [
+            MockMessage(
+                id=120,
+                media="video",
+                caption="课程 第02章",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            )
+        ]
+        first_plan = plan_message_package(first_messages, 100)
+        second_plan = plan_message_package(second_messages, 120)
+        packages = [
+            PrescanPackage(1, "课程 第01章", 100, 100, first_plan.items, first_plan, first_messages),
+            PrescanPackage(2, "课程 第02章", 120, 120, second_plan.items, second_plan, second_messages),
+        ]
+        node = TaskNode(chat_id=-1001, bot=None, task_id=99)
+        calls = []
+
+        async def fake_download_prepared_messages(
+            messages, download_filter, package_node, failed_message_ids=None
+        ):
+            calls.append([message.id for message in messages])
+            package_node.stop_transmission()
+
+        with patch(
+            "media_downloader.download_prepared_messages",
+            new=fake_download_prepared_messages,
+        ):
+            await download_prescan_packages(
+                packages,
+                channel="Private Course",
+                parent_node=node,
+                selected_package_ids={1, 2},
+            )
+
+        self.assertEqual(calls, [[100]])
+        self.assertFalse(node.prescan_batch_in_progress)
+
     async def test_cancel_callback_removes_pending_workflow_and_edits_message(self):
         from module import bot as bot_module
 

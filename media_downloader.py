@@ -2014,6 +2014,7 @@ async def download_prescan_packages(
 
     from module.comment_workflow import NamingStrategy, PackageNamingContext
     from module.download_stat import add_active_task_node
+    from module.pyrogram_extension import report_bot_status
 
     selected_ids = set(selected_package_ids)
     ordered_packages = [
@@ -2021,38 +2022,43 @@ async def download_prescan_packages(
         for package in sorted(packages, key=lambda item: item.start_message_id)
         if package.package_id in selected_ids
     ]
-    if not parent_node.is_stop_transmission:
-        parent_node.is_running = True
+    parent_node.prescan_batch_in_progress = True
+    try:
+        if not parent_node.is_stop_transmission:
+            parent_node.is_running = True
 
-    for index, package in enumerate(ordered_packages, start=1):
-        if not parent_node.is_running or parent_node.is_stop_transmission:
-            logger.info(
-                f"Prescan parent task stopped before package {package.package_id}"
+        for index, package in enumerate(ordered_packages, start=1):
+            if not parent_node.is_running or parent_node.is_stop_transmission:
+                logger.info(
+                    f"Prescan parent task stopped before package {package.package_id}"
+                )
+                break
+
+            parent_node.package_naming_context = PackageNamingContext(
+                strategy=NamingStrategy.RECOMMENDED,
+                channel=channel,
+                start_message_id=package.start_message_id,
+                package_title=package.title,
             )
-            break
-
-        parent_node.package_naming_context = PackageNamingContext(
-            strategy=NamingStrategy.RECOMMENDED,
-            channel=channel,
-            start_message_id=package.start_message_id,
-            package_title=package.title,
-        )
-        parent_node.package_plan = package.package_plan
-        parent_node.package_media_items = {
-            item.message.id: item
-            for item in package.items
-        }
-        parent_node.replay_message = (
-            f"批量下载中：包 {index}/{len(ordered_packages)} "
-            f"{package.start_message_id}-{package.end_message_id} {package.title}"
-        )
-        add_active_task_node(parent_node)
-        await download_prepared_messages(
-            package.messages,
-            None,
-            parent_node,
-            failed_message_ids=list(package.failed_message_ids),
-        )
+            parent_node.package_plan = package.package_plan
+            parent_node.package_media_items = {
+                item.message.id: item
+                for item in package.items
+            }
+            parent_node.replay_message = (
+                f"批量下载中：包 {index}/{len(ordered_packages)} "
+                f"{package.start_message_id}-{package.end_message_id} {package.title}"
+            )
+            add_active_task_node(parent_node)
+            await download_prepared_messages(
+                package.messages,
+                None,
+                parent_node,
+                failed_message_ids=list(package.failed_message_ids),
+            )
+    finally:
+        parent_node.prescan_batch_in_progress = False
+        await report_bot_status(parent_node.bot, parent_node, immediate_reply=True)
 
 
 async def download_comments(
