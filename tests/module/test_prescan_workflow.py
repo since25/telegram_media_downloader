@@ -193,6 +193,8 @@ class PrescanWorkflowTestCase(unittest.TestCase):
 
         self.assertIn("预扫完成：", text)
         self.assertIn("频道：Private Course", text)
+        self.assertIn("起点：100", text)
+        self.assertIn("扫描：2 条消息", text)
         self.assertIn("识别：2 个包", text)
         self.assertIn("已选：1 个", text)
         self.assertIn("1. 100-100｜1 个｜100.0B", text)

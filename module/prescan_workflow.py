@@ -199,6 +199,8 @@ def format_prescan_selection_page(
     lines = [
         "预扫完成：",
         f"频道：{channel}",
+        f"起点：{plan.start_message_id}",
+        f"扫描：{plan.scanned_count} 条消息",
         f"识别：{len(plan.packages)} 个包",
         f"已选：{selected_count} 个",
     ]
