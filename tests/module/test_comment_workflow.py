@@ -1513,6 +1513,80 @@ class PrescanScannerTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(progress_events[0]["rate_limited_seconds"], 4)
         self.assertEqual(progress_events[-1]["package_count"], 1)
 
+    async def test_scan_prescan_packages_falls_back_to_single_fetches_after_batch_failure(self):
+        from media_downloader import scan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=120,
+                media="video",
+                caption="课程 第02章",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            ),
+        ]
+
+        class BatchFailureClient(self.FakePrescanClient):
+            async def get_messages(self, chat_id, message_ids):
+                self.calls.append((chat_id, message_ids))
+                if isinstance(message_ids, list) and message_ids[0] == 120:
+                    raise RuntimeError("batch failure")
+                if isinstance(message_ids, list):
+                    return [
+                        self.messages.get(message_id)
+                        for message_id in message_ids
+                    ]
+                return self.messages.get(message_ids)
+
+        client = BatchFailureClient(messages)
+        result = await scan_prescan_packages(
+            client=client,
+            chat_id=-1001,
+            start_message_id=100,
+            max_messages=40,
+            batch_size=20,
+            missing_streak_limit=100,
+            sleep=FakeSleepRecorder(),
+        )
+
+        self.assertIn((-1001, 120), client.calls)
+        self.assertEqual([message.id for message in result.messages], [100, 120])
+        self.assertEqual(result.failed_message_ids, [])
+        self.assertEqual(len(result.prescan_plan.packages), 2)
+
+    async def test_scan_prescan_packages_continues_when_progress_callback_fails(self):
+        from media_downloader import scan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+
+        async def failing_progress(_event):
+            raise RuntimeError("progress edit failed")
+
+        result = await scan_prescan_packages(
+            client=self.FakePrescanClient(messages),
+            chat_id=-1001,
+            start_message_id=100,
+            max_messages=20,
+            batch_size=20,
+            sleep=FakeSleepRecorder(),
+            progress_callback=failing_progress,
+        )
+
+        self.assertEqual([message.id for message in result.messages], [100])
+        self.assertEqual(len(result.prescan_plan.packages), 1)
+
     async def test_scan_prescan_packages_stops_after_missing_streak_once_media_seen(self):
         from media_downloader import scan_prescan_packages
 
