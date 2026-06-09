@@ -48,6 +48,97 @@ class PrescanWorkflowTestCase(unittest.TestCase):
         self.assertEqual(plan.packages[1].start_message_id, 120)
         self.assertEqual(plan.packages[1].end_message_id, 121)
 
+    def test_plan_prescan_packages_does_not_warn_on_exact_message_limit(self):
+        from module.prescan_workflow import PrescanLimits, plan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+            ),
+            MockMessage(
+                id=101,
+                media="video",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4", file_size=200),
+            ),
+        ]
+
+        plan = plan_prescan_packages(
+            messages,
+            start_message_id=100,
+            limits=PrescanLimits(max_messages=2),
+        )
+
+        self.assertIsNone(plan.warning)
+
+    def test_plan_prescan_packages_does_not_warn_when_package_limit_exact(self):
+        from module.prescan_workflow import PrescanLimits, plan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+            ),
+            MockMessage(
+                id=101,
+                media="video",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4", file_size=200),
+            ),
+        ]
+
+        plan = plan_prescan_packages(
+            messages,
+            start_message_id=100,
+            limits=PrescanLimits(max_packages=1),
+        )
+
+        self.assertEqual(len(plan.packages), 1)
+        self.assertIsNone(plan.warning)
+
+    def test_plan_prescan_packages_warns_when_package_limit_truncates(self):
+        from module.prescan_workflow import PrescanLimits, plan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+            ),
+            MockMessage(
+                id=120,
+                media="video",
+                caption="课程 第02章",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4", file_size=200),
+            ),
+        ]
+
+        plan = plan_prescan_packages(
+            messages,
+            start_message_id=100,
+            limits=PrescanLimits(max_packages=1),
+        )
+
+        self.assertEqual(len(plan.packages), 1)
+        self.assertEqual(plan.warning, "预扫已达到包数量上限，结果可能不是频道最新消息。")
+
+    def test_plan_prescan_packages_ignores_no_media_without_warning(self):
+        from module.prescan_workflow import PrescanLimits, plan_prescan_packages
+
+        messages = [
+            MockMessage(id=100, media=None, text="hello"),
+            MockMessage(id=101, media=None, text="world"),
+        ]
+
+        plan = plan_prescan_packages(messages, 100, PrescanLimits())
+
+        self.assertEqual(plan.packages, [])
+        self.assertIsNone(plan.warning)
+
     def test_selection_page_formats_mobile_compact_rows(self):
         from module.prescan_workflow import (
             PrescanLimits,
@@ -86,6 +177,34 @@ class PrescanWorkflowTestCase(unittest.TestCase):
         self.assertIn("1. 100-100｜1 个｜100.0B", text)
         self.assertIn("课程 第01章", text)
 
+    def test_selection_page_negative_page_shows_first_page(self):
+        from module.prescan_workflow import (
+            PrescanLimits,
+            format_prescan_selection_page,
+            plan_prescan_packages,
+        )
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+            ),
+        ]
+        plan = plan_prescan_packages(messages, 100, PrescanLimits())
+
+        text = format_prescan_selection_page(
+            plan,
+            channel="Private Course",
+            page=-1,
+            selected_package_ids=set(),
+            page_size=8,
+        )
+
+        self.assertIn("1. 100-100｜1 个｜100.0B", text)
+        self.assertIn("课程 第01章", text)
+
     def test_prescan_callback_data_round_trips(self):
         from module.prescan_workflow import (
             build_prescan_callback_data,
@@ -106,3 +225,13 @@ class PrescanWorkflowTestCase(unittest.TestCase):
             build_prescan_callback_data("", "toggle")
         with self.assertRaises(ValueError):
             build_prescan_callback_data("abc123", "")
+
+    def test_prescan_callback_data_rejects_delimiters(self):
+        from module.prescan_workflow import build_prescan_callback_data
+
+        with self.assertRaises(ValueError):
+            build_prescan_callback_data("a:b", "toggle")
+        with self.assertRaises(ValueError):
+            build_prescan_callback_data("abc123", "tog:gle")
+        with self.assertRaises(ValueError):
+            build_prescan_callback_data("abc123", "toggle", "1:2")

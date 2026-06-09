@@ -74,7 +74,7 @@ def plan_prescan_packages(
     """Split scanned messages into selectable media packages."""
 
     limits = limits or PrescanLimits()
-    candidates = sorted(
+    raw_candidates = sorted(
         [
             message
             for message in messages
@@ -83,11 +83,11 @@ def plan_prescan_packages(
         key=lambda message: message.id,
     )
     max_messages = max(limits.max_messages, 0)
-    scanned_messages = candidates[:max_messages] if max_messages else []
-    message_limit_hit = max_messages > 0 and len(candidates) >= max_messages
+    message_limit_hit = len(raw_candidates) > max_messages
+    scanned_messages = raw_candidates[:max_messages] if max_messages else []
 
     packages: List[PrescanPackage] = []
-    warning = _MAX_MESSAGES_WARNING if message_limit_hit else None
+    package_limit_hit = False
     current_start_message_id = start_message_id
     max_packages = max(limits.max_packages, 0)
 
@@ -116,9 +116,15 @@ def plan_prescan_packages(
             break
         if next_message.id <= current_start_message_id:
             break
+        if len(packages) >= max_packages:
+            package_limit_hit = True
+            break
         current_start_message_id = next_message.id
 
-    if max_packages == 0 or len(packages) >= max_packages:
+    warning = None
+    if message_limit_hit:
+        warning = _MAX_MESSAGES_WARNING
+    if package_limit_hit:
         warning = _MAX_PACKAGES_WARNING
 
     return PrescanPlan(
@@ -136,9 +142,12 @@ def build_prescan_callback_data(token: str, action: str, value: Any = "") -> str
         raise ValueError("prescan callback token must not be empty")
     if not action:
         raise ValueError("prescan callback action must not be empty")
+    token_text = _validate_callback_part("token", token)
+    action_text = _validate_callback_part("action", action)
+    value_text = _validate_callback_part("value", value)
     if value == "" or value is None:
-        return f"{PRESCAN_WORKFLOW_PREFIX}:{token}:{action}"
-    return f"{PRESCAN_WORKFLOW_PREFIX}:{token}:{action}:{value}"
+        return f"{PRESCAN_WORKFLOW_PREFIX}:{token_text}:{action_text}"
+    return f"{PRESCAN_WORKFLOW_PREFIX}:{token_text}:{action_text}:{value_text}"
 
 
 def parse_prescan_callback_data(data: str) -> Optional[Tuple[str, str, str]]:
@@ -152,6 +161,13 @@ def parse_prescan_callback_data(data: str) -> Optional[Tuple[str, str, str]]:
 
     value = parts[3] if len(parts) == 4 else ""
     return parts[1], parts[2], value
+
+
+def _validate_callback_part(name: str, value: Any) -> str:
+    text = str(value)
+    if ":" in text:
+        raise ValueError(f"prescan callback {name} must not contain ':'")
+    return text
 
 
 def page_packages(
