@@ -1908,6 +1908,14 @@ async def handle_package_workflow_callback(client, query):
         return True
 
     token, strategy = parsed
+    if strategy is not NamingStrategy.RECOMMENDED:
+        await client.edit_message_text(
+            chat_id,
+            message_id,
+            "无效的连续资源包下载操作。",
+        )
+        return True
+
     pending = _bot.pending_package_workflows.get(token)
     if not pending:
         await client.edit_message_text(
@@ -2006,6 +2014,14 @@ async def handle_comment_workflow_callback(client, query):
         return True
 
     token, strategy = parsed
+    if strategy is not NamingStrategy.RECOMMENDED:
+        await client.edit_message_text(
+            chat_id,
+            message_id,
+            "无效的评论媒体下载操作。",
+        )
+        return True
+
     pending = _bot.pending_comment_workflows.get(token)
     if not pending:
         await client.edit_message_text(

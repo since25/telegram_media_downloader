@@ -2280,6 +2280,98 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.task_node = old_task_node
             bot_module._bot.task_id = old_task_id
 
+    async def test_confirm_callback_rejects_forged_non_recommended_strategy(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+                self.sent_messages = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+                return MockMessage(id=77, chat_id=chat_id, text=text)
+
+        class FakeLoop:
+            def __init__(self):
+                self.created = []
+
+            def create_task(self, coroutine):
+                coroutine.close()
+                self.created.append(coroutine)
+                return coroutine
+
+        token = "abc123"
+        request = build_comment_workflow_request(
+            "https://t.me/zhyseseb/422?comment=4978"
+        )
+        pending = {
+            "request": request,
+            "entity_id": -1001,
+            "channel": "zhyseseb",
+            "post_title": "夏日合集",
+            "comments": [
+                MockMessage(
+                    id=4978,
+                    media="video",
+                    video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+                )
+            ],
+            "failed_comment_ids": [],
+            "source_message_id": 88,
+        }
+        active_nodes = []
+
+        async def fake_download_prepared_comments(*args, **kwargs):
+            raise AssertionError("forged non-C callbacks must not start downloads")
+
+        def fake_add_active_task_node(node):
+            active_nodes.append(node)
+
+        old_pending = bot_module._bot.pending_comment_workflows
+        old_app = bot_module._bot.app
+        old_bot = bot_module._bot.bot
+        old_task_node = bot_module._bot.task_node
+        old_task_id = bot_module._bot.task_id
+        try:
+            fake_loop = FakeLoop()
+            bot_module._bot.pending_comment_workflows = {token: pending}
+            bot_module._bot.app = SimpleNamespace(loop=fake_loop)
+            bot_module._bot.bot = object()
+            bot_module._bot.task_node = {}
+            bot_module._bot.task_id = 0
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=f"{COMMENT_WORKFLOW_PREFIX}:{token}:A",
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "media_downloader.download_prepared_comments",
+                new=fake_download_prepared_comments,
+            ), patch("module.bot.add_active_task_node", new=fake_add_active_task_node):
+                handled = await bot_module.handle_comment_workflow_callback(
+                    client, query
+                )
+
+            self.assertTrue(handled)
+            self.assertIs(bot_module._bot.pending_comment_workflows[token], pending)
+            self.assertEqual(bot_module._bot.task_node, {})
+            self.assertEqual(active_nodes, [])
+            self.assertEqual(fake_loop.created, [])
+            self.assertEqual(client.sent_messages, [])
+            self.assertEqual(client.edits[0][2], "无效的评论媒体下载操作。")
+        finally:
+            bot_module._bot.pending_comment_workflows = old_pending
+            bot_module._bot.app = old_app
+            bot_module._bot.bot = old_bot
+            bot_module._bot.task_node = old_task_node
+            bot_module._bot.task_id = old_task_id
+
     async def test_package_confirm_callback_starts_prepared_download_with_naming_context(self):
         from module import bot as bot_module
         from module.comment_workflow import (
@@ -2415,6 +2507,115 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
                 client.edits[0][2],
                 "已确认，开始按推荐C格式下载连续资源包。",
             )
+        finally:
+            if old_pending is None:
+                delattr(bot_module._bot, "pending_package_workflows")
+            else:
+                bot_module._bot.pending_package_workflows = old_pending
+            bot_module._bot.app = old_app
+            bot_module._bot.bot = old_bot
+            bot_module._bot.client = old_user_client
+            bot_module._bot.task_node = old_task_node
+            bot_module._bot.task_id = old_task_id
+
+    async def test_package_confirm_callback_rejects_forged_non_recommended_strategy(self):
+        from module import bot as bot_module
+        from module.comment_workflow import (
+            build_message_package_workflow_request,
+            plan_message_package,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+                self.sent_messages = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+                return MockMessage(id=78, chat_id=chat_id, text=text)
+
+        class FakeLoop:
+            def __init__(self):
+                self.created = []
+
+            def create_task(self, coroutine):
+                coroutine.close()
+                self.created.append(coroutine)
+                return coroutine
+
+        token = "pkg123"
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                caption="课程 第01章 01_40",
+                media="video",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        package_plan = plan_message_package(messages, start_message_id=126711)
+        package_media_items = {item.message.id: item for item in package_plan.items}
+        pending = {
+            "request": request,
+            "entity_id": -1001298283297,
+            "channel": "Private Course",
+            "package_title": "课程 第01章 01_40",
+            "messages": messages,
+            "failed_message_ids": [],
+            "source_message_id": 90,
+            "package_plan": package_plan,
+            "package_media_items": package_media_items,
+        }
+        active_nodes = []
+
+        async def fake_download_prepared_messages(*args, **kwargs):
+            raise AssertionError("forged non-C callbacks must not start downloads")
+
+        def fake_add_active_task_node(node):
+            active_nodes.append(node)
+
+        client_for_node = object()
+        old_pending = getattr(bot_module._bot, "pending_package_workflows", None)
+        old_app = bot_module._bot.app
+        old_bot = bot_module._bot.bot
+        old_user_client = bot_module._bot.client
+        old_task_node = bot_module._bot.task_node
+        old_task_id = bot_module._bot.task_id
+        try:
+            fake_loop = FakeLoop()
+            bot_module._bot.pending_package_workflows = {token: pending}
+            bot_module._bot.app = SimpleNamespace(loop=fake_loop)
+            bot_module._bot.bot = object()
+            bot_module._bot.client = client_for_node
+            bot_module._bot.task_node = {}
+            bot_module._bot.task_id = 0
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=f"pw:{token}:D",
+                message=MockMessage(id=11, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "media_downloader.download_prepared_messages",
+                new=fake_download_prepared_messages,
+            ), patch("module.bot.add_active_task_node", new=fake_add_active_task_node):
+                handled = await bot_module.handle_package_workflow_callback(
+                    client, query
+                )
+
+            self.assertTrue(handled)
+            self.assertIs(bot_module._bot.pending_package_workflows[token], pending)
+            self.assertEqual(bot_module._bot.task_node, {})
+            self.assertEqual(active_nodes, [])
+            self.assertEqual(fake_loop.created, [])
+            self.assertEqual(client.sent_messages, [])
+            self.assertEqual(client.edits[0][2], "无效的连续资源包下载操作。")
         finally:
             if old_pending is None:
                 delattr(bot_module._bot, "pending_package_workflows")
