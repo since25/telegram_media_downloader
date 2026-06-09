@@ -96,6 +96,7 @@ class DownloadBot:
         self.reply_task = None
         self.pending_comment_workflows: dict = {}
         self.pending_package_workflows: dict = {}
+        self.pending_prescan_sessions: dict = {}
 
     def gen_task_id(self) -> int:
         """Gen task id"""
@@ -188,6 +189,7 @@ class DownloadBot:
                     "To download the video, use the method to directly enter /download to view"
                 ),
             ),
+            types.BotCommand("prescan", "预扫模式"),
             types.BotCommand(
                 "forward",
                 _t("Forward video, use the method to directly enter /forward to view"),
@@ -245,6 +247,13 @@ class DownloadBot:
             MessageHandler(
                 download_from_bot,
                 filters=pyrogram.filters.command(["download"])
+                & pyrogram.filters.user(self.allowed_user_ids),
+            )
+        )
+        self.bot.add_handler(
+            MessageHandler(
+                start_prescan_mode,
+                filters=pyrogram.filters.command(["prescan"])
                 & pyrogram.filters.user(self.allowed_user_ids),
             )
         )
@@ -654,6 +663,25 @@ async def download_forward_media(
     )
 
 
+async def start_prescan_mode(client: pyrogram.Client, message: pyrogram.types.Message):
+    """Enter prescan mode for the next Telegram message link from this user."""
+
+    user_id = message.from_user.id
+    _bot.pending_prescan_sessions[user_id] = {
+        "mode": "awaiting_prescan_link",
+        "source_message_id": message.id,
+        "created_at": datetime.now(),
+    }
+    await client.send_message(
+        user_id,
+        (
+            "已进入预扫模式，请发送起始频道消息链接。\n"
+            "例如：https://t.me/c/1446289027/156439"
+        ),
+        reply_to_message_id=message.id,
+    )
+
+
 async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Message):
     """
     Downloads a single message from a Telegram link.
@@ -666,7 +694,25 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
         None
     """
 
-    if not message.text or not message.text.startswith("https://t.me"):
+    if not message.text:
+        return
+
+    user_id = message.from_user.id
+    prescan_session = _bot.pending_prescan_sessions.get(user_id)
+    if prescan_session and prescan_session.get("mode") == "awaiting_prescan_link":
+        package_request = build_message_package_workflow_request(message.text.strip())
+        if not package_request:
+            await client.send_message(
+                user_id,
+                "预扫模式需要普通频道消息链接，例如：https://t.me/c/1446289027/156439",
+                reply_to_message_id=message.id,
+            )
+            return
+        _bot.pending_prescan_sessions.pop(user_id, None)
+        await preview_prescan_workflow(client, message, package_request)
+        return
+
+    if not message.text.startswith("https://t.me"):
         return
 
     workflow_request = build_comment_workflow_request(message.text.strip())
@@ -1092,6 +1138,16 @@ async def preview_package_workflow(client, message, workflow_request):
             f"预览连续资源包失败：{error}",
             reply_to_message_id=message.id,
         )
+
+
+async def preview_prescan_workflow(client, message, workflow_request):
+    """Acknowledge prescan input before scanner wiring is added."""
+
+    await client.send_message(
+        message.from_user.id,
+        f"预扫任务已接收：{workflow_request.start_message_id}",
+        reply_to_message_id=message.id,
+    )
 
 
 # pylint: disable = R0912, R0915,R0914

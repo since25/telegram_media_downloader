@@ -1393,6 +1393,110 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(node.total_download_task, 1)
 
 
+class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
+    async def test_prescan_command_creates_awaiting_link_session(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+
+        old_sessions = getattr(bot_module._bot, "pending_prescan_sessions", None)
+        try:
+            bot_module._bot.pending_prescan_sessions = {}
+            message = MockMessage(id=5, text="/prescan", from_user=MockUser(id=123))
+            client = FakeClient()
+
+            await bot_module.start_prescan_mode(client, message)
+
+            self.assertIn(123, bot_module._bot.pending_prescan_sessions)
+            self.assertEqual(
+                bot_module._bot.pending_prescan_sessions[123]["mode"],
+                "awaiting_prescan_link",
+            )
+            self.assertIn("已进入预扫模式", client.sent_messages[0][1])
+        finally:
+            if old_sessions is None:
+                delattr(bot_module._bot, "pending_prescan_sessions")
+            else:
+                bot_module._bot.pending_prescan_sessions = old_sessions
+
+    async def test_download_from_link_routes_to_prescan_when_session_active(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            pass
+
+        old_sessions = getattr(bot_module._bot, "pending_prescan_sessions", None)
+        try:
+            bot_module._bot.pending_prescan_sessions = {
+                123: {"mode": "awaiting_prescan_link"}
+            }
+            message = MockMessage(
+                id=6,
+                text="https://t.me/c/1298283297/126711",
+                from_user=MockUser(id=123),
+            )
+            captured = {}
+
+            async def fake_preview_prescan_workflow(client, routed_message, package_request):
+                captured["message"] = routed_message
+                captured["request"] = package_request
+
+            with patch(
+                "module.bot.preview_prescan_workflow",
+                new=fake_preview_prescan_workflow,
+            ):
+                await bot_module.download_from_link(FakeClient(), message)
+
+            self.assertIs(captured["message"], message)
+            self.assertEqual(captured["request"].start_message_id, 126711)
+            self.assertNotIn(123, bot_module._bot.pending_prescan_sessions)
+        finally:
+            if old_sessions is None:
+                delattr(bot_module._bot, "pending_prescan_sessions")
+            else:
+                bot_module._bot.pending_prescan_sessions = old_sessions
+
+    async def test_download_from_link_keeps_prescan_session_for_invalid_link(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+
+        old_sessions = getattr(bot_module._bot, "pending_prescan_sessions", None)
+        try:
+            bot_module._bot.pending_prescan_sessions = {
+                123: {"mode": "awaiting_prescan_link"}
+            }
+            message = MockMessage(
+                id=7,
+                text="not a telegram link",
+                from_user=MockUser(id=123),
+            )
+            client = FakeClient()
+
+            await bot_module.download_from_link(client, message)
+
+            self.assertIn(123, bot_module._bot.pending_prescan_sessions)
+            self.assertEqual(len(client.sent_messages), 1)
+            self.assertEqual(client.sent_messages[0][0], 123)
+            self.assertIn("预扫模式需要普通频道消息链接", client.sent_messages[0][1])
+            self.assertEqual(client.sent_messages[0][2]["reply_to_message_id"], 7)
+        finally:
+            if old_sessions is None:
+                delattr(bot_module._bot, "pending_prescan_sessions")
+            else:
+                bot_module._bot.pending_prescan_sessions = old_sessions
+
+
 class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_download_from_link_routes_direct_comment_link_to_preview(self):
         from module import bot as bot_module
