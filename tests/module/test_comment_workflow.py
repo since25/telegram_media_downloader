@@ -1785,6 +1785,481 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             else:
                 bot_module._bot.pending_prescan_sessions = old_sessions
 
+    async def test_download_from_link_keeps_prescan_session_when_preview_returns_false(self):
+        from module import bot as bot_module
+
+        class FakeClient:
+            pass
+
+        old_sessions = getattr(bot_module._bot, "pending_prescan_sessions", None)
+        try:
+            bot_module._bot.pending_prescan_sessions = {
+                123: {"mode": "awaiting_prescan_link"}
+            }
+            message = MockMessage(
+                id=8,
+                text="https://t.me/c/1298283297/126711",
+                from_user=MockUser(id=123),
+            )
+
+            async def fake_preview_prescan_workflow(
+                client, routed_message, package_request
+            ):
+                return False
+
+            with patch(
+                "module.bot.preview_prescan_workflow",
+                new=fake_preview_prescan_workflow,
+            ):
+                await bot_module.download_from_link(FakeClient(), message)
+
+            self.assertIn(123, bot_module._bot.pending_prescan_sessions)
+        finally:
+            if old_sessions is None:
+                delattr(bot_module._bot, "pending_prescan_sessions")
+            else:
+                bot_module._bot.pending_prescan_sessions = old_sessions
+
+    async def test_preview_prescan_workflow_stores_plan_and_sends_selection_page(self):
+        from module import bot as bot_module
+        from module.comment_workflow import build_message_package_workflow_request
+        from media_downloader import PrescanScanResult
+        from module.prescan_workflow import PrescanLimits, plan_prescan_packages
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        source_entity = SimpleNamespace(
+            id=-1001298283297, username=None, title="Private Course"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(
+                    file_name="01.mp4",
+                    mime_type="video/mp4",
+                    file_size=100,
+                ),
+            )
+        ]
+
+        class FakeUserClient:
+            async def get_chat(self, chat_id):
+                self.requested_chat_id = chat_id
+                return source_entity
+
+        class FakeBotClient:
+            def __init__(self):
+                self.sent_messages = []
+                self.edited_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                msg = MockMessage(id=80, chat_id=chat_id, text=text)
+                self.sent_messages.append((chat_id, text, kwargs, msg))
+                return msg
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edited_messages.append((chat_id, message_id, text, kwargs))
+
+        async def fake_scan_prescan_packages(
+            client, chat_id, start_message_id, **kwargs
+        ):
+            progress_callback = kwargs.get("progress_callback")
+            plan = plan_prescan_packages(messages, start_message_id, PrescanLimits())
+            if progress_callback:
+                await progress_callback(
+                    {
+                        "scanned_count": plan.scanned_count,
+                        "package_count": len(plan.packages),
+                        "latest_package": plan.packages[-1],
+                        "rate_limited_seconds": None,
+                    }
+                )
+            return PrescanScanResult(chat_id, plan, messages, [])
+
+        old_client = bot_module._bot.client
+        old_pending = getattr(bot_module._bot, "pending_prescan_workflows", None)
+        try:
+            bot_module._bot.client = FakeUserClient()
+            bot_module._bot.pending_prescan_workflows = {}
+            bot_client = FakeBotClient()
+            message = MockMessage(id=9, text=request.url, from_user=MockUser(id=123))
+
+            with patch(
+                "media_downloader.scan_prescan_packages",
+                new=fake_scan_prescan_packages,
+            ):
+                await bot_module.preview_prescan_workflow(bot_client, message, request)
+
+            self.assertEqual(len(bot_module._bot.pending_prescan_workflows), 1)
+            pending = next(iter(bot_module._bot.pending_prescan_workflows.values()))
+            self.assertEqual(pending["channel"], "Private Course")
+            self.assertEqual(len(pending["plan"].packages), 1)
+            self.assertIn("预扫完成", bot_client.sent_messages[-1][1])
+            markup = bot_client.sent_messages[-1][2]["reply_markup"]
+            self.assertTrue(markup.inline_keyboard)
+            self.assertIn("下载已选", markup.inline_keyboard[-1][0].text)
+        finally:
+            bot_module._bot.client = old_client
+            if old_pending is None:
+                delattr(bot_module._bot, "pending_prescan_workflows")
+            else:
+                bot_module._bot.pending_prescan_workflows = old_pending
+
+    async def test_preview_prescan_workflow_reports_failure_without_success_handoff(self):
+        from module import bot as bot_module
+        from module.comment_workflow import build_message_package_workflow_request
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        source_entity = SimpleNamespace(
+            id=-1001298283297, username=None, title="Private Course"
+        )
+
+        class FakeUserClient:
+            async def get_chat(self, chat_id):
+                return source_entity
+
+        class FakeBotClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                msg = MockMessage(id=80, chat_id=chat_id, text=text)
+                self.sent_messages.append((chat_id, text, kwargs, msg))
+                return msg
+
+            async def edit_message_text(self, *args, **kwargs):
+                return None
+
+        async def failing_scan(*args, **kwargs):
+            raise RuntimeError("scan failed")
+
+        old_client = bot_module._bot.client
+        old_pending = bot_module._bot.pending_prescan_workflows
+        try:
+            bot_module._bot.client = FakeUserClient()
+            bot_module._bot.pending_prescan_workflows = {}
+            bot_client = FakeBotClient()
+            message = MockMessage(id=9, text=request.url, from_user=MockUser(id=123))
+
+            with patch("media_downloader.scan_prescan_packages", new=failing_scan):
+                result = await bot_module.preview_prescan_workflow(
+                    bot_client, message, request
+                )
+
+            self.assertIs(result, False)
+            self.assertEqual(bot_module._bot.pending_prescan_workflows, {})
+            self.assertIn("预扫失败：scan failed", bot_client.sent_messages[-1][1])
+        finally:
+            bot_module._bot.client = old_client
+            bot_module._bot.pending_prescan_workflows = old_pending
+
+    async def test_prescan_callback_toggles_selected_package_and_refreshes_page(self):
+        from module import bot as bot_module
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.prescan_workflow import (
+            PrescanLimits,
+            build_prescan_callback_data,
+            plan_prescan_packages,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        plan = plan_prescan_packages(messages, 126711, PrescanLimits())
+        token = "prescan123"
+        old_pending = bot_module._bot.pending_prescan_workflows
+        try:
+            selected_package_ids = set()
+            bot_module._bot.pending_prescan_workflows = {
+                token: {
+                    "request": request,
+                    "entity_id": -1001298283297,
+                    "channel": "Private Course",
+                    "plan": plan,
+                    "selected_package_ids": selected_package_ids,
+                    "page": 0,
+                }
+            }
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=build_prescan_callback_data(token, "toggle", 1),
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            handled = await bot_module.handle_prescan_workflow_callback(
+                client, query
+            )
+
+            self.assertTrue(handled)
+            self.assertEqual(selected_package_ids, {1})
+            self.assertIn("已选：1 个", client.edits[0][2])
+            markup = client.edits[0][3]["reply_markup"]
+            self.assertEqual(markup.inline_keyboard[0][0].text, "[x] 1")
+        finally:
+            bot_module._bot.pending_prescan_workflows = old_pending
+
+    async def test_prescan_callback_rejects_malformed_numeric_value(self):
+        from module import bot as bot_module
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.prescan_workflow import PrescanLimits, plan_prescan_packages
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        plan = plan_prescan_packages(messages, 126711, PrescanLimits())
+        token = "prescan123"
+        old_pending = bot_module._bot.pending_prescan_workflows
+        try:
+            bot_module._bot.pending_prescan_workflows = {
+                token: {
+                    "request": request,
+                    "entity_id": -1001298283297,
+                    "channel": "Private Course",
+                    "plan": plan,
+                    "selected_package_ids": set(),
+                    "page": 0,
+                }
+            }
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=f"ps:{token}:toggle:abc",
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            handled = await bot_module.handle_prescan_workflow_callback(
+                client, query
+            )
+
+            self.assertTrue(handled)
+            self.assertEqual(client.edits[0][2], "无效的预扫操作。")
+        finally:
+            bot_module._bot.pending_prescan_workflows = old_pending
+
+    async def test_prescan_callback_download_requires_selection(self):
+        from module import bot as bot_module
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.prescan_workflow import (
+            PrescanLimits,
+            build_prescan_callback_data,
+            plan_prescan_packages,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        plan = plan_prescan_packages(messages, 126711, PrescanLimits())
+        token = "prescan123"
+        old_pending = bot_module._bot.pending_prescan_workflows
+        try:
+            bot_module._bot.pending_prescan_workflows = {
+                token: {
+                    "request": request,
+                    "entity_id": -1001298283297,
+                    "channel": "Private Course",
+                    "plan": plan,
+                    "selected_package_ids": set(),
+                    "page": 0,
+                }
+            }
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=build_prescan_callback_data(token, "download"),
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            handled = await bot_module.handle_prescan_workflow_callback(
+                client, query
+            )
+
+            self.assertTrue(handled)
+            self.assertIn("请先选择至少一个包。", client.edits[0][2])
+            self.assertIn(token, bot_module._bot.pending_prescan_workflows)
+        finally:
+            bot_module._bot.pending_prescan_workflows = old_pending
+
+    async def test_prescan_callback_can_page_and_select_visible_page(self):
+        from module import bot as bot_module
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.prescan_workflow import (
+            PrescanLimits,
+            build_prescan_callback_data,
+            plan_prescan_packages,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        messages = [
+            MockMessage(
+                id=126711 + index * 20,
+                media="video",
+                caption=f"课程 第{index + 1:02d}章",
+                video=MockVideo(file_name=f"{index + 1:02d}.mp4", mime_type="video/mp4"),
+            )
+            for index in range(9)
+        ]
+        plan = plan_prescan_packages(messages, 126711, PrescanLimits())
+        token = "prescan123"
+        old_pending = bot_module._bot.pending_prescan_workflows
+        try:
+            selected_package_ids = set()
+            bot_module._bot.pending_prescan_workflows = {
+                token: {
+                    "request": request,
+                    "entity_id": -1001298283297,
+                    "channel": "Private Course",
+                    "plan": plan,
+                    "selected_package_ids": selected_package_ids,
+                    "page": 0,
+                }
+            }
+            client = FakeClient()
+            page_query = SimpleNamespace(
+                data=build_prescan_callback_data(token, "page", 1),
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+            select_page_query = SimpleNamespace(
+                data=build_prescan_callback_data(token, "select_page", 1),
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            await bot_module.handle_prescan_workflow_callback(client, page_query)
+            await bot_module.handle_prescan_workflow_callback(
+                client, select_page_query
+            )
+
+            self.assertEqual(
+                bot_module._bot.pending_prescan_workflows[token]["page"], 1
+            )
+            self.assertEqual(selected_package_ids, {9})
+            self.assertIn("已选：1 个", client.edits[-1][2])
+            self.assertEqual(client.edits[-1][3]["reply_markup"].inline_keyboard[0][0].text, "[x] 9")
+        finally:
+            bot_module._bot.pending_prescan_workflows = old_pending
+
+    async def test_prescan_callback_download_with_selection_uses_handoff(self):
+        from module import bot as bot_module
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.prescan_workflow import (
+            PrescanLimits,
+            build_prescan_callback_data,
+            plan_prescan_packages,
+        )
+
+        class FakeClient:
+            pass
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            )
+        ]
+        plan = plan_prescan_packages(messages, 126711, PrescanLimits())
+        token = "prescan123"
+        pending = {
+            "request": request,
+            "entity_id": -1001298283297,
+            "channel": "Private Course",
+            "plan": plan,
+            "selected_package_ids": {1},
+            "page": 0,
+        }
+        handoff_calls = []
+
+        async def fake_start_prescan_selected_download(client, query, token, pending):
+            handoff_calls.append((client, query, token, pending))
+
+        old_pending = bot_module._bot.pending_prescan_workflows
+        try:
+            bot_module._bot.pending_prescan_workflows = {token: pending}
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=build_prescan_callback_data(token, "download"),
+                message=MockMessage(id=10, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "module.bot.start_prescan_selected_download",
+                new=fake_start_prescan_selected_download,
+            ):
+                handled = await bot_module.handle_prescan_workflow_callback(
+                    client, query
+                )
+
+            self.assertTrue(handled)
+            self.assertEqual(handoff_calls, [(client, query, token, pending)])
+        finally:
+            bot_module._bot.pending_prescan_workflows = old_pending
+
     async def test_bot_registers_prescan_text_handler_after_commands(self):
         from module import bot as bot_module
 
