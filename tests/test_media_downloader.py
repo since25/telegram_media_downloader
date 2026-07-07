@@ -736,13 +736,13 @@ class MediaDownloaderTestCase(unittest.TestCase):
         self.assertEqual(
             file_name,
             platform_generic_path(
-                f"{MOCK_DIR}/Private/2026_06/私密频道/126700-课程_第01章/126711 - bad_name_.mp4"
+                f"{MOCK_DIR}/Private/2026_06/126700-课程_第01章/126711 - bad_name_.mp4"
             ),
         )
         self.assertEqual(
             temp_file_name,
             platform_generic_path(
-                f"{MOCK_DIR}/temp/Private/私密频道/126700-课程_第01章/126711 - bad_name_.mp4"
+                f"{MOCK_DIR}/temp/Private/126700-课程_第01章/126711 - bad_name_.mp4"
             ),
         )
 

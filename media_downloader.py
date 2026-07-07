@@ -71,6 +71,7 @@ class MessagePackageScanResult(NamedTuple):
     messages: list
     package_plan: Any
     failed_message_ids: list
+    following_package_plans: Optional[list] = None
 
 
 @dataclass
@@ -1607,29 +1608,38 @@ async def scan_message_package(
     start_message_id: int,
     max_scan_count: int = 500,
     batch_size: int = 50,
+    following_package_count: int = 3,
 ) -> MessagePackageScanResult:
-    """Fetch a bounded ordinary-message window and plan one media package."""
-    from module.comment_workflow import plan_message_package
+    """Fetch a bounded ordinary-message window and plan one package plus followers."""
+    from module.comment_workflow import plan_message_package_sequence
 
     max_scan_count = max(0, max_scan_count)
     batch_size = max(1, batch_size)
+    following_package_count = max(0, following_package_count)
     message_ids = list(range(start_message_id, start_message_id + max_scan_count))
     fetched_messages = []
     failed_message_ids = []
 
     def build_result() -> MessagePackageScanResult:
-        package_plan = plan_message_package(
+        sequence_plan = plan_message_package_sequence(
             fetched_messages,
             start_message_id=start_message_id,
+            following_package_count=following_package_count,
             max_scan_count=max_scan_count,
         )
+        package_plan = sequence_plan.primary
         package_messages = [item.message for item in package_plan.items]
         return MessagePackageScanResult(
             chat_id,
             package_messages,
             package_plan,
             failed_message_ids,
+            sequence_plan.following,
         )
+
+    def has_enough_following_packages(result: MessagePackageScanResult) -> bool:
+        following_plans = result.following_package_plans or []
+        return len(following_plans) >= following_package_count
 
     for index in range(0, len(message_ids), batch_size):
         batch_ids = message_ids[index : index + batch_size]
@@ -1637,6 +1647,7 @@ async def scan_message_package(
             batch_messages = await client.get_messages(chat_id, batch_ids)
             if not isinstance(batch_messages, list):
                 batch_messages = [batch_messages]
+            fetched_count_before_batch = len(fetched_messages)
             fetched_messages.extend(
                 message
                 for message in batch_messages
@@ -1660,13 +1671,18 @@ async def scan_message_package(
                     failed_message_ids.append(message_id)
 
                 result = build_result()
-                if result.package_plan.next_package_message:
+                if has_enough_following_packages(result):
                     return result
 
             continue
 
         result = build_result()
-        if result.package_plan.next_package_message:
+        if has_enough_following_packages(result):
+            return result
+        if (
+            fetched_count_before_batch
+            and len(fetched_messages) == fetched_count_before_batch
+        ):
             return result
 
     return build_result()

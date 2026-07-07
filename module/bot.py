@@ -73,6 +73,7 @@ from utils.meta_data import MetaData
 
 COMMENT_PROBE_SCAN_LIMIT = 500
 COMMENT_MISSING_STREAK_LIMIT = 5
+PACKAGE_WITH_FOLLOWING_ACTION = "with_following"
 
 
 class DownloadBot:
@@ -1146,6 +1147,9 @@ async def preview_package_workflow(client, message, workflow_request):
             workflow_request.start_message_id,
         )
         package_plan = scan_result.package_plan
+        following_package_plans = list(
+            getattr(scan_result, "following_package_plans", None) or []
+        )
         package_items = list(getattr(package_plan, "items", []) or [])
         if not package_items:
             await client.send_message(
@@ -1178,6 +1182,7 @@ async def preview_package_workflow(client, message, workflow_request):
             "source_message_id": message.id,
             "package_plan": package_plan,
             "package_media_items": package_media_items,
+            "following_package_plans": following_package_plans,
         }
 
         cloud_drive_config = getattr(_bot.app, "cloud_drive_config", None)
@@ -1192,17 +1197,30 @@ async def preview_package_workflow(client, message, workflow_request):
             previews=previews,
             upload_enabled=upload_enabled,
             delete_after_upload=delete_after_upload,
+            following_package_plans=following_package_plans,
         )
+
+        download_row = [
+            InlineKeyboardButton(
+                "开始下载",
+                callback_data=build_package_callback_data(
+                    token, NamingStrategy.RECOMMENDED
+                ),
+            )
+        ]
+        if following_package_plans:
+            download_row.append(
+                InlineKeyboardButton(
+                    "下载本包+后续包",
+                    callback_data=(
+                        f"{PACKAGE_WORKFLOW_PREFIX}:{token}:"
+                        f"{PACKAGE_WITH_FOLLOWING_ACTION}"
+                    ),
+                )
+            )
         buttons = InlineKeyboardMarkup(
             [
-                [
-                    InlineKeyboardButton(
-                        "开始下载",
-                        callback_data=build_package_callback_data(
-                            token, NamingStrategy.RECOMMENDED
-                        ),
-                    )
-                ],
+                download_row,
                 [
                     InlineKeyboardButton(
                         "取消",
@@ -2427,23 +2445,30 @@ async def handle_package_workflow_callback(client, query):
         )
         return True
 
-    parsed = parse_package_callback_data(data)
-    if not parsed:
-        await client.edit_message_text(
-            chat_id,
-            message_id,
-            "无效的连续资源包下载操作。",
-        )
-        return True
+    include_following = (
+        len(parts) == 3 and parts[2] == PACKAGE_WITH_FOLLOWING_ACTION and bool(parts[1])
+    )
+    if include_following:
+        token = parts[1]
+        strategy = NamingStrategy.RECOMMENDED
+    else:
+        parsed = parse_package_callback_data(data)
+        if not parsed:
+            await client.edit_message_text(
+                chat_id,
+                message_id,
+                "无效的连续资源包下载操作。",
+            )
+            return True
 
-    token, strategy = parsed
-    if strategy is not NamingStrategy.RECOMMENDED:
-        await client.edit_message_text(
-            chat_id,
-            message_id,
-            "无效的连续资源包下载操作。",
-        )
-        return True
+        token, strategy = parsed
+        if strategy is not NamingStrategy.RECOMMENDED:
+            await client.edit_message_text(
+                chat_id,
+                message_id,
+                "无效的连续资源包下载操作。",
+            )
+            return True
 
     pending = _bot.pending_package_workflows.get(token)
     if not pending:
@@ -2455,7 +2480,12 @@ async def handle_package_workflow_callback(client, query):
         return True
 
     request = pending["request"]
-    confirm_text = "已确认，开始按推荐C格式下载连续资源包。"
+    following_package_plans = list(pending.get("following_package_plans") or [])
+    if include_following and following_package_plans:
+        confirm_text = f"已确认，开始按推荐C格式串行下载本包+后续" f"{len(following_package_plans)}个包。"
+    else:
+        include_following = False
+        confirm_text = "已确认，开始按推荐C格式下载连续资源包。"
     try:
         await client.edit_message_text(chat_id, message_id, confirm_text)
     except Exception as error:
@@ -2480,24 +2510,47 @@ async def handle_package_workflow_callback(client, query):
         task_id=_bot.gen_task_id(),
     )
     node.client = _bot.client
-    node.package_naming_context = PackageNamingContext(
-        strategy=strategy,
-        channel=pending["channel"],
-        start_message_id=request.start_message_id,
-        package_title=pending["package_title"],
-    )
-    node.package_plan = pending.get("package_plan")
-    node.package_media_items = pending.get("package_media_items")
     node.is_running = True
 
-    from media_downloader import download_prepared_messages
+    if include_following:
+        from media_downloader import download_prescan_packages
+        from module.prescan_workflow import build_prescan_package_from_plan
 
-    download_coroutine = download_prepared_messages(
-        pending["messages"],
-        None,
-        node,
-        failed_message_ids=pending.get("failed_message_ids"),
-    )
+        package_plans = [pending["package_plan"], *following_package_plans]
+        packages = [
+            build_prescan_package_from_plan(
+                package_id=index,
+                package_plan=package_plan,
+                failed_message_ids=(
+                    pending.get("failed_message_ids") if index == 1 else []
+                ),
+            )
+            for index, package_plan in enumerate(package_plans, start=1)
+        ]
+        download_coroutine = download_prescan_packages(
+            packages,
+            pending["channel"],
+            node,
+            {package.package_id for package in packages},
+        )
+    else:
+        node.package_naming_context = PackageNamingContext(
+            strategy=strategy,
+            channel=pending["channel"],
+            start_message_id=request.start_message_id,
+            package_title=pending["package_title"],
+        )
+        node.package_plan = pending.get("package_plan")
+        node.package_media_items = pending.get("package_media_items")
+
+        from media_downloader import download_prepared_messages
+
+        download_coroutine = download_prepared_messages(
+            pending["messages"],
+            None,
+            node,
+            failed_message_ids=pending.get("failed_message_ids"),
+        )
     try:
         _bot.app.loop.create_task(download_coroutine)
     except Exception:

@@ -256,6 +256,16 @@ def _build_prescan_package(
     package_id: int,
     package_plan: MessagePackagePlan,
 ) -> PrescanPackage:
+    return build_prescan_package_from_plan(package_id, package_plan)
+
+
+def build_prescan_package_from_plan(
+    package_id: int,
+    package_plan: MessagePackagePlan,
+    failed_message_ids: Optional[Sequence[int]] = None,
+) -> PrescanPackage:
+    """Build a selectable package wrapper from a message package plan."""
+
     messages = [item.message for item in package_plan.items]
     message_ids = [message.id for message in messages]
     start_message_id = min(message_ids)
@@ -268,6 +278,7 @@ def _build_prescan_package(
         items=list(package_plan.items),
         package_plan=package_plan,
         messages=messages,
+        failed_message_ids=list(failed_message_ids or []),
     )
 
 

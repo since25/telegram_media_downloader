@@ -392,7 +392,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertEqual(previews[0].strategy, NamingStrategy.RECOMMENDED)
         self.assertEqual(
             previews[0].title,
-            "推荐C：频道/起始ID-标题/消息ID - 原文件名",
+            "推荐C：文件夹/文件名",
         )
 
     def test_build_package_naming_previews_and_preview_message(self):
@@ -465,7 +465,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("下一包起点预览：", preview_text)
         self.assertIn("126713 - 某某课程 第02章", preview_text)
         self.assertIn("不会纳入本次下载。", preview_text)
-        self.assertIn("推荐C：频道/起始ID-标题/消息ID - 原文件名", preview_text)
+        self.assertIn("推荐C：文件夹/文件名", preview_text)
         self.assertNotIn("A：标题/消息ID - 作者 - 原文件名", preview_text)
         self.assertNotIn("B：标题/消息ID - caption摘要 - 原文件名", preview_text)
         self.assertNotIn("D：频道/年月/标题/消息ID - caption摘要", preview_text)
@@ -476,6 +476,59 @@ class CommentWorkflowTestCase(unittest.TestCase):
             "私密频道/126711-某某课程 第01章/126711 - 001_bad_.mp4",
             preview_text,
         )
+
+    def test_format_package_preview_lists_following_packages(self):
+        from module.comment_workflow import (
+            build_recommended_package_naming_previews,
+            format_package_preview_message,
+            plan_message_package_sequence,
+        )
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=101,
+                media="video",
+                caption="课程 第02章",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=102,
+                media="video",
+                caption="课程 第03章",
+                video=MockVideo(file_name="03.mp4", mime_type="video/mp4"),
+            ),
+        ]
+        sequence_plan = plan_message_package_sequence(
+            messages,
+            start_message_id=100,
+            following_package_count=2,
+        )
+        previews = build_recommended_package_naming_previews(
+            sequence_plan.primary.items,
+            channel="私密频道",
+            start_message_id=100,
+            package_title=sequence_plan.primary.package_title,
+        )
+
+        preview_text = format_package_preview_message(
+            channel="私密频道",
+            start_message_id=100,
+            package_plan=sequence_plan.primary,
+            previews=previews,
+            upload_enabled=True,
+            delete_after_upload=True,
+            following_package_plans=sequence_plan.following,
+        )
+
+        self.assertIn("后续包预览（可一并下载，最多 2 个）：", preview_text)
+        self.assertIn("1. 101 - 101 - 课程 第02章", preview_text)
+        self.assertIn("2. 102 - 102 - 课程 第03章", preview_text)
 
     def test_format_package_preview_inherits_next_album_caption(self):
         from module.comment_workflow import (
@@ -593,8 +646,8 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertEqual(
             previews[0].examples,
             [
-                "私密频道/200-资源包/200 - message-200-video.mp4",
-                "私密频道/200-资源包/201 - message-201-photo.jpg",
+                "200-资源包/200 - message-200-video.mp4",
+                "200-资源包/201 - message-201-photo.jpg",
             ],
         )
 
@@ -1114,7 +1167,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
 
 
 class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
-    async def test_scan_message_package_stops_before_next_caption(self):
+    async def test_scan_message_package_scans_following_package_candidates(self):
         from media_downloader import scan_message_package
 
         messages = [
@@ -1196,7 +1249,20 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scan_result.failed_message_ids, [])
         self.assertEqual(scan_result.package_plan.next_package_message.id, 126714)
         self.assertEqual(scan_result.package_plan.summary.media_count, 3)
-        self.assertEqual(client.calls, [(-1001, [126711, 126712, 126713, 126714])])
+        following_plans = scan_result.following_package_plans or []
+        self.assertEqual(len(following_plans), 1)
+        self.assertEqual(
+            [item.message.id for item in following_plans[0].items],
+            [126714, 126715],
+        )
+        self.assertEqual(
+            client.calls,
+            [
+                (-1001, [126711, 126712, 126713, 126714]),
+                (-1001, [126715, 126716, 126717, 126718]),
+                (-1001, [126719, 126720]),
+            ],
+        )
 
     async def test_scan_comment_range_returns_comments_and_discussion_chat(self):
         from media_downloader import scan_comment_range
@@ -3053,6 +3119,97 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             else:
                 bot_module._bot.pending_package_workflows = old_pending
 
+    async def test_preview_package_workflow_offers_following_package_download(self):
+        from media_downloader import MessagePackageScanResult
+        from module import bot as bot_module
+        from module.comment_workflow import (
+            build_message_package_workflow_request,
+            plan_message_package_sequence,
+        )
+
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        source_entity = SimpleNamespace(
+            id=-1001298283297, username=None, title="Private Course"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                caption="课程 第01章",
+                media="video",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=126712,
+                caption="课程 第02章",
+                media="video",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            ),
+        ]
+
+        class FakeUserClient:
+            async def get_chat(self, chat_id):
+                return source_entity
+
+        class FakeBotClient:
+            def __init__(self):
+                self.sent_messages = []
+
+            async def send_message(self, chat_id, text, **kwargs):
+                self.sent_messages.append((chat_id, text, kwargs))
+
+        async def fake_scan_message_package(client, chat_id, start_message_id):
+            sequence_plan = plan_message_package_sequence(messages, start_message_id)
+            return MessagePackageScanResult(
+                chat_id,
+                [item.message for item in sequence_plan.primary.items],
+                sequence_plan.primary,
+                [],
+                sequence_plan.following,
+            )
+
+        old_client = bot_module._bot.client
+        old_app = bot_module._bot.app
+        old_pending = getattr(bot_module._bot, "pending_package_workflows", None)
+        bot_client = FakeBotClient()
+        try:
+            bot_module._bot.client = FakeUserClient()
+            bot_module._bot.app = SimpleNamespace(
+                cloud_drive_config=SimpleNamespace(
+                    enable_upload_file=True,
+                    after_upload_file_delete=True,
+                )
+            )
+            bot_module._bot.pending_package_workflows = {}
+            message = MockMessage(id=90, from_user=MockUser(id=123))
+
+            with patch(
+                "media_downloader.scan_message_package", new=fake_scan_message_package
+            ):
+                await bot_module.preview_package_workflow(bot_client, message, request)
+
+            pending = next(iter(bot_module._bot.pending_package_workflows.values()))
+            self.assertEqual(len(pending["following_package_plans"]), 1)
+            preview_text = bot_client.sent_messages[0][1]
+            self.assertIn("后续包预览（可一并下载，最多 1 个）：", preview_text)
+            self.assertIn("1. 126712 - 126712 - 课程 第02章", preview_text)
+            markup = bot_client.sent_messages[0][2]["reply_markup"]
+            self.assertEqual(
+                [[button.text for button in row] for row in markup.inline_keyboard],
+                [["开始下载", "下载本包+后续包"], ["取消"]],
+            )
+            self.assertTrue(
+                markup.inline_keyboard[0][1].callback_data.endswith(":with_following")
+            )
+        finally:
+            bot_module._bot.client = old_client
+            bot_module._bot.app = old_app
+            if old_pending is None:
+                delattr(bot_module._bot, "pending_package_workflows")
+            else:
+                bot_module._bot.pending_package_workflows = old_pending
+
     async def test_preview_uses_bounded_comment_probe_window_for_scan_end(self):
         from module import bot as bot_module
 
@@ -4208,6 +4365,154 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(
                 client.edits[0][2],
                 "已确认，开始按推荐C格式下载连续资源包。",
+            )
+        finally:
+            if old_pending is None:
+                delattr(bot_module._bot, "pending_package_workflows")
+            else:
+                bot_module._bot.pending_package_workflows = old_pending
+            bot_module._bot.app = old_app
+            bot_module._bot.bot = old_bot
+            bot_module._bot.client = old_user_client
+            bot_module._bot.task_node = old_task_node
+            bot_module._bot.task_id = old_task_id
+
+    async def test_package_confirm_callback_downloads_current_and_following_packages(
+        self,
+    ):
+        from module import bot as bot_module
+        from module.comment_workflow import (
+            build_message_package_workflow_request,
+            plan_message_package_sequence,
+        )
+
+        class FakeClient:
+            def __init__(self):
+                self.edits = []
+                self.sent_messages = []
+
+            async def edit_message_text(self, chat_id, message_id, text, **kwargs):
+                self.edits.append((chat_id, message_id, text, kwargs))
+
+            async def send_message(self, chat_id, text, **kwargs):
+                message = MockMessage(id=78, chat_id=chat_id, text=text)
+                self.sent_messages.append((chat_id, text, kwargs, message))
+                return message
+
+        class FakeLoop:
+            def __init__(self):
+                self.created = []
+
+            def create_task(self, coroutine):
+                self.created.append(coroutine)
+                return coroutine
+
+        token = "pkg123"
+        request = build_message_package_workflow_request(
+            "https://t.me/c/1298283297/126711"
+        )
+        messages = [
+            MockMessage(
+                id=126711,
+                caption="课程 第01章",
+                media="video",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=126712,
+                caption="课程 第02章",
+                media="video",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            ),
+        ]
+        sequence_plan = plan_message_package_sequence(messages, start_message_id=126711)
+        pending = {
+            "request": request,
+            "entity_id": -1001298283297,
+            "channel": "Private Course",
+            "package_title": sequence_plan.primary.package_title,
+            "messages": [item.message for item in sequence_plan.primary.items],
+            "failed_message_ids": [126713],
+            "source_message_id": 90,
+            "package_plan": sequence_plan.primary,
+            "package_media_items": {
+                item.message.id: item for item in sequence_plan.primary.items
+            },
+            "following_package_plans": sequence_plan.following,
+        }
+        recorded = {}
+
+        async def fake_download_prescan_packages(
+            packages, channel, node, selected_package_ids
+        ):
+            recorded["packages"] = packages
+            recorded["channel"] = channel
+            recorded["node"] = node
+            recorded["selected_package_ids"] = selected_package_ids
+
+        async def fake_download_prepared_messages(*args, **kwargs):
+            raise AssertionError("following callback should use batch package download")
+
+        active_nodes = []
+
+        def fake_add_active_task_node(node):
+            active_nodes.append(node)
+
+        client_for_node = object()
+        old_pending = getattr(bot_module._bot, "pending_package_workflows", None)
+        old_app = bot_module._bot.app
+        old_bot = bot_module._bot.bot
+        old_user_client = bot_module._bot.client
+        old_task_node = bot_module._bot.task_node
+        old_task_id = bot_module._bot.task_id
+        try:
+            fake_loop = FakeLoop()
+            bot_module._bot.pending_package_workflows = {token: pending}
+            bot_module._bot.app = SimpleNamespace(loop=fake_loop)
+            bot_module._bot.bot = object()
+            bot_module._bot.client = client_for_node
+            bot_module._bot.task_node = {}
+            bot_module._bot.task_id = 0
+            client = FakeClient()
+            query = SimpleNamespace(
+                data=f"pw:{token}:with_following",
+                message=MockMessage(id=11, from_user=MockUser(id=123)),
+                from_user=MockUser(id=123),
+            )
+
+            with patch(
+                "media_downloader.download_prescan_packages",
+                new=fake_download_prescan_packages,
+            ), patch(
+                "media_downloader.download_prepared_messages",
+                new=fake_download_prepared_messages,
+            ), patch(
+                "module.bot.add_active_task_node", new=fake_add_active_task_node
+            ):
+                handled = await bot_module.handle_package_workflow_callback(
+                    client, query
+                )
+                await fake_loop.created[0]
+
+            self.assertTrue(handled)
+            self.assertEqual(bot_module._bot.pending_package_workflows, {})
+            self.assertEqual(recorded["channel"], "Private Course")
+            self.assertEqual(
+                [package.start_message_id for package in recorded["packages"]],
+                [126711, 126712],
+            )
+            self.assertEqual(recorded["selected_package_ids"], {1, 2})
+            self.assertEqual(recorded["packages"][0].failed_message_ids, [126713])
+            self.assertEqual(recorded["packages"][1].failed_message_ids, [])
+            node = recorded["node"]
+            self.assertTrue(node.is_running)
+            self.assertEqual(node.chat_id, -1001298283297)
+            self.assertIs(node.client, client_for_node)
+            self.assertEqual(active_nodes, [node])
+            self.assertIn(node.task_id, bot_module._bot.task_node)
+            self.assertEqual(
+                client.edits[0][2],
+                "已确认，开始按推荐C格式串行下载本包+后续1个包。",
             )
         finally:
             if old_pending is None:

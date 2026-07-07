@@ -153,6 +153,20 @@ class MessagePackagePlan:
     scan_warning: Optional[str] = None
 
 
+@dataclass
+class MessagePackageSequencePlan:
+    """One primary package plus optional following package candidates."""
+
+    primary: MessagePackagePlan
+    following: List[MessagePackagePlan] = field(default_factory=list)
+
+    @property
+    def all_packages(self) -> List[MessagePackagePlan]:
+        """Return the primary package followed by later detected packages."""
+
+        return [self.primary, *self.following]
+
+
 def build_comment_workflow_request(text: str) -> Optional[CommentWorkflowRequest]:
     """Return a workflow request when text is a t.me post comment link."""
 
@@ -355,6 +369,54 @@ def plan_message_package(
         next_package_caption=next_package_caption,
         scan_warning=scan_warning,
     )
+
+
+def plan_message_package_sequence(
+    messages: Sequence[CommentLike],
+    start_message_id: int,
+    following_package_count: int = 3,
+    max_scan_count: int = 500,
+) -> MessagePackageSequencePlan:
+    """Plan a package and a small number of following package candidates."""
+
+    remaining_messages = sorted(
+        [
+            message
+            for message in messages
+            if message and hasattr(message, "id") and message.id >= start_message_id
+        ],
+        key=lambda message: message.id,
+    )
+    primary = plan_message_package(
+        remaining_messages,
+        start_message_id=start_message_id,
+        max_scan_count=max_scan_count,
+    )
+    following: List[MessagePackagePlan] = []
+    current_plan = primary
+    max_following = max(following_package_count, 0)
+
+    while len(following) < max_following and current_plan.next_package_message:
+        next_start_message_id = current_plan.next_package_message.id
+        next_remaining = [
+            message
+            for message in remaining_messages
+            if message.id >= next_start_message_id
+        ]
+        if not next_remaining:
+            break
+
+        next_plan = plan_message_package(
+            next_remaining,
+            start_message_id=next_start_message_id,
+            max_scan_count=max_scan_count,
+        )
+        if not next_plan.items:
+            break
+        following.append(next_plan)
+        current_plan = next_plan
+
+    return MessagePackageSequencePlan(primary=primary, following=following)
 
 
 def media_payload_for_message(message: CommentLike):
@@ -595,7 +657,6 @@ def build_package_name_for_strategy(
     """Build a relative display path for a package media item."""
 
     message = item.message
-    channel = clean_segment(context.channel, "channel", 40)
     title = clean_segment(
         context.package_title, f"message-{context.start_message_id}", 60
     )
@@ -611,14 +672,12 @@ def build_package_name_for_strategy(
     if context.strategy is NamingStrategy.CAPTION:
         return f"{title}/{message.id} - {caption_summary} - {original_file_name}"
     if context.strategy is NamingStrategy.MONTH_CAPTION:
+        channel = clean_segment(context.channel, "channel", 40)
         return (
             f"{channel}/{month_for_comment(message)}/{title}/"
             f"{message.id} - {caption_summary}.{extension}"
         )
-    return (
-        f"{channel}/{context.start_message_id}-{title}/"
-        f"{message.id} - {original_file_name}"
-    )
+    return f"{context.start_message_id}-{title}/{message.id} - {original_file_name}"
 
 
 def build_naming_previews(
@@ -671,7 +730,7 @@ def build_package_naming_previews(
 
     sample_items = list(items)[:sample_size]
     strategies = [
-        (NamingStrategy.RECOMMENDED, "推荐C：频道/起始ID-标题/消息ID - 原文件名"),
+        (NamingStrategy.RECOMMENDED, "推荐C：文件夹/文件名"),
         (NamingStrategy.AUTHOR, "A：标题/消息ID - 作者 - 原文件名"),
         (NamingStrategy.CAPTION, "B：标题/消息ID - caption摘要 - 原文件名"),
         (NamingStrategy.MONTH_CAPTION, "D：频道/年月/标题/消息ID - caption摘要"),
@@ -745,7 +804,7 @@ def build_recommended_package_naming_previews(
     return [
         NamingPreview(
             strategy=NamingStrategy.RECOMMENDED,
-            title="推荐C：频道/起始ID-标题/消息ID - 原文件名",
+            title="推荐C：文件夹/文件名",
             examples=[
                 build_package_name_for_strategy(item, context) for item in sample_items
             ],
@@ -869,6 +928,7 @@ def format_package_preview_message(
     previews: Sequence[NamingPreview],
     upload_enabled: bool,
     delete_after_upload: bool,
+    following_package_plans: Optional[Sequence[MessagePackagePlan]] = None,
 ) -> str:
     """Format package workflow preview text."""
 
@@ -910,6 +970,7 @@ def format_package_preview_message(
                 "不会纳入本次下载。",
             ]
         )
+    lines.extend(format_following_package_preview_lines(following_package_plans or []))
     lines.append("")
     lines.append("命名预览（仅显示上级文件夹 + 文件名）：")
     for preview in previews:
@@ -919,6 +980,24 @@ def format_package_preview_message(
         lines.append(title)
         lines.extend(_format_compact_preview_examples(preview.examples))
     return "\n".join(lines)
+
+
+def format_following_package_preview_lines(
+    package_plans: Sequence[MessagePackagePlan],
+) -> List[str]:
+    """Format compact preview lines for following package candidates."""
+
+    if not package_plans:
+        return []
+
+    lines = ["", f"后续包预览（可一并下载，最多 {len(package_plans)} 个）："]
+    for index, package_plan in enumerate(package_plans, start=1):
+        media_ids = [item.message.id for item in package_plan.items]
+        if not media_ids:
+            continue
+        range_text = f"{min(media_ids)} - {max(media_ids)}"
+        lines.append(f"{index}. {range_text} - {package_plan.package_title}")
+    return lines
 
 
 def _media_name(comment: CommentLike) -> str:
