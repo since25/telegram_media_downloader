@@ -489,19 +489,31 @@ class CommentWorkflowTestCase(unittest.TestCase):
                 id=100,
                 media="video",
                 caption="课程 第01章",
-                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+                video=MockVideo(
+                    file_name="01.mp4",
+                    mime_type="video/mp4",
+                    file_size=1 * 1024 * 1024,
+                ),
             ),
             MockMessage(
                 id=101,
                 media="video",
                 caption="课程 第02章",
-                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+                video=MockVideo(
+                    file_name="02.mp4",
+                    mime_type="video/mp4",
+                    file_size=2 * 1024 * 1024,
+                ),
             ),
             MockMessage(
                 id=102,
                 media="video",
                 caption="课程 第03章",
-                video=MockVideo(file_name="03.mp4", mime_type="video/mp4"),
+                video=MockVideo(
+                    file_name="03.mp4",
+                    mime_type="video/mp4",
+                    file_size=3 * 1024 * 1024,
+                ),
             ),
         ]
         sequence_plan = plan_message_package_sequence(
@@ -526,9 +538,17 @@ class CommentWorkflowTestCase(unittest.TestCase):
             following_package_plans=sequence_plan.following,
         )
 
-        self.assertIn("后续包预览（可一并下载，最多 2 个）：", preview_text)
-        self.assertIn("1. 101 - 101 - 课程 第02章", preview_text)
-        self.assertIn("2. 102 - 102 - 课程 第03章", preview_text)
+        self.assertIn("后续包预览（可选择一并下载，最多 2 个）：", preview_text)
+        self.assertIn("后续包合计预计大小：5.0MB", preview_text)
+        self.assertIn("本包+后续合计预计大小：6.0MB", preview_text)
+        self.assertIn(
+            "1. 101 - 101，1 个，预计大小：2.0MB - 课程 第02章",
+            preview_text,
+        )
+        self.assertIn(
+            "2. 102 - 102，1 个，预计大小：3.0MB - 课程 第03章",
+            preview_text,
+        )
 
     def test_format_package_preview_inherits_next_album_caption(self):
         from module.comment_workflow import (
@@ -3138,13 +3158,33 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 id=126711,
                 caption="课程 第01章",
                 media="video",
-                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+                video=MockVideo(
+                    file_name="01.mp4", mime_type="video/mp4", file_size=100
+                ),
             ),
             MockMessage(
                 id=126712,
                 caption="课程 第02章",
                 media="video",
-                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+                video=MockVideo(
+                    file_name="02.mp4", mime_type="video/mp4", file_size=200
+                ),
+            ),
+            MockMessage(
+                id=126713,
+                caption="课程 第03章",
+                media="video",
+                video=MockVideo(
+                    file_name="03.mp4", mime_type="video/mp4", file_size=300
+                ),
+            ),
+            MockMessage(
+                id=126714,
+                caption="课程 第04章",
+                media="video",
+                video=MockVideo(
+                    file_name="04.mp4", mime_type="video/mp4", file_size=400
+                ),
             ),
         ]
 
@@ -3190,17 +3230,29 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 await bot_module.preview_package_workflow(bot_client, message, request)
 
             pending = next(iter(bot_module._bot.pending_package_workflows.values()))
-            self.assertEqual(len(pending["following_package_plans"]), 1)
+            self.assertEqual(len(pending["following_package_plans"]), 3)
             preview_text = bot_client.sent_messages[0][1]
-            self.assertIn("后续包预览（可一并下载，最多 1 个）：", preview_text)
-            self.assertIn("1. 126712 - 126712 - 课程 第02章", preview_text)
+            self.assertIn("后续包预览（可选择一并下载，最多 3 个）：", preview_text)
+            self.assertIn("后续包合计预计大小：900B", preview_text)
+            self.assertIn("本包+后续合计预计大小：1000B", preview_text)
+            self.assertIn(
+                "1. 126712 - 126712，1 个，预计大小：200B - 课程 第02章",
+                preview_text,
+            )
             markup = bot_client.sent_messages[0][2]["reply_markup"]
             self.assertEqual(
                 [[button.text for button in row] for row in markup.inline_keyboard],
-                [["开始下载", "下载本包+后续包"], ["取消"]],
+                [["开始下载"], ["下载本包+后1包", "下载本包+后2包"], ["下载本包+后3包"], ["取消"]],
+            )
+            self.assertTrue(markup.inline_keyboard[0][0].callback_data.endswith(":C"))
+            self.assertTrue(
+                markup.inline_keyboard[1][0].callback_data.endswith(":with_following:1")
             )
             self.assertTrue(
-                markup.inline_keyboard[0][1].callback_data.endswith(":with_following")
+                markup.inline_keyboard[1][1].callback_data.endswith(":with_following:2")
+            )
+            self.assertTrue(
+                markup.inline_keyboard[2][0].callback_data.endswith(":with_following:3")
             )
         finally:
             bot_module._bot.client = old_client
@@ -4377,7 +4429,7 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.task_node = old_task_node
             bot_module._bot.task_id = old_task_id
 
-    async def test_package_confirm_callback_downloads_current_and_following_packages(
+    async def test_package_confirm_callback_downloads_current_and_selected_following_packages(
         self,
     ):
         from module import bot as bot_module
@@ -4423,6 +4475,12 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
                 caption="课程 第02章",
                 media="video",
                 video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=126713,
+                caption="课程 第03章",
+                media="video",
+                video=MockVideo(file_name="03.mp4", mime_type="video/mp4"),
             ),
         ]
         sequence_plan = plan_message_package_sequence(messages, start_message_id=126711)
@@ -4475,7 +4533,7 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.task_id = 0
             client = FakeClient()
             query = SimpleNamespace(
-                data=f"pw:{token}:with_following",
+                data=f"pw:{token}:with_following:1",
                 message=MockMessage(id=11, from_user=MockUser(id=123)),
                 from_user=MockUser(id=123),
             )

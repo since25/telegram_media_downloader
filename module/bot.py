@@ -1200,35 +1200,38 @@ async def preview_package_workflow(client, message, workflow_request):
             following_package_plans=following_package_plans,
         )
 
-        download_row = [
-            InlineKeyboardButton(
-                "开始下载",
-                callback_data=build_package_callback_data(
-                    token, NamingStrategy.RECOMMENDED
-                ),
-            )
-        ]
-        if following_package_plans:
-            download_row.append(
+        button_rows = [
+            [
                 InlineKeyboardButton(
-                    "下载本包+后续包",
-                    callback_data=(
-                        f"{PACKAGE_WORKFLOW_PREFIX}:{token}:"
-                        f"{PACKAGE_WITH_FOLLOWING_ACTION}"
+                    "开始下载",
+                    callback_data=build_package_callback_data(
+                        token, NamingStrategy.RECOMMENDED
                     ),
                 )
-            )
-        buttons = InlineKeyboardMarkup(
+            ]
+        ]
+        if following_package_plans:
+            following_buttons = [
+                InlineKeyboardButton(
+                    f"下载本包+后{count}包",
+                    callback_data=(
+                        f"{PACKAGE_WORKFLOW_PREFIX}:{token}:"
+                        f"{PACKAGE_WITH_FOLLOWING_ACTION}:{count}"
+                    ),
+                )
+                for count in range(1, len(following_package_plans) + 1)
+            ]
+            for offset in range(0, len(following_buttons), 2):
+                button_rows.append(following_buttons[offset : offset + 2])
+        button_rows.append(
             [
-                download_row,
-                [
-                    InlineKeyboardButton(
-                        "取消",
-                        callback_data=f"{PACKAGE_WORKFLOW_PREFIX}:{token}:cancel",
-                    )
-                ],
+                InlineKeyboardButton(
+                    "取消",
+                    callback_data=f"{PACKAGE_WORKFLOW_PREFIX}:{token}:cancel",
+                )
             ]
         )
+        buttons = InlineKeyboardMarkup(button_rows)
         await client.send_message(
             message.from_user.id,
             preview_text,
@@ -2445,10 +2448,24 @@ async def handle_package_workflow_callback(client, query):
         )
         return True
 
-    include_following = (
-        len(parts) == 3 and parts[2] == PACKAGE_WITH_FOLLOWING_ACTION and bool(parts[1])
-    )
-    if include_following:
+    following_count = None
+    if (
+        len(parts) == 4
+        and parts[0] == PACKAGE_WORKFLOW_PREFIX
+        and parts[2] == PACKAGE_WITH_FOLLOWING_ACTION
+        and parts[1]
+    ):
+        try:
+            following_count = int(parts[3])
+        except ValueError:
+            following_count = None
+        if following_count is None or following_count <= 0:
+            await client.edit_message_text(
+                chat_id,
+                message_id,
+                "无效的连续资源包下载操作。",
+            )
+            return True
         token = parts[1]
         strategy = NamingStrategy.RECOMMENDED
     else:
@@ -2481,10 +2498,18 @@ async def handle_package_workflow_callback(client, query):
 
     request = pending["request"]
     following_package_plans = list(pending.get("following_package_plans") or [])
-    if include_following and following_package_plans:
-        confirm_text = f"已确认，开始按推荐C格式串行下载本包+后续" f"{len(following_package_plans)}个包。"
+    selected_following_package_plans = []
+    if following_count is not None:
+        if following_count > len(following_package_plans):
+            await client.edit_message_text(
+                chat_id,
+                message_id,
+                "无效的连续资源包下载操作。",
+            )
+            return True
+        selected_following_package_plans = following_package_plans[:following_count]
+        confirm_text = f"已确认，开始按推荐C格式串行下载本包+后续" f"{following_count}个包。"
     else:
-        include_following = False
         confirm_text = "已确认，开始按推荐C格式下载连续资源包。"
     try:
         await client.edit_message_text(chat_id, message_id, confirm_text)
@@ -2512,11 +2537,11 @@ async def handle_package_workflow_callback(client, query):
     node.client = _bot.client
     node.is_running = True
 
-    if include_following:
+    if selected_following_package_plans:
         from media_downloader import download_prescan_packages
         from module.prescan_workflow import build_prescan_package_from_plan
 
-        package_plans = [pending["package_plan"], *following_package_plans]
+        package_plans = [pending["package_plan"], *selected_following_package_plans]
         packages = [
             build_prescan_package_from_plan(
                 package_id=index,

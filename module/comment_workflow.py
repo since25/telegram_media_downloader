@@ -488,6 +488,34 @@ def format_size_summary(summary: SizeSummary) -> str:
     return text
 
 
+def _combine_size_summaries(summaries: Sequence[SizeSummary]) -> SizeSummary:
+    """Combine size summaries without losing unknown-size counts."""
+
+    combined = SizeSummary()
+    for summary in summaries:
+        combined.known_total_size += summary.known_total_size
+        combined.unknown_size_count += summary.unknown_size_count
+        for item in summary.samples:
+            if len(combined.samples) >= 3:
+                break
+            combined.samples.append(item)
+        if summary.largest and (
+            combined.largest is None or summary.largest.size > combined.largest.size
+        ):
+            combined.largest = summary.largest
+    return combined
+
+
+def _format_total_size(label: str, summary: SizeSummary) -> str:
+    """Format a labelled total-size line for compact previews."""
+
+    size_text = format_size_summary(summary)
+    prefix = "预计大小："
+    if size_text.startswith(prefix):
+        size_text = size_text[len(prefix) :]
+    return f"{label}预计大小：{size_text}"
+
+
 def is_media_comment(comment: Optional[CommentLike]) -> bool:
     """Return True when a comment contains a supported media payload."""
 
@@ -970,7 +998,12 @@ def format_package_preview_message(
                 "不会纳入本次下载。",
             ]
         )
-    lines.extend(format_following_package_preview_lines(following_package_plans or []))
+    lines.extend(
+        format_following_package_preview_lines(
+            following_package_plans or [],
+            primary_package_plan=package_plan,
+        )
+    )
     lines.append("")
     lines.append("命名预览（仅显示上级文件夹 + 文件名）：")
     for preview in previews:
@@ -984,19 +1017,40 @@ def format_package_preview_message(
 
 def format_following_package_preview_lines(
     package_plans: Sequence[MessagePackagePlan],
+    primary_package_plan: Optional[MessagePackagePlan] = None,
 ) -> List[str]:
     """Format compact preview lines for following package candidates."""
 
     if not package_plans:
         return []
 
-    lines = ["", f"后续包预览（可一并下载，最多 {len(package_plans)} 个）："]
+    following_size_summary = _combine_size_summaries(
+        [package_plan.size_summary for package_plan in package_plans]
+    )
+    lines = [
+        "",
+        f"后续包预览（可选择一并下载，最多 {len(package_plans)} 个）：",
+        _format_total_size("后续包合计", following_size_summary),
+    ]
+    if primary_package_plan is not None:
+        total_size_summary = _combine_size_summaries(
+            [
+                primary_package_plan.size_summary,
+                *[package_plan.size_summary for package_plan in package_plans],
+            ]
+        )
+        lines.append(_format_total_size("本包+后续合计", total_size_summary))
     for index, package_plan in enumerate(package_plans, start=1):
         media_ids = [item.message.id for item in package_plan.items]
         if not media_ids:
             continue
         range_text = f"{min(media_ids)} - {max(media_ids)}"
-        lines.append(f"{index}. {range_text} - {package_plan.package_title}")
+        lines.append(
+            f"{index}. {range_text}，"
+            f"{package_plan.summary.media_count} 个，"
+            f"{format_size_summary(package_plan.size_summary)} - "
+            f"{package_plan.package_title}"
+        )
     return lines
 
 
