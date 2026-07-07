@@ -7,56 +7,220 @@
   <title>Telegram Media Downloader</title>
   <link href="static/layui/css/layui.css" rel="stylesheet">
   <link href="static/css/index.css" rel="stylesheet">
-  <style>
-    body {
-      padding: 6px 16px;
-    }
-  </style>
 </head>
 
 <body>
-  <div class="layui-tab" lay-filter="telegram_media_downloader">
-    <div class="header-title layui-tab-brief">
-      <ul class="layui-tab-title">
-        <li class="layui-this">Downloading</li>
-        <li>Downloaded</li>
-        <!-- <li>Config</li> -->
-      </ul>
-      <div class="stop-btn" id="download_state" data-value="{{ download_state }}" onclick="download_state_change(this)"> {{ download_state }} </div>
-    </div>
-    <div class="layui-tab-content" style="padding: 0;">
-      <div class="layui-tab-item layui-show">
-        <table class="layui-hide" id="download_list" lay-filter="download_list"></table>
+  <div class="app-shell">
+    <div class="layui-tab" lay-filter="telegram_media_downloader">
+      <div class="header-title layui-tab-brief">
+        <ul class="layui-tab-title">
+          <li class="layui-this">Downloading</li>
+          <li>Downloaded</li>
+          <li>Advanced Config</li>
+        </ul>
+        <div class="header-actions">
+          <button type="button" class="layui-btn layui-btn-primary layui-btn-sm" id="logout_btn">Logout</button>
+          <div class="stop-btn" id="download_state" data-value="{{ download_state }}" onclick="download_state_change(this)">
+            {{ download_state }}
+          </div>
+        </div>
       </div>
-      <div class="layui-tab-item">
-        <table class="layui-hide" id="already_download_list" lay-filter="already_download_list"></table>
+
+      <div class="layui-tab-content">
+        <div class="layui-tab-item layui-show">
+          <table class="layui-hide" id="download_list" lay-filter="download_list"></table>
+        </div>
+        <div class="layui-tab-item">
+          <table class="layui-hide" id="already_download_list" lay-filter="already_download_list"></table>
+        </div>
+        <div class="layui-tab-item">
+        <form class="layui-form config-form" action="" lay-filter="advanced_config_form">
+          <fieldset class="layui-elem-field">
+            <legend>Storage</legend>
+            <div class="layui-field-box">
+              <div class="layui-row layui-col-space16">
+                <div class="layui-col-md6">
+                  <label class="layui-form-label">Save path</label>
+                  <div class="layui-input-block">
+                    <input type="text" id="save_path" autocomplete="off" class="layui-input">
+                  </div>
+                </div>
+                <div class="layui-col-md3">
+                  <label class="layui-form-label">Date format</label>
+                  <div class="layui-input-block">
+                    <input type="text" id="date_format" autocomplete="off" class="layui-input">
+                  </div>
+                </div>
+                <div class="layui-col-md3">
+                  <label class="layui-form-label">Start timeout</label>
+                  <div class="layui-input-block">
+                    <input type="number" id="start_timeout" min="1" class="layui-input">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="layui-elem-field">
+            <legend>Concurrency</legend>
+            <div class="layui-field-box">
+              <div class="layui-row layui-col-space16">
+                <div class="layui-col-md3">
+                  <label class="layui-form-label">Workers</label>
+                  <div class="layui-input-block">
+                    <input type="number" id="max_download_task" min="1" max="32" class="layui-input">
+                  </div>
+                </div>
+                <div class="layui-col-md3">
+                  <label class="layui-form-label">TG streams</label>
+                  <div class="layui-input-block">
+                    <input type="number" id="max_concurrent_transmissions" min="1" max="200" class="layui-input">
+                  </div>
+                </div>
+                <div class="layui-col-md6 toggle-row">
+                  <input type="checkbox" id="drop_no_audio_video" lay-skin="switch" lay-text="Drop muted video|Keep muted video">
+                  <input type="checkbox" id="enable_download_txt" lay-skin="switch" lay-text="Text on|Text off">
+                  <input type="checkbox" id="hide_file_name" lay-skin="switch" lay-text="Hide name|Show name">
+                </div>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="layui-elem-field">
+            <legend>Media</legend>
+            <div class="layui-field-box">
+              <div class="config-checks" id="media_type_checks"></div>
+              <div class="layui-row layui-col-space16 format-row">
+                <div class="layui-col-md4">
+                  <label class="layui-form-label">Audio formats</label>
+                  <div class="layui-input-block">
+                    <input type="text" id="format_audio" autocomplete="off" class="layui-input">
+                  </div>
+                </div>
+                <div class="layui-col-md4">
+                  <label class="layui-form-label">Document formats</label>
+                  <div class="layui-input-block">
+                    <input type="text" id="format_document" autocomplete="off" class="layui-input">
+                  </div>
+                </div>
+                <div class="layui-col-md4">
+                  <label class="layui-form-label">Video formats</label>
+                  <div class="layui-input-block">
+                    <input type="text" id="format_video" autocomplete="off" class="layui-input">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="layui-elem-field">
+            <legend>Naming</legend>
+            <div class="layui-field-box">
+              <div class="layui-row layui-col-space16">
+                <div class="layui-col-md5">
+                  <div class="config-checks" id="file_path_prefix_checks"></div>
+                </div>
+                <div class="layui-col-md5">
+                  <div class="config-checks" id="file_name_prefix_checks"></div>
+                </div>
+                <div class="layui-col-md2">
+                  <label class="layui-form-label">Separator</label>
+                  <div class="layui-input-block">
+                    <input type="text" id="file_name_prefix_split" autocomplete="off" class="layui-input">
+                  </div>
+                </div>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="layui-elem-field">
+            <legend>Upload</legend>
+            <div class="layui-field-box">
+              <div class="layui-row layui-col-space16">
+                <div class="layui-col-md3">
+                  <label class="layui-form-label">Adapter</label>
+                  <div class="layui-input-block">
+                    <select id="upload_adapter">
+                      <option value="rclone">rclone</option>
+                      <option value="aligo">aligo</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="layui-col-md5">
+                  <label class="layui-form-label">Remote dir</label>
+                  <div class="layui-input-block">
+                    <input type="text" id="remote_dir" autocomplete="off" class="layui-input">
+                  </div>
+                </div>
+                <div class="layui-col-md4">
+                  <label class="layui-form-label">Rclone path</label>
+                  <div class="layui-input-block">
+                    <input type="text" id="rclone_path" autocomplete="off" class="layui-input">
+                  </div>
+                </div>
+              </div>
+              <div class="layui-row layui-col-space16 upload-switch-row">
+                <div class="layui-col-md12 toggle-row">
+                  <input type="checkbox" id="enable_upload_file" lay-skin="switch" lay-text="Upload on|Upload off">
+                  <input type="checkbox" id="before_upload_file_zip" lay-skin="switch" lay-text="Zip on|Zip off">
+                  <input type="checkbox" id="after_upload_file_delete" lay-skin="switch" lay-text="Delete local|Keep local">
+                  <input type="checkbox" id="after_upload_telegram_delete" lay-skin="switch" lay-text="Delete TG|Keep TG">
+                </div>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset class="layui-elem-field">
+            <legend>Chats</legend>
+            <div class="layui-field-box">
+              <div id="chat_settings" class="chat-settings"></div>
+            </div>
+          </fieldset>
+
+          <fieldset class="layui-elem-field">
+            <legend>Web</legend>
+            <div class="layui-field-box">
+              <div class="layui-row layui-col-space16">
+                <div class="layui-col-md5">
+                  <label class="layui-form-label">Host</label>
+                  <div class="layui-input-block">
+                    <input type="text" id="web_host" autocomplete="off" class="layui-input">
+                  </div>
+                </div>
+                <div class="layui-col-md3">
+                  <label class="layui-form-label">Port</label>
+                  <div class="layui-input-block">
+                    <input type="number" id="web_port" min="1" max="65535" class="layui-input">
+                  </div>
+                </div>
+                <div class="layui-col-md4 toggle-row">
+                  <input type="checkbox" id="enable_web" lay-skin="switch" lay-text="Web on|Web off">
+                </div>
+              </div>
+            </div>
+          </fieldset>
+
+          <div class="config-actions">
+            <button type="button" class="layui-btn" id="save_config_btn">Save</button>
+            <span id="config_save_status" class="config-save-status"></span>
+          </div>
+        </form>
+        </div>
       </div>
-      <!-- <div class="layui-tab-item">
-        <form class="layui-form" action="">
-        under development
-      </form>
-      </div> -->
     </div>
   </div>
 
   <div class="layui-footer">
     <div class="layui-row layui-col-space1">
-      <div class="layui-col-md2">
-        <p>Telegram Media Downloader V <b id="app_version" style="color: #009688;">undefined</b>
+      <div class="layui-col-md4">
+        <p>Telegram Media Downloader V <b id="app_version">undefined</b></p>
       </div>
-      <div class="layui-col-md7">
-      </div>
+      <div class="layui-col-md5"></div>
       <div class="layui-col-md3">
-        <div style="padding: 5px; float: right;">
-          <!-- <i class="layui-icon layui-icon-upload-circle" style="font-size: 16px; color: #1E9FFF; font-weight: 700;">
-            <i id="upload_speed_title" style="color: black;"> 0.00 B/s </i>
-          </i> -->
-
-          <i class="layui-icon layui-icon-download-circle"
-            style="font-size: 16px; color: #5FB878; font-weight: 700; margin-left: 15px;">
-            <i id="download_speed_title" style="color: black;"> 0.00 B/s </i>
+        <div class="speed-box">
+          <i class="layui-icon layui-icon-download-circle">
+            <i id="download_speed_title"> 0.00 B/s </i>
           </i>
-
         </div>
       </div>
     </div>
@@ -64,248 +228,332 @@
 
   <script src="static/layui/layui.js"></script>
   <script>
-
-    layui.use(['table', 'element'], function () {
+    layui.use(['table', 'element', 'form', 'layer'], function () {
       var table = layui.table;
       var element = layui.element;
+      var form = layui.form;
       var layer = layui.layer;
       var $ = layui.$;
-      var already_download_list_data = new Array()
-      var download_list_table_data = new Array()
+      var settingsCache = null;
+      var settingsLoaded = false;
+      var downloadListTimer = 0;
+      var downloadedListTimer = 0;
+      var statusTimer = 0;
+
+      function escapeHtml(value) {
+        return String(value == null ? '' : value)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function listText(value) {
+        return (value || []).join(', ');
+      }
+
+      function switchValue(id, value) {
+        $('#' + id).prop('checked', !!value);
+      }
+
+      function checkedValues(name) {
+        return $('input[name="' + name + '"]:checked').map(function () {
+          return this.value;
+        }).get();
+      }
+
+      function splitValues(value) {
+        return String(value || '').split(',').map(function (item) {
+          return item.trim();
+        }).filter(Boolean);
+      }
+
+      function renderChecks(container, name, options, selected, title) {
+        var selectedMap = {};
+        (selected || []).forEach(function (item) { selectedMap[item] = true; });
+        var html = title ? '<div class="check-title">' + escapeHtml(title) + '</div>' : '';
+        (options || []).forEach(function (item) {
+          html += '<input type="checkbox" name="' + name + '" value="' + escapeHtml(item) + '" title="' + escapeHtml(item) + '"' + (selectedMap[item] ? ' checked' : '') + '>';
+        });
+        $(container).html(html);
+      }
+
+      function renderChatSettings(chats) {
+        if (!chats || !chats.length) {
+          $('#chat_settings').html('<div class="empty-config">No chat config</div>');
+          return;
+        }
+        var html = '';
+        chats.forEach(function (chat, index) {
+          html += '<div class="chat-row" data-index="' + index + '">';
+          html += '<div class="chat-id">' + escapeHtml(chat.chat_id) + '</div>';
+          html += '<div><input type="number" class="layui-input chat-last-id" value="' + escapeHtml(chat.last_read_message_id || 0) + '"></div>';
+          html += '<div><input type="text" class="layui-input chat-filter" value="' + escapeHtml(chat.download_filter || '') + '"></div>';
+          html += '<div><input type="text" class="layui-input chat-upload" value="' + escapeHtml(chat.upload_telegram_chat_id || '') + '"></div>';
+          html += '</div>';
+        });
+        $('#chat_settings').html(
+          '<div class="chat-header"><span>Chat</span><span>Last read</span><span>Filter</span><span>Upload chat</span></div>' + html
+        );
+      }
+
+      function fillSettings(settings) {
+        settingsCache = settings;
+        $('#save_path').val(settings.save_path || '');
+        $('#date_format').val(settings.date_format || '');
+        $('#start_timeout').val(settings.start_timeout || 60);
+        $('#max_download_task').val(settings.max_download_task || 4);
+        $('#max_concurrent_transmissions').val(settings.max_concurrent_transmissions || 10);
+        $('#file_name_prefix_split').val(settings.file_name_prefix_split || '');
+        $('#format_audio').val(listText((settings.file_formats || {}).audio));
+        $('#format_document').val(listText((settings.file_formats || {}).document));
+        $('#format_video').val(listText((settings.file_formats || {}).video));
+        switchValue('drop_no_audio_video', settings.drop_no_audio_video);
+        switchValue('enable_download_txt', settings.enable_download_txt);
+        switchValue('hide_file_name', settings.hide_file_name);
+
+        renderChecks('#media_type_checks', 'media_types', settings.options.media_types, settings.media_types, 'Media types');
+        renderChecks('#file_path_prefix_checks', 'file_path_prefix', settings.options.file_path_prefix, settings.file_path_prefix, 'Folder parts');
+        renderChecks('#file_name_prefix_checks', 'file_name_prefix', settings.options.file_name_prefix, settings.file_name_prefix, 'Filename parts');
+
+        var upload = settings.upload_drive || {};
+        $('#upload_adapter').val(upload.upload_adapter || 'rclone');
+        $('#remote_dir').val(upload.remote_dir || '');
+        $('#rclone_path').val(upload.rclone_path || '');
+        switchValue('enable_upload_file', upload.enable_upload_file);
+        switchValue('before_upload_file_zip', upload.before_upload_file_zip);
+        switchValue('after_upload_file_delete', upload.after_upload_file_delete);
+        switchValue('after_upload_telegram_delete', settings.after_upload_telegram_delete);
+
+        var web = settings.web || {};
+        $('#web_host').val(web.web_host || '0.0.0.0');
+        $('#web_port').val(web.web_port || 5000);
+        switchValue('enable_web', web.enable_web);
+        renderChatSettings(settings.chats || []);
+        form.render();
+      }
+
+      function loadSettings() {
+        return $.ajax({
+          url: 'api/settings',
+          type: 'get',
+          dataType: 'json',
+          success: function (settings) {
+            settingsLoaded = true;
+            fillSettings(settings);
+          }
+        });
+      }
+
+      function readChatSettings() {
+        var chats = [];
+        $('#chat_settings .chat-row').each(function () {
+          var index = Number(this.dataset.index);
+          var source = (settingsCache.chats || [])[index] || {};
+          chats.push({
+            chat_id: source.chat_id,
+            last_read_message_id: Number($(this).find('.chat-last-id').val() || 0),
+            download_filter: $(this).find('.chat-filter').val() || '',
+            upload_telegram_chat_id: $(this).find('.chat-upload').val() || ''
+          });
+        });
+        return chats;
+      }
+
+      function settingsPayload() {
+        return {
+          save_path: $('#save_path').val(),
+          media_types: checkedValues('media_types'),
+          file_formats: {
+            audio: splitValues($('#format_audio').val()),
+            document: splitValues($('#format_document').val()),
+            video: splitValues($('#format_video').val())
+          },
+          file_path_prefix: checkedValues('file_path_prefix'),
+          file_name_prefix: checkedValues('file_name_prefix'),
+          file_name_prefix_split: $('#file_name_prefix_split').val(),
+          max_download_task: Number($('#max_download_task').val() || 4),
+          max_concurrent_transmissions: Number($('#max_concurrent_transmissions').val() || 10),
+          start_timeout: Number($('#start_timeout').val() || 60),
+          date_format: $('#date_format').val(),
+          hide_file_name: $('#hide_file_name').prop('checked'),
+          drop_no_audio_video: $('#drop_no_audio_video').prop('checked'),
+          enable_download_txt: $('#enable_download_txt').prop('checked'),
+          after_upload_telegram_delete: $('#after_upload_telegram_delete').prop('checked'),
+          upload_drive: {
+            enable_upload_file: $('#enable_upload_file').prop('checked'),
+            upload_adapter: $('#upload_adapter').val(),
+            rclone_path: $('#rclone_path').val(),
+            remote_dir: $('#remote_dir').val(),
+            before_upload_file_zip: $('#before_upload_file_zip').prop('checked'),
+            after_upload_file_delete: $('#after_upload_file_delete').prop('checked')
+          },
+          web: {
+            enable_web: $('#enable_web').prop('checked'),
+            web_host: $('#web_host').val(),
+            web_port: Number($('#web_port').val() || 5000)
+          },
+          chats: readChatSettings()
+        };
+      }
+
+      function saveSettings() {
+        $('#config_save_status').text('Saving...');
+        $.ajax({
+          url: 'api/settings',
+          type: 'post',
+          data: JSON.stringify(settingsPayload()),
+          contentType: 'application/json',
+          dataType: 'json',
+          success: function (response) {
+            fillSettings(response.settings);
+            var text = response.restart_required ? 'Saved. Restart required for: ' + response.restart_fields.join(', ') : 'Saved.';
+            $('#config_save_status').text(text);
+            layer.msg(text);
+          },
+          error: function () {
+            $('#config_save_status').text('Save failed.');
+            layer.msg('Save failed.');
+          }
+        });
+      }
 
       $.ajax({
-        url: "get_app_version"
-        , type: "get"
-        , async: false
-        , dataType: "text"
-        , success: function (result) {
-          $("#app_version").html(result)
+        url: 'get_app_version',
+        type: 'get',
+        dataType: 'text',
+        success: function (result) {
+          $('#app_version').html(result);
         }
       });
 
-      download_state_change = function(e) {
+      window.download_state_change = function (e) {
         $.ajax({
-        url: "set_download_state?state=" + e.dataset.value
-        , type: "post"
-        , async: false
-        , dataType: "text"
-        , success: function (result) {
-          $("#download_state").html(result)
-          e.dataset.value=result
-        }
-      });
-    }
-
-      tableIns = table.render({
-        elem: '#download_list'
-        , data: download_list_table_data
-        , title: 'download_list'
-        , height: 'full-160'
-        , limit: 10000
-        , cols: [[
-          { field: 'chat', title: 'chat', width: 100 },
-          { field: 'id', title: 'id', width: 100 }
-          , { field: 'filename', title: 'file name', align: 'center' }
-          , { field: 'total_size', title: 'total byte', align: 'center' }
-          , {
-            field: 'download_progress', title: 'download progress', align: 'center', templet: function (d) {
-              var ys = '';
-              if (30 < d.download_progress && d.download_progress < 100) {
-                ys = 'layui-bg-blue'
-              } else if (0 < d.download_progress && d.download_progress <= 30) {
-                ys = 'layui-bg-red'
-              }
-              else if (100 == d.download_progress) {
-                ys = 'layui-bg-green'
-              }
-              return '<div class="layui-progress layui-progress-big" lay-showpercent="true"  lay-filter="down-' + d.id + '"><div class="layui-progress-bar ' + ys + '" lay-percent="' + d.download_progress + '%"></div></div>'
-            }
+          url: 'set_download_state?state=' + e.dataset.value,
+          type: 'post',
+          dataType: 'text',
+          success: function (result) {
+            $('#download_state').html(result);
+            e.dataset.value = result;
           }
-          , { field: 'download_speed', title: 'download speed', align: 'center' }
-        ]]
-        , done: function (res, currentCount) {
-          element.render()
-        }
+        });
+      };
+
+      $('#logout_btn').on('click', function () {
+        $.ajax({
+          url: 'logout',
+          type: 'post',
+          success: function () {
+            window.location.href = 'login';
+          }
+        });
+      });
+
+      $('#save_config_btn').on('click', saveSettings);
+
+      table.render({
+        elem: '#download_list',
+        id: 'download_list_table',
+        data: [],
+        title: 'download_list',
+        height: 'full-174',
+        limit: 10000,
+        cols: [[
+          { field: 'chat', title: 'chat', width: 140 },
+          { field: 'id', title: 'id', width: 100 },
+          { field: 'filename', title: 'file name', align: 'center' },
+          { field: 'total_size', title: 'total byte', align: 'center', width: 130 },
+          {
+            field: 'download_progress', title: 'download progress', align: 'center', templet: function (d) {
+              var progress = Number(d.download_progress || 0);
+              var color = progress >= 100 ? 'layui-bg-green' : (progress > 30 ? 'layui-bg-blue' : 'layui-bg-red');
+              return '<div class="layui-progress layui-progress-big" lay-showpercent="true"><div class="layui-progress-bar ' + color + '" lay-percent="' + progress + '%"></div></div>';
+            }
+          },
+          { field: 'download_speed', title: 'download speed', align: 'center', width: 150 }
+        ]],
+        done: function () { element.render(); }
       });
 
       table.render({
-        elem: '#already_download_list'
-        , data: already_download_list_data
-        , title: 'already_download_list'
-        , height: 'full-160'
-        , limit: 10000
-        , cols: [[
-
-          { field: 'id', title: 'id', width: 100 }
-          , { field: 'filename', title: 'file name', align: 'center' }
-          , { field: 'total_size', title: 'total size', align: 'center' }
-          , { field: 'save_path', title: 'save path', align: 'center' }
-        ]], done: function (res, currentCount) {
-          element.render()
-        }
+        elem: '#already_download_list',
+        id: 'already_download_list_table',
+        data: [],
+        title: 'already_download_list',
+        height: 'full-174',
+        limit: 10000,
+        cols: [[
+          { field: 'chat', title: 'chat', width: 140 },
+          { field: 'id', title: 'id', width: 100 },
+          { field: 'filename', title: 'file name', align: 'center' },
+          { field: 'total_size', title: 'total size', align: 'center', width: 130 },
+          { field: 'save_path', title: 'save path', align: 'center' }
+        ]],
+        done: function () { element.render(); }
       });
 
-      function update_download_list() {
+      function updateDownloadList() {
         $.ajax({
-          url: "get_download_list?already_down=false"
-          , type: "get"
-          , async: false
-          , dataType: "json"
-          , success: function (result) {
-            // first remove finish and update
-            for (var j = 0, len2 = download_list_table_data.length; j < len2; j++) {
-              find_iter = false
-              for (var i = 0, len = result.length; i < len; i++) {
-                if (result[i].chat == download_list_table_data[j].chat && result[i].id == download_list_table_data[j].id) {
-                  download_list_table_data[j].download_progress = result[i].download_progress
-                  var progress = download_list_table_data[j].download_progress
-                  element.progress('down-' + result[i].chat + '-' + result[i].id, progress + '%');
-
-                  var download_speed_obj = $('div[lay-filter="down_speed-' + result[i].chat + '-' + result[i].id + '"]')
-                  download_speed_obj.html(result[i].download_speed)
-
-                  if (progress == 100) {
-                    var device_obj = $('div[lay-filter="down-' + result[i].chat + '-' + result[i].id + '"] div')
-                    device_obj.removeClass("layui-bg-blue")
-                    device_obj.addClass("layui-bg-green")
-                    obj = $('div[lay-id="download_list"]  tr[data-index="' + result[i].chat + '-' + result[i].id + '"]')
-                    obj.remove()
-                  }
-                  find_iter = true
-                  break
-                }
-              }
-
-            }
-
-            // new task
-            for (var i = 0, len = result.length; i < len; i++) {
-              find_iter = false
-              for (var j = 0, len2 = download_list_table_data.length; j < len2; j++) {
-                if (result[i].chat == download_list_table_data[j].chat && result[i].id == download_list_table_data[j].id) {
-                  find_iter = true
-                  break
-                }
-              }
-
-              if (find_iter || result[i].download_progress == 100) {
-                continue;
-              }
-              // not found
-              obj = $('div[lay-id="download_list"]  .layui-table-body .layui-table tbody')
-              var tr = ' <tr data-index="' + result[i].chat + '-' + result[i].id + '">' +
-                '<td data-field="id" data-key="1-0-0" class=""><div class="layui-table-cell laytable-cell-1-0-0">' + result[i].chat + '</div></td>' +
-                '<td data-field="id" data-key="1-0-1" class=""><div class="layui-table-cell laytable-cell-1-0-1">' + result[i].id + '</div></td>' +
-                '<td data-field="filename" data-key="1-0-2" class=""><div class="layui-table-cell laytable-cell-1-0-2" align="center">' + result[i].filename + '</div></td>' +
-                '<td data-field="total_size" data-key="1-0-3" class=""><div class="layui-table-cell laytable-cell-1-0-3" align="center">' + result[i].total_size + '</div></td>' +
-                '<td data-field="download_progress" data-key="1-0-4" data-content="' + result[i].download_progress + '" class=""><div class="layui-table-cell laytable-cell-1-0-4" align="center"><div class="layui-progress layui-progress-big" lay-showpercent="true" lay-filter="down-' + result[i].chat + '-' + result[i].id + '"><div class="layui-progress-bar layui-bg-blue" lay-percent="' + result[i].download_progress + '%" style="width: ' + result[i].download_progress + '%;"><span class="layui-progress-text">' + result[i].download_progress + '%</span></div></div></div></td>' +
-                '<td data-field="download_speed" data-key="1-0-5" class=""><div class="layui-table-cell laytable-cell-1-0-5" align="center"lay-filter="down_speed-' + result[i].chat + '-' + result[i].id + '">' + result[i].download_speed + '</div></td>' +
-                "  </tr>";
-              obj.append(tr)
-              download_list_table_data.push(result[i])
-
-              if (download_list_table_data.length == 1) {
-                $(".layui-none").remove()
-              }
-
-              element.render()
-
-            }
-
-            element.render()
+          url: 'get_download_list?already_down=false',
+          type: 'get',
+          dataType: 'json',
+          success: function (result) {
+            table.reload('download_list_table', {
+              data: result.filter(function (item) {
+                return Number(item.download_progress) < 100;
+              })
+            });
           }
         });
+      }
 
-      };
-
-
-      function update_download_status() {
+      function updateDownloadedList() {
         $.ajax({
-          url: "get_download_status"
-          , type: "get"
-          , async: false
-          , dataType: "json"
-          , success: function (result) {
-            $("#download_speed_title").html(result.download_speed)
+          url: 'get_download_list?already_down=true',
+          type: 'get',
+          dataType: 'json',
+          success: function (result) {
+            table.reload('already_download_list_table', { data: result });
           }
         });
+      }
 
-      };
-
-
-      var update_download_list_int = self.setInterval(update_download_list, 1000);
-      var update_download_status_int = self.setInterval(update_download_status, 1000);
-      var update_already_download_list_int = 0;
-
-
-      function update_already_download_list() {
+      function updateDownloadStatus() {
         $.ajax({
-          url: "get_download_list?already_down=true"
-          , type: "get"
-          , async: false
-          , dataType: "json"
-          , success: function (result) {
-            // if not exist then add
-            for (var i = 0, len = result.length; i < len; i++) {
-              if (result[i].download_progress != 100) {
-                continue
-              }
-
-              find_iter = false
-
-              for (var j = 0, len2 = already_download_list_data.length; j < len2; j++) {
-                if (result[i].chat == download_list_table_data[i].chat && result[i].id == already_download_list_data[j].id) {
-                  find_iter = true
-                  break
-                }
-              }
-
-              if (find_iter) {
-                continue;
-              }
-              // not found
-              obj = $('div[lay-id="already_download_list"]  .layui-table-body .layui-table tbody')
-              var tr = ' <tr data-index="' + result[i].chat + '-' + result[i].id + '">' +
-                '<td data-field="id" data-key="2-0-0" class=""><div class="layui-table-cell laytable-cell-2-0-0">' + result[i].id + '</div></td>' +
-                '<td data-field="filename" data-key="2-0-1" class=""><div class="layui-table-cell laytable-cell-2-0-1" align="center">' + result[i].filename + '</div></td>' +
-                '<td data-field="total_size" data-key="2-0-2" class=""><div class="layui-table-cell laytable-cell-2-0-2" align="center">' + result[i].total_size + '</div></td>' +
-                '<td data-field="save_path" data-key="2-0-3" class=""><div class="layui-table-cell laytable-cell-2-0-3" align="center">' + result[i].save_path + '</div></td>' +
-                "  </tr>";
-              obj.append(tr)
-
-              already_download_list_data.push(result[i])
-
-              if (already_download_list_data.length == 1) {
-                $(".layui-none").remove()
-              }
-              element.render()
-            }
-
-            element.render()
+          url: 'get_download_status',
+          type: 'get',
+          dataType: 'json',
+          success: function (result) {
+            $('#download_speed_title').html(result.download_speed);
           }
         });
+      }
 
-      };
+      function setActiveTimers(tabIndex) {
+        clearInterval(downloadListTimer);
+        clearInterval(downloadedListTimer);
+        if (tabIndex === 0) {
+          updateDownloadList();
+          downloadListTimer = self.setInterval(updateDownloadList, 1000);
+        }
+        if (tabIndex === 1) {
+          updateDownloadedList();
+          downloadedListTimer = self.setInterval(updateDownloadedList, 1000);
+        }
+        if (tabIndex === 2 && !settingsLoaded) {
+          loadSettings();
+        }
+      }
 
       element.on('tab(telegram_media_downloader)', function (data) {
-        if (data.index != 0) {
-          clearInterval(update_download_list_int);
-        }
-
-        if (data.index == 0) {
-          update_download_list_int = self.setInterval(update_download_list, 1000);
-        }
-
-        if (data.index != 1) {
-          clearInterval(update_already_download_list_int);
-        }
-
-        if (data.index == 1) {
-          update_already_download_list_int = self.setInterval(update_already_download_list, 1000);
-        }
-
+        setActiveTimers(data.index);
       });
 
+      updateDownloadList();
+      updateDownloadStatus();
+      downloadListTimer = self.setInterval(updateDownloadList, 1000);
+      statusTimer = self.setInterval(updateDownloadStatus, 1000);
     });
   </script>
 </body>

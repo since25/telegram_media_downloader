@@ -1,9 +1,28 @@
+body {
+  padding: 6px 16px 48px;
+  background: #f7f8fa;
+}
+
+.app-shell {
+  min-height: calc(100vh - 70px);
+}
+
 .header-title {
   display: flex;
   justify-content: space-between;
   align-items: center;
   width: 100%;
+  gap: 12px;
+  margin-bottom: 8px;
 }
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .header-title .stop-btn {
   padding: 8px;
   border: 1px solid #009688;
@@ -11,6 +30,165 @@
   font-size: 16px;
   color: #009688;
   cursor: pointer;
+  min-width: 72px;
+  text-align: center;
+  background: #fff;
+}
+
+.layui-tab-content {
+  padding: 0;
+}
+
+.config-form {
+  padding: 6px 0 24px;
+}
+
+.config-form .layui-elem-field {
+  margin-bottom: 14px;
+  border-color: #e3e6eb;
+  background: #fff;
+}
+
+.config-form .layui-form-label {
+  width: 112px;
+  padding-left: 0;
+  color: #4b5563;
+}
+
+.config-form .layui-input-block {
+  margin-left: 124px;
+}
+
+.toggle-row {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.config-checks {
+  min-height: 38px;
+}
+
+.check-title {
+  margin-bottom: 8px;
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.format-row,
+.upload-switch-row {
+  margin-top: 12px;
+}
+
+.chat-settings {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.chat-header,
+.chat-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) 130px minmax(260px, 2fr) minmax(160px, 1fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 760px;
+}
+
+.chat-header {
+  padding: 0 0 8px;
+  color: #4b5563;
+  font-weight: 600;
+}
+
+.chat-row {
+  padding: 8px 0;
+  border-top: 1px solid #eef0f4;
+}
+
+.chat-id {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.config-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0 18px;
+}
+
+.config-save-status {
+  color: #4b5563;
+}
+
+.empty-config {
+  color: #6b7280;
+}
+
+.layui-footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 8px 16px;
+  background: #fff;
+  border-top: 1px solid #e5e7eb;
+}
+
+#app_version {
+  color: #009688;
+}
+
+.speed-box {
+  padding: 5px;
+  float: right;
+}
+
+.speed-box .layui-icon {
+  font-size: 16px;
+  color: #5fb878;
+  font-weight: 700;
+  margin-left: 15px;
+}
+
+.speed-box i i {
+  color: #111827;
+}
+
+@media (max-width: 760px) {
+  body {
+    padding: 6px 8px 54px;
+  }
+
+  .header-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .config-form .layui-form-label {
+    width: auto;
+    float: none;
+    display: block;
+    padding: 8px 0;
+    text-align: left;
+  }
+
+  .config-form .layui-input-block {
+    margin-left: 0;
+  }
+
+  .layui-footer .layui-col-md4,
+  .layui-footer .layui-col-md3 {
+    width: 50%;
+    float: left;
+  }
 }
 
 /*# sourceMappingURL=index.css.map */

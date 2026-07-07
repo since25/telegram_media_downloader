@@ -436,6 +436,7 @@ class Application:
         self.after_upload_telegram_delete: bool = True
         self.web_login_secret: str = ""
         self.debug_web: bool = False
+        self.enable_web: bool = False
         self.log_level: str = "INFO"
         self.start_timeout: int = 60
         self.allowed_user_ids: yaml.comments.CommentedSeq = yaml.comments.CommentedSeq(
@@ -493,7 +494,7 @@ class Application:
 
         if _config.get("upload_drive"):
             upload_drive_config = _config["upload_drive"]
-            if upload_drive_config.get("enable_upload_file"):
+            if "enable_upload_file" in upload_drive_config:
                 self.cloud_drive_config.enable_upload_file = upload_drive_config[
                     "enable_upload_file"
                 ]
@@ -504,12 +505,12 @@ class Application:
             if upload_drive_config.get("remote_dir"):
                 self.cloud_drive_config.remote_dir = upload_drive_config["remote_dir"]
 
-            if upload_drive_config.get("before_upload_file_zip"):
+            if "before_upload_file_zip" in upload_drive_config:
                 self.cloud_drive_config.before_upload_file_zip = upload_drive_config[
                     "before_upload_file_zip"
                 ]
 
-            if upload_drive_config.get("after_upload_file_delete"):
+            if "after_upload_file_delete" in upload_drive_config:
                 self.cloud_drive_config.after_upload_file_delete = upload_drive_config[
                     "after_upload_file_delete"
                 ]
@@ -553,6 +554,7 @@ class Application:
             _config.get("web_login_secret", self.web_login_secret)
         )
         self.debug_web = _config.get("debug_web", self.debug_web)
+        self.enable_web = _config.get("enable_web", self.enable_web)
         self.log_level = _config.get("log_level", self.log_level)
 
         self.start_timeout = get_config(
