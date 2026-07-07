@@ -45,6 +45,10 @@ from module.comment_workflow import (
     parse_package_callback_data,
     summarize_comments,
 )
+from module.download_stat import add_active_task_node, remove_active_task_node
+from module.filter import Filter
+from module.get_chat_history_v2 import get_chat_history_v2
+from module.language import Language, _t
 from module.prescan_workflow import (
     PRESCAN_WORKFLOW_PREFIX,
     build_prescan_callback_data,
@@ -52,9 +56,6 @@ from module.prescan_workflow import (
     parse_prescan_callback_data,
     summarize_prescan_progress,
 )
-from module.filter import Filter
-from module.get_chat_history_v2 import get_chat_history_v2
-from module.language import Language, _t
 from module.pyrogram_extension import (
     check_user_permission,
     parse_link,
@@ -65,7 +66,6 @@ from module.pyrogram_extension import (
     set_meta_data,
     upload_telegram_chat_message,
 )
-from module.download_stat import add_active_task_node, remove_active_task_node
 from utils.format import replace_date_time, validate_title
 from utils.meta_data import MetaData
 
@@ -336,7 +336,7 @@ class DownloadBot:
                 & pyrogram.filters.user(self.allowed_user_ids),
             )
         )
-        
+
         # 添加重试失败任务的命令
         self.bot.add_handler(
             MessageHandler(
@@ -621,11 +621,12 @@ async def direct_download(
     )
 
     node.client = client
-    
+
     # 获取消息名称作为标签（用于单条消息下载）
     try:
         if download_message:
             from utils.format import validate_title
+
             file_name_tag = None
             # 优先使用消息文本
             if download_message.text:
@@ -635,7 +636,7 @@ async def direct_download(
             elif download_message.caption:
                 file_name_tag = validate_title(download_message.caption[:30])
                 logger.info(f"从消息caption获取标签: {file_name_tag}")
-            
+
             if file_name_tag:
                 node.file_name_tag = file_name_tag
                 logger.info(f"设置单条消息下载的文件名标签: {file_name_tag}")
@@ -689,10 +690,7 @@ async def start_prescan_mode(client: pyrogram.Client, message: pyrogram.types.Me
     }
     await client.send_message(
         user_id,
-        (
-            "已进入预扫模式，请发送起始频道消息链接。\n"
-            "例如：https://t.me/c/1446289027/156439"
-        ),
+        ("已进入预扫模式，请发送起始频道消息链接。\n" "例如：https://t.me/c/1446289027/156439"),
         reply_to_message_id=message.id,
     )
 
@@ -726,9 +724,7 @@ async def _handle_prescan_link_message(
     return True
 
 
-async def handle_prescan_text(
-    client: pyrogram.Client, message: pyrogram.types.Message
-):
+async def handle_prescan_text(client: pyrogram.Client, message: pyrogram.types.Message):
     """Handle general text while a user is awaiting a prescan link."""
 
     await _handle_prescan_link_message(client, message)
@@ -785,14 +781,19 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
 
     # 解析链接信息，检查是否是带comment的链接
     from utils.format import extract_info_from_link
+
     link_info = extract_info_from_link(text[0])
-    
-    logger.info(f"download_from_link: 解析链接 - url={text[0]}, link_info.comment_id={link_info.comment_id}, link_info.post_id={link_info.post_id}")
-    
+
+    logger.info(
+        f"download_from_link: 解析链接 - url={text[0]}, link_info.comment_id={link_info.comment_id}, link_info.post_id={link_info.post_id}"
+    )
+
     chat_id, message_id, _ = await parse_link(_bot.client, text[0])
-    
-    logger.info(f"download_from_link: parse_link结果 - chat_id={chat_id}, message_id={message_id}")
-    
+
+    logger.info(
+        f"download_from_link: parse_link结果 - chat_id={chat_id}, message_id={message_id}"
+    )
+
     # 如果是带comment的链接，需要获取原始消息（post_id）的名称
     base_message_id = None
     if link_info.comment_id is not None or "comment=" in text[0]:
@@ -805,32 +806,52 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
                 if len(parts) >= 3:
                     try:
                         base_message_id = int(parts[-1])
-                        logger.info(f"download_from_link: 从URL路径提取base_message_id: {base_message_id}")
+                        logger.info(
+                            f"download_from_link: 从URL路径提取base_message_id: {base_message_id}"
+                        )
                     except ValueError:
-                        logger.warning(f"download_from_link: 无法从URL路径提取base_message_id: {parts}")
+                        logger.warning(
+                            f"download_from_link: 无法从URL路径提取base_message_id: {parts}"
+                        )
                         pass
-        
-        logger.info(f"download_from_link: 检测到comment链接 - base_message_id={base_message_id}, comment_id={link_info.comment_id}")
+
+        logger.info(
+            f"download_from_link: 检测到comment链接 - base_message_id={base_message_id}, comment_id={link_info.comment_id}"
+        )
 
     entity = None
     if chat_id:
         entity = await _bot.client.get_chat(chat_id)
     if entity:
         # 如果是带comment的链接，下载评论；否则下载单条消息
-        if base_message_id and (link_info.comment_id is not None or "comment=" in text[0]):
-            logger.info(f"download_from_link: 进入comment链接处理分支 - base_message_id={base_message_id}, comment_id={link_info.comment_id}")
+        if base_message_id and (
+            link_info.comment_id is not None or "comment=" in text[0]
+        ):
+            logger.info(
+                f"download_from_link: 进入comment链接处理分支 - base_message_id={base_message_id}, comment_id={link_info.comment_id}"
+            )
             # 这是带comment的链接，应该通过download_from_bot处理
             # 但为了兼容，我们也可以在这里处理单条评论下载
             if link_info.comment_id is not None:
-                logger.info(f"download_from_link: 处理单条评论下载 - comment_id={link_info.comment_id}, base_message_id={base_message_id}")
+                logger.info(
+                    f"download_from_link: 处理单条评论下载 - comment_id={link_info.comment_id}, base_message_id={base_message_id}"
+                )
                 # 单条评论下载：获取原始消息名称作为标签
                 try:
-                    logger.info(f"download_from_link: 开始获取原始消息 - chat_id={entity.id}, base_message_id={base_message_id}")
-                    base_message = await _bot.client.get_messages(entity.id, base_message_id)
-                    logger.info(f"download_from_link: 获取原始消息结果 - base_message={base_message is not None}, has_text={base_message.text if base_message else False}, has_caption={base_message.caption if base_message else False}")
+                    logger.info(
+                        f"download_from_link: 开始获取原始消息 - chat_id={entity.id}, base_message_id={base_message_id}"
+                    )
+                    base_message = await _bot.client.get_messages(
+                        entity.id, base_message_id
+                    )
+                    logger.info(
+                        f"download_from_link: 获取原始消息结果 - base_message={base_message is not None}, has_text={base_message.text if base_message else False}, has_caption={base_message.caption if base_message else False}"
+                    )
                     if base_message:
                         # 获取评论消息
-                        discussion_message = await _bot.client.get_discussion_message(entity.id, base_message_id)
+                        discussion_message = await _bot.client.get_discussion_message(
+                            entity.id, base_message_id
+                        )
                         if discussion_message:
                             comment_message = await _bot.client.get_messages(
                                 discussion_message.chat.id, link_info.comment_id
@@ -839,11 +860,14 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
                                 # 创建回复消息
                                 replay_message = f"Direct download comment {link_info.comment_id} from message {base_message_id}..."
                                 last_reply_message = await client.send_message(
-                                    message.from_user.id, replay_message, reply_to_message_id=message.id
+                                    message.from_user.id,
+                                    replay_message,
+                                    reply_to_message_id=message.id,
                                 )
-                                
+
                                 # 创建node并设置原始消息名称作为标签
                                 from module.download_stat import add_active_task_node
+
                                 node = TaskNode(
                                     chat_id=discussion_message.chat.id,
                                     from_user_id=message.from_user.id,
@@ -852,52 +876,77 @@ async def download_from_link(client: pyrogram.Client, message: pyrogram.types.Me
                                     bot=_bot.bot,
                                     task_id=_bot.gen_task_id(),
                                 )
-                                
+
                                 # 设置client
                                 node.client = _bot.client
-                                
+
                                 # 获取原始消息名称作为标签
                                 from utils.format import validate_title
+
                                 file_name_tag = None
-                                
+
                                 # 优先使用消息文本
                                 if base_message.text:
-                                    file_name_tag = validate_title(base_message.text[:30])
-                                    logger.info(f"download_from_link: 从原始消息(消息ID={base_message_id})文本获取标签: {file_name_tag}")
+                                    file_name_tag = validate_title(
+                                        base_message.text[:30]
+                                    )
+                                    logger.info(
+                                        f"download_from_link: 从原始消息(消息ID={base_message_id})文本获取标签: {file_name_tag}"
+                                    )
                                 # 如果没有文本，使用caption
                                 elif base_message.caption:
-                                    file_name_tag = validate_title(base_message.caption[:30])
-                                    logger.info(f"download_from_link: 从原始消息(消息ID={base_message_id})caption获取标签: {file_name_tag}")
-                                
+                                    file_name_tag = validate_title(
+                                        base_message.caption[:30]
+                                    )
+                                    logger.info(
+                                        f"download_from_link: 从原始消息(消息ID={base_message_id})caption获取标签: {file_name_tag}"
+                                    )
+
                                 # 如果仍然没有获取到标签，尝试其他方式
                                 if not file_name_tag:
                                     # 尝试从消息的reply_to_message获取
                                     if base_message.reply_to_message:
                                         if base_message.reply_to_message.text:
-                                            file_name_tag = validate_title(base_message.reply_to_message.text[:30])
-                                            logger.info(f"download_from_link: 从原始消息的reply_to_message文本获取标签: {file_name_tag}")
+                                            file_name_tag = validate_title(
+                                                base_message.reply_to_message.text[:30]
+                                            )
+                                            logger.info(
+                                                f"download_from_link: 从原始消息的reply_to_message文本获取标签: {file_name_tag}"
+                                            )
                                         elif base_message.reply_to_message.caption:
-                                            file_name_tag = validate_title(base_message.reply_to_message.caption[:30])
-                                            logger.info(f"download_from_link: 从原始消息的reply_to_message caption获取标签: {file_name_tag}")
-                                    
+                                            file_name_tag = validate_title(
+                                                base_message.reply_to_message.caption[
+                                                    :30
+                                                ]
+                                            )
+                                            logger.info(
+                                                f"download_from_link: 从原始消息的reply_to_message caption获取标签: {file_name_tag}"
+                                            )
+
                                     # 如果还是没有，使用消息ID作为标签
                                     if not file_name_tag:
                                         file_name_tag = f"msg{base_message_id}"
-                                        logger.warning(f"download_from_link: 无法获取原始消息(消息ID={base_message_id})名称，使用消息ID作为标签: {file_name_tag}")
-                                
+                                        logger.warning(
+                                            f"download_from_link: 无法获取原始消息(消息ID={base_message_id})名称，使用消息ID作为标签: {file_name_tag}"
+                                        )
+
                                 if file_name_tag:
                                     node.file_name_tag = file_name_tag
-                                    logger.info(f"download_from_link: 设置文件名标签: {file_name_tag}")
-                                
+                                    logger.info(
+                                        f"download_from_link: 设置文件名标签: {file_name_tag}"
+                                    )
+
                                 _bot.add_task_node(node)
                                 add_active_task_node(node)
                                 await _bot.add_download_task(comment_message, node)
                                 node.is_running = True
                                 return
                 except Exception as e:
-                    logger.error(f"download_from_link: 处理带comment的链接失败: {e}", exc_info=True)
+                    logger.error(
+                        f"download_from_link: 处理带comment的链接失败: {e}", exc_info=True
+                    )
                     # 如果处理失败，继续尝试普通下载流程（可能会失败，但至少不会静默失败）
-        
+
         # 普通单条消息下载
         if message_id:
             download_message = await retry(
@@ -996,9 +1045,13 @@ async def preview_comment_workflow(client, message, workflow_request):
         summary = summarize_comments(comments)
         if failed_comment_ids:
             scan_warning = scan_warning or "部分评论扫描失败，预览结果可能不完整。"
-        actual_latest_comment_id = summary.last_comment_id or workflow_request.start_comment_id
+        actual_latest_comment_id = (
+            summary.last_comment_id or workflow_request.start_comment_id
+        )
         if failed_comment_ids:
-            actual_latest_comment_id = max(actual_latest_comment_id, *failed_comment_ids)
+            actual_latest_comment_id = max(
+                actual_latest_comment_id, *failed_comment_ids
+            )
 
         if not media_comments:
             await client.send_message(
@@ -1030,9 +1083,7 @@ async def preview_comment_workflow(client, message, workflow_request):
         }
 
         cloud_drive_config = getattr(_bot.app, "cloud_drive_config", None)
-        upload_enabled = bool(
-            getattr(cloud_drive_config, "enable_upload_file", False)
-        )
+        upload_enabled = bool(getattr(cloud_drive_config, "enable_upload_file", False))
         delete_after_upload = bool(
             getattr(cloud_drive_config, "after_upload_file_delete", False)
         )
@@ -1113,10 +1164,7 @@ async def preview_package_workflow(client, message, workflow_request):
             start_message_id=workflow_request.start_message_id,
             package_title=package_title,
         )
-        package_media_items = {
-            item.message.id: item
-            for item in package_items
-        }
+        package_media_items = {item.message.id: item for item in package_items}
 
         _bot.pending_package_workflows[token] = {
             "request": workflow_request,
@@ -1133,9 +1181,7 @@ async def preview_package_workflow(client, message, workflow_request):
         }
 
         cloud_drive_config = getattr(_bot.app, "cloud_drive_config", None)
-        upload_enabled = bool(
-            getattr(cloud_drive_config, "enable_upload_file", False)
-        )
+        upload_enabled = bool(getattr(cloud_drive_config, "enable_upload_file", False))
         delete_after_upload = bool(
             getattr(cloud_drive_config, "after_upload_file_delete", False)
         )
@@ -1303,9 +1349,7 @@ async def preview_prescan_workflow(client, message, workflow_request):
             )
             return False
 
-        token = _build_prescan_workflow_token(
-            workflow_request, message, status_message
-        )
+        token = _build_prescan_workflow_token(workflow_request, message, status_message)
         channel = entity.username or entity.title or str(entity.id)
         selected_package_ids = set()
         selection_message = await client.send_message(
@@ -1355,9 +1399,9 @@ async def preview_prescan_workflow(client, message, workflow_request):
 async def retry_failed_tasks(client: pyrogram.Client, message: pyrogram.types.Message):
     """
     Retries the failed download tasks using the provided chat_id and message_id pairs.
-    
+
     Usage: /retry_failed chat_id|message_id chat_id|message_id ...
-    
+
     Example: /retry_failed -1234567890|1234 -1234567890|5678
     """
     msg = f"""
@@ -1381,30 +1425,32 @@ async def retry_failed_tasks(client: pyrogram.Client, message: pyrogram.types.Me
         # 解析所有的 chat_id|message_id 对
         task_pairs = args[1].split()
         tasks_to_retry = []
-        
+
         for pair in task_pairs:
-            if '|' not in pair:
+            if "|" not in pair:
                 await client.send_message(
                     message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
                 )
                 return
-            chat_id_str, msg_id_str = pair.split('|')
+            chat_id_str, msg_id_str = pair.split("|")
             chat_id = int(chat_id_str)
             message_id = int(msg_id_str)
             tasks_to_retry.append((chat_id, message_id))
-        
+
         # 创建一个新的 TaskNode 来处理这些失败的任务
         if tasks_to_retry:
             # 假设所有任务都来自同一个聊天
             first_chat_id, _ = tasks_to_retry[0]
             entity = await _bot.client.get_chat(first_chat_id)
             chat_title = entity.title if entity else "Unknown chat"
-            
-            reply_message = f"Retry failed tasks from {chat_title} ({len(tasks_to_retry)} tasks)"
+
+            reply_message = (
+                f"Retry failed tasks from {chat_title} ({len(tasks_to_retry)} tasks)"
+            )
             last_reply_message = await client.send_message(
                 message.from_user.id, reply_message, reply_to_message_id=message.id
             )
-            
+
             # 创建一个 TaskNode 用于重试
             node = TaskNode(
                 chat_id=first_chat_id,
@@ -1414,13 +1460,13 @@ async def retry_failed_tasks(client: pyrogram.Client, message: pyrogram.types.Me
                 bot=_bot.bot,
                 task_id=_bot.gen_task_id(),
             )
-            
+
             _bot.add_task_node(node)
             add_active_task_node(node)
-            
+
             # 启动下载任务
             node.is_running = True
-            
+
             # 为每个失败的任务创建一个下载任务
             for chat_id, msg_id in tasks_to_retry:
                 try:
@@ -1431,25 +1477,29 @@ async def retry_failed_tasks(client: pyrogram.Client, message: pyrogram.types.Me
                         # 添加到下载任务队列
                         await _bot.add_download_task(download_message, node)
                     else:
-                        logger.warning(f"Failed to get message {msg_id} from chat {chat_id}")
+                        logger.warning(
+                            f"Failed to get message {msg_id} from chat {chat_id}"
+                        )
                 except Exception as e:
-                    logger.error(f"Error getting message {msg_id} from chat {chat_id}: {e}")
-            
+                    logger.error(
+                        f"Error getting message {msg_id} from chat {chat_id}: {e}"
+                    )
+
             # 设置任务完成条件
             node.total_task = len(tasks_to_retry)
-            
+
             await client.edit_message_text(
                 message.from_user.id,
                 last_reply_message.id,
-                f"{reply_message}\nTasks added to download queue!"
+                f"{reply_message}\nTasks added to download queue!",
             )
-            
+
     except Exception as e:
         logger.error(f"Error in retry_failed_tasks: {e}")
         await client.send_message(
             message.from_user.id,
             f"{_t('Error processing retry request')}: {e}",
-            reply_to_message_id=message.id
+            reply_to_message_id=message.id,
         )
 
 
@@ -1477,8 +1527,9 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
     try:
         # 解析URL获取基础信息
         from utils.format import extract_info_from_link
+
         link_info = extract_info_from_link(url)
-        
+
         # 检查是否是评论下载
         is_comment_range_download = "comment=" in url and len(args) >= 4
         if link_info.comment_id is not None or is_comment_range_download:
@@ -1487,12 +1538,14 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
             end_comment_id = None
             download_filter = None
             is_single_comment = False
-            
+
             # 解析标签参数（最后一个参数，如果存在且不是数字，则视为标签）
             file_name_tag = None
             if link_info.comment_id is not None:
                 # 单条评论下载
-                logger.info(f"单条评论下载: comment_id={link_info.comment_id}, post_id={link_info.post_id}")
+                logger.info(
+                    f"单条评论下载: comment_id={link_info.comment_id}, post_id={link_info.post_id}"
+                )
                 start_comment_id = link_info.comment_id
                 end_comment_id = link_info.comment_id
                 # args[2] 可能是 download_filter 或 file_name_tag
@@ -1522,7 +1575,7 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                 if len(args) > 5 and not args[5].isdigit():
                     file_name_tag = args[5]
                 is_single_comment = False
-            
+
             # 处理评论下载逻辑
             try:
                 # 获取基础消息
@@ -1534,39 +1587,43 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                         parts = path_part.split("/")
                         if len(parts) >= 3:
                             base_message_id = int(parts[-1])
-                
-                logger.info(f"处理评论下载: base_message_id={base_message_id}, chat_id={link_info.group_id}")
-                
+
+                logger.info(
+                    f"处理评论下载: base_message_id={base_message_id}, chat_id={link_info.group_id}"
+                )
+
                 if not base_message_id:
                     await client.send_message(
                         message.from_user.id,
                         f"{_t('Invalid comment URL format, please include the base message ID')}",
-                        reply_to_message_id=message.id
+                        reply_to_message_id=message.id,
                     )
                     return
-                
+
                 chat_id, _, _ = await parse_link(_bot.client, url)
                 logger.info(f"解析链接结果: chat_id={chat_id}")
-                
+
                 if not chat_id:
                     await client.send_message(
                         message.from_user.id,
                         f"{_t('Invalid chat link')}",
-                        reply_to_message_id=message.id
+                        reply_to_message_id=message.id,
                     )
                     return
-                
+
                 entity = await _bot.client.get_chat(chat_id)
-                logger.info(f"获取聊天实体: id={entity.id if entity else None}, title={entity.title if entity else None}")
-                
+                logger.info(
+                    f"获取聊天实体: id={entity.id if entity else None}, title={entity.title if entity else None}"
+                )
+
                 if not entity:
                     await client.send_message(
                         message.from_user.id,
                         f"{_t('Chat not found')}",
-                        reply_to_message_id=message.id
+                        reply_to_message_id=message.id,
                     )
                     return
-                
+
                 # 构建下载任务
                 chat_title = entity.title
                 reply_message = f"from {chat_title} "
@@ -1577,7 +1634,7 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                 last_reply_message = await client.send_message(
                     message.from_user.id, reply_message, reply_to_message_id=message.id
                 )
-                
+
                 # 创建评论下载任务
                 node = TaskNode(
                     chat_id=entity.id,
@@ -1587,27 +1644,38 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                     bot=_bot.bot,
                     task_id=_bot.gen_task_id(),
                 )
-                
+
                 # 设置文件名标签
                 # 对于带有comment的链接，必须获取原始消息（如375）的名称
                 # 优先使用原始消息名称，如果获取失败才使用手动提供的标签
                 original_message_tag = None
                 try:
                     # 获取原始消息（基础消息，如375）
-                    base_message = await _bot.client.get_messages(entity.id, base_message_id)
+                    base_message = await _bot.client.get_messages(
+                        entity.id, base_message_id
+                    )
                     if base_message:
                         from utils.format import validate_title
+
                         # 优先使用消息文本
                         if base_message.text:
-                            original_message_tag = validate_title(base_message.text[:30])
-                            logger.info(f"从原始消息(消息ID={base_message_id})文本获取标签: {original_message_tag}")
+                            original_message_tag = validate_title(
+                                base_message.text[:30]
+                            )
+                            logger.info(
+                                f"从原始消息(消息ID={base_message_id})文本获取标签: {original_message_tag}"
+                            )
                         # 如果没有文本，使用caption
                         elif base_message.caption:
-                            original_message_tag = validate_title(base_message.caption[:30])
-                            logger.info(f"从原始消息(消息ID={base_message_id})caption获取标签: {original_message_tag}")
+                            original_message_tag = validate_title(
+                                base_message.caption[:30]
+                            )
+                            logger.info(
+                                f"从原始消息(消息ID={base_message_id})caption获取标签: {original_message_tag}"
+                            )
                 except Exception as e:
                     logger.warning(f"获取原始消息(消息ID={base_message_id})标题失败: {e}")
-                
+
                 # 设置标签到node：优先使用原始消息名称，如果没有则使用手动提供的标签
                 if original_message_tag:
                     node.file_name_tag = original_message_tag
@@ -1615,35 +1683,44 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                 elif file_name_tag:
                     node.file_name_tag = file_name_tag
                     logger.info(f"设置文件名标签（手动提供）: {file_name_tag}")
-                
+
                 _bot.add_task_node(node)
                 add_active_task_node(node)
-                
+
                 # 设置任务为运行状态
                 node.is_running = True
-                
+
                 # 获取并下载评论
                 # 局部导入避免循环导入
                 from media_downloader import download_comments
+
                 _bot.app.loop.create_task(
-                    download_comments(_bot.client, entity.id, base_message_id, start_comment_id, end_comment_id, download_filter, node)
+                    download_comments(
+                        _bot.client,
+                        entity.id,
+                        base_message_id,
+                        start_comment_id,
+                        end_comment_id,
+                        download_filter,
+                        node,
+                    )
                 )
                 return
             except Exception as e:
                 await client.send_message(
                     message.from_user.id,
                     f"{_t('Comment download error')}: {e}",
-                    reply_to_message_id=message.id
+                    reply_to_message_id=message.id,
                 )
                 return
-        
+
         # 普通消息下载模式
         if len(args) < 4:
             await client.send_message(
                 message.from_user.id, msg, parse_mode=pyrogram.enums.ParseMode.HTML
             )
             return
-        
+
         start_offset_id = int(args[2])
         end_offset_id = int(args[3])
         download_filter = None
@@ -1651,7 +1728,20 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
         # args[4] 可能是 filter 或者 标签
         if len(args) > 4:
             # 如果 args[4] 不包含常见的 filter 关键字，视为标签
-            if any(kw in args[4].lower() for kw in ['video', 'audio', 'photo', 'document', 'size', 'date', '>', '<', '=']):
+            if any(
+                kw in args[4].lower()
+                for kw in [
+                    "video",
+                    "audio",
+                    "photo",
+                    "document",
+                    "size",
+                    "date",
+                    ">",
+                    "<",
+                    "=",
+                ]
+            ):
                 download_filter = args[4]
                 # args[5] 是标签
                 if len(args) > 5:
@@ -2181,9 +2271,7 @@ async def handle_prescan_workflow_callback(client, query):
     message_id = getattr(message, "id", None)
     parsed = parse_prescan_callback_data(data)
     if not parsed:
-        await _safe_edit_prescan_message(
-            client, chat_id, message_id, "无效的预扫操作。"
-        )
+        await _safe_edit_prescan_message(client, chat_id, message_id, "无效的预扫操作。")
         return True
 
     token, action, value = parsed
@@ -2224,18 +2312,14 @@ async def handle_prescan_workflow_callback(client, query):
 
     if action == "cancel":
         _bot.pending_prescan_workflows.pop(token, None)
-        await _safe_edit_prescan_message(
-            client, chat_id, message_id, "已取消预扫任务。"
-        )
+        await _safe_edit_prescan_message(client, chat_id, message_id, "已取消预扫任务。")
         return True
 
     if action == "toggle":
         package_id = _parse_prescan_callback_int(value)
         valid_package_ids = {package.package_id for package in plan.packages}
         if package_id is None or package_id not in valid_package_ids:
-            await _safe_edit_prescan_message(
-                client, chat_id, message_id, "无效的预扫操作。"
-            )
+            await _safe_edit_prescan_message(client, chat_id, message_id, "无效的预扫操作。")
             return True
         if package_id in selected_package_ids:
             selected_package_ids.remove(package_id)
@@ -2244,9 +2328,7 @@ async def handle_prescan_workflow_callback(client, query):
     elif action == "page":
         parsed_page = _parse_prescan_callback_int(value)
         if parsed_page is None:
-            await _safe_edit_prescan_message(
-                client, chat_id, message_id, "无效的预扫操作。"
-            )
+            await _safe_edit_prescan_message(client, chat_id, message_id, "无效的预扫操作。")
             return True
         page = parsed_page
         pending["page"] = page
@@ -2255,9 +2337,7 @@ async def handle_prescan_workflow_callback(client, query):
 
         parsed_page = _parse_prescan_callback_int(value)
         if parsed_page is None:
-            await _safe_edit_prescan_message(
-                client, chat_id, message_id, "无效的预扫操作。"
-            )
+            await _safe_edit_prescan_message(client, chat_id, message_id, "无效的预扫操作。")
             return True
         page = parsed_page
         pending["page"] = page
@@ -2272,9 +2352,7 @@ async def handle_prescan_workflow_callback(client, query):
         await start_prescan_selected_download(client, query, token, pending)
         return True
     else:
-        await _safe_edit_prescan_message(
-            client, chat_id, message_id, "无效的预扫操作。"
-        )
+        await _safe_edit_prescan_message(client, chat_id, message_id, "无效的预扫操作。")
         return True
 
     await render_selection()
@@ -2390,10 +2468,7 @@ async def handle_package_workflow_callback(client, query):
 
     status_message = await client.send_message(
         chat_id,
-        (
-            "连续资源包下载任务已启动："
-            f"{pending['channel']}/{request.start_message_id}"
-        ),
+        ("连续资源包下载任务已启动：" f"{pending['channel']}/{request.start_message_id}"),
         reply_to_message_id=pending.get("source_message_id"),
     )
 

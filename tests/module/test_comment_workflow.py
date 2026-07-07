@@ -5,8 +5,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from tests.test_common import MockDocument, MockMessage, MockPhoto, MockUser, MockVideo
-
 from module.comment_workflow import (
     COMMENT_WORKFLOW_PREFIX,
     NamingStrategy,
@@ -16,11 +14,12 @@ from module.comment_workflow import (
     build_size_summary,
     build_workflow_token,
     clean_segment,
-    format_preview_message,
     filter_media_comments,
+    format_preview_message,
     parse_callback_data,
     summarize_comments,
 )
+from tests.test_common import MockDocument, MockMessage, MockPhoto, MockUser, MockVideo
 
 
 class FakeDiscussionClient:
@@ -72,9 +71,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertEqual(request.start_comment_id, 4978)
 
     def test_build_comment_workflow_request_rejects_non_comment_link(self):
-        self.assertIsNone(
-            build_comment_workflow_request("https://t.me/zhyseseb/422")
-        )
+        self.assertIsNone(build_comment_workflow_request("https://t.me/zhyseseb/422"))
 
     def test_build_comment_workflow_request_does_not_reconstruct_post_id(self):
         with patch("module.comment_workflow.extract_info_from_link") as parser:
@@ -115,12 +112,12 @@ class CommentWorkflowTestCase(unittest.TestCase):
         from module.comment_workflow import build_message_package_workflow_request
 
         self.assertIsNone(
-            build_message_package_workflow_request(
-                "https://t.me/zhyseseb/422?comment="
-            )
+            build_message_package_workflow_request("https://t.me/zhyseseb/422?comment=")
         )
 
-    def test_build_message_package_workflow_request_rejects_empty_comment_query_for_private_link(self):
+    def test_build_message_package_workflow_request_rejects_empty_comment_query_for_private_link(
+        self,
+    ):
         from module.comment_workflow import build_message_package_workflow_request
 
         self.assertIsNone(
@@ -129,7 +126,9 @@ class CommentWorkflowTestCase(unittest.TestCase):
             )
         )
 
-    def test_build_message_package_workflow_request_accepts_comment_substring_in_path(self):
+    def test_build_message_package_workflow_request_accepts_comment_substring_in_path(
+        self,
+    ):
         from module.comment_workflow import build_message_package_workflow_request
 
         request = build_message_package_workflow_request(
@@ -139,22 +138,22 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertEqual(request.source_chat, "commentaryhub")
         self.assertEqual(request.start_message_id, 422)
 
-    def test_build_message_package_workflow_request_rejects_malformed_private_group_id(self):
+    def test_build_message_package_workflow_request_rejects_malformed_private_group_id(
+        self,
+    ):
         from module.comment_workflow import build_message_package_workflow_request
 
         self.assertIsNone(
-            build_message_package_workflow_request(
-                "https://t.me/c/notanint/126711"
-            )
+            build_message_package_workflow_request("https://t.me/c/notanint/126711")
         )
 
-    def test_build_message_package_workflow_request_rejects_malformed_private_message_id(self):
+    def test_build_message_package_workflow_request_rejects_malformed_private_message_id(
+        self,
+    ):
         from module.comment_workflow import build_message_package_workflow_request
 
         self.assertIsNone(
-            build_message_package_workflow_request(
-                "https://t.me/c/1298283297/notanint"
-            )
+            build_message_package_workflow_request("https://t.me/c/1298283297/notanint")
         )
 
     def test_package_callback_data_round_trips_token_and_strategy(self):
@@ -259,7 +258,9 @@ class CommentWorkflowTestCase(unittest.TestCase):
 
         plan = plan_message_package(messages, start_message_id=126711)
 
-        self.assertEqual([item.message.id for item in plan.items], [126711, 126712, 126713])
+        self.assertEqual(
+            [item.message.id for item in plan.items], [126711, 126712, 126713]
+        )
         self.assertEqual(plan.package_title, "某某课程 第01章 01_40")
         self.assertEqual(plan.inherited_caption_count, 1)
         self.assertEqual(plan.next_package_message.id, 126714)
@@ -640,7 +641,9 @@ class CommentWorkflowTestCase(unittest.TestCase):
             [item.caption_for_naming for item in plan.items],
             ["相册标题 EP01", "相册标题 EP01", "相册标题 EP01"],
         )
-        self.assertEqual([item.inherited_caption for item in plan.items], [True, False, True])
+        self.assertEqual(
+            [item.inherited_caption for item in plan.items], [True, False, True]
+        )
         self.assertEqual(plan.inherited_caption_count, 2)
 
     def test_plan_message_package_treats_chinese_episode_markers_as_same_package(self):
@@ -714,15 +717,27 @@ class CommentWorkflowTestCase(unittest.TestCase):
             [item.caption_for_naming for item in plan.items],
             ["课程 第01章 01_40", "课程 第01章 01_40", "课程 第01章 01_40"],
         )
-        self.assertEqual([item.inherited_caption for item in plan.items], [True, False, True])
+        self.assertEqual(
+            [item.inherited_caption for item in plan.items], [True, False, True]
+        )
         self.assertEqual(plan.inherited_caption_count, 2)
 
     def test_filter_media_comments_skips_text_and_empty_messages(self):
         comments = [
             MockMessage(id=1, text="hello"),
-            MockMessage(id=2, media="photo", photo=MockPhoto(date=datetime.datetime(2026, 6, 7), file_unique_id="p1")),
+            MockMessage(
+                id=2,
+                media="photo",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7), file_unique_id="p1"
+                ),
+            ),
             MockMessage(id=3, empty=True),
-            MockMessage(id=4, media="video", video=MockVideo(file_name="clip.mp4", mime_type="video/mp4")),
+            MockMessage(
+                id=4,
+                media="video",
+                video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+            ),
         ]
 
         media_comments = filter_media_comments(comments)
@@ -731,7 +746,13 @@ class CommentWorkflowTestCase(unittest.TestCase):
 
     def test_filter_media_comments_supports_enum_like_media_value(self):
         comments = [
-            MockMessage(id=1, media=SimpleNamespace(value="photo"), photo=MockPhoto(date=datetime.datetime(2026, 6, 7), file_unique_id="p1")),
+            MockMessage(
+                id=1,
+                media=SimpleNamespace(value="photo"),
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7), file_unique_id="p1"
+                ),
+            ),
             MockMessage(id=2, media=SimpleNamespace(value="photo")),
             MockMessage(id=3, media=SimpleNamespace(value="sticker")),
         ]
@@ -742,17 +763,35 @@ class CommentWorkflowTestCase(unittest.TestCase):
 
     def test_summarize_comments_counts_media_types(self):
         comments = [
-            MockMessage(id=4978, media="photo", photo=MockPhoto(date=datetime.datetime(2026, 6, 7), file_unique_id="p1")),
+            MockMessage(
+                id=4978,
+                media="photo",
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 7), file_unique_id="p1"
+                ),
+            ),
             MockMessage(id=4979, text="skip"),
-            MockMessage(id=4980, media="video", video=MockVideo(file_name="clip.mp4", mime_type="video/mp4")),
-            MockMessage(id=4981, media="document", document=MockDocument(file_name="book.pdf", mime_type="application/pdf")),
+            MockMessage(
+                id=4980,
+                media="video",
+                video=MockVideo(file_name="clip.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=4981,
+                media="document",
+                document=MockDocument(
+                    file_name="book.pdf", mime_type="application/pdf"
+                ),
+            ),
         ]
 
         summary = summarize_comments(comments)
 
         self.assertEqual(summary.scanned_count, 4)
         self.assertEqual(summary.media_count, 3)
-        self.assertEqual(summary.media_type_counts, {"photo": 1, "video": 1, "document": 1})
+        self.assertEqual(
+            summary.media_type_counts, {"photo": 1, "video": 1, "document": 1}
+        )
         self.assertEqual(summary.first_comment_id, 4978)
         self.assertEqual(summary.last_comment_id, 4981)
 
@@ -785,7 +824,9 @@ class CommentWorkflowTestCase(unittest.TestCase):
 
     def test_clean_segment_cleans_and_falls_back(self):
         self.assertEqual(clean_segment("  hello \n world  ", "fallback"), "hello world")
-        self.assertEqual(clean_segment("bad/name: title", "fallback"), "bad_name_ title")
+        self.assertEqual(
+            clean_segment("bad/name: title", "fallback"), "bad_name_ title"
+        )
         self.assertEqual(clean_segment(" / ", "fallback"), "fallback")
         self.assertEqual(clean_segment(" / ", " bad/name "), "bad_name")
         self.assertEqual(clean_segment("123456789", "fallback", max_len=5), "12345")
@@ -1130,16 +1171,12 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
 
         class FakePackageClient:
             def __init__(self, prepared_messages):
-                self.messages = {
-                    message.id: message for message in prepared_messages
-                }
+                self.messages = {message.id: message for message in prepared_messages}
                 self.calls = []
 
             async def get_messages(self, chat_id, message_ids):
                 self.calls.append((chat_id, list(message_ids)))
-                return [
-                    self.messages.get(message_id) for message_id in message_ids
-                ]
+                return [self.messages.get(message_id) for message_id in message_ids]
 
         client = FakePackageClient(messages)
 
@@ -1216,8 +1253,8 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(scan_result.failed_comment_ids, [4979])
 
     async def test_download_comments_counts_scan_failures_in_progress_totals(self):
-        from module.app import TaskNode
         from media_downloader import CommentScanResult, download_comments
+        from module.app import TaskNode
 
         comments = [
             MockMessage(
@@ -1254,9 +1291,13 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         async def fake_sleep(seconds):
-            raise AssertionError("download_comments should not sleep after all expected tasks finish")
+            raise AssertionError(
+                "download_comments should not sleep after all expected tasks finish"
+            )
 
-        with patch("media_downloader.scan_comment_range", new=fake_scan_comment_range), patch(
+        with patch(
+            "media_downloader.scan_comment_range", new=fake_scan_comment_range
+        ), patch(
             "media_downloader.add_download_task", new=fake_add_download_task
         ), patch(
             "module.pyrogram_extension.report_bot_status", new=fake_report_bot_status
@@ -1283,8 +1324,8 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report_calls[-1], (2, 1, 3))
 
     async def test_download_comments_counts_false_enqueue_as_failed_task(self):
-        from module.app import TaskNode
         from media_downloader import CommentScanResult, download_comments
+        from module.app import TaskNode
 
         comments = [
             MockMessage(
@@ -1313,9 +1354,13 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
         async def fake_sleep(seconds):
-            raise AssertionError("download_comments should not sleep after enqueue failure")
+            raise AssertionError(
+                "download_comments should not sleep after enqueue failure"
+            )
 
-        with patch("media_downloader.scan_comment_range", new=fake_scan_comment_range), patch(
+        with patch(
+            "media_downloader.scan_comment_range", new=fake_scan_comment_range
+        ), patch(
             "media_downloader.add_download_task", new=fake_add_download_task
         ), patch(
             "module.pyrogram_extension.report_bot_status", new=fake_report_bot_status
@@ -1342,9 +1387,9 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report_calls[-1], (0, 1, 1))
 
     async def test_download_prepared_comments_uses_module_app_for_filtering(self):
-        from module.app import TaskNode
-        from media_downloader import download_prepared_comments
         import media_downloader
+        from media_downloader import download_prepared_comments
+        from module.app import TaskNode
 
         comments = [
             MockMessage(
@@ -1381,7 +1426,9 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
             return None
 
         async def fake_sleep(seconds):
-            raise AssertionError("download_prepared_comments should not wait after filtered success")
+            raise AssertionError(
+                "download_prepared_comments should not wait after filtered success"
+            )
 
         with patch.object(
             media_downloader.app, "exec_filter", new=fake_exec_filter
@@ -1406,9 +1453,11 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(node.success_download_task, 1)
         self.assertEqual(node.total_download_task, 1)
 
-    async def test_download_prepared_messages_waits_from_existing_completion_baseline(self):
-        from module.app import TaskNode
+    async def test_download_prepared_messages_waits_from_existing_completion_baseline(
+        self,
+    ):
         from media_downloader import download_prepared_messages
+        from module.app import TaskNode
 
         messages = [
             MockMessage(
@@ -1474,7 +1523,9 @@ class PrescanScannerTestCase(unittest.IsolatedAsyncioTestCase):
                 return [self.messages.get(message_id) for message_id in message_ids]
             return self.messages.get(message_ids)
 
-    async def test_scan_prescan_packages_fetches_batches_and_sleeps_between_batches(self):
+    async def test_scan_prescan_packages_fetches_batches_and_sleeps_between_batches(
+        self,
+    ):
         from media_downloader import scan_prescan_packages
 
         messages = [
@@ -1565,7 +1616,9 @@ class PrescanScannerTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(progress_events[0]["rate_limited_seconds"], 4)
         self.assertEqual(progress_events[-1]["package_count"], 1)
 
-    async def test_scan_prescan_packages_falls_back_to_single_fetches_after_batch_failure(self):
+    async def test_scan_prescan_packages_falls_back_to_single_fetches_after_batch_failure(
+        self,
+    ):
         from media_downloader import scan_prescan_packages
 
         messages = [
@@ -1589,10 +1642,7 @@ class PrescanScannerTestCase(unittest.IsolatedAsyncioTestCase):
                 if isinstance(message_ids, list) and message_ids[0] == 120:
                     raise RuntimeError("batch failure")
                 if isinstance(message_ids, list):
-                    return [
-                        self.messages.get(message_id)
-                        for message_id in message_ids
-                    ]
+                    return [self.messages.get(message_id) for message_id in message_ids]
                 return self.messages.get(message_ids)
 
         client = BatchFailureClient(messages)
@@ -1639,7 +1689,9 @@ class PrescanScannerTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([message.id for message in result.messages], [100])
         self.assertEqual(len(result.prescan_plan.packages), 1)
 
-    async def test_scan_prescan_packages_stops_after_missing_streak_once_media_seen(self):
+    async def test_scan_prescan_packages_stops_after_missing_streak_once_media_seen(
+        self,
+    ):
         from media_downloader import scan_prescan_packages
 
         messages = [
@@ -1719,7 +1771,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             )
             captured = {}
 
-            async def fake_preview_prescan_workflow(client, routed_message, package_request):
+            async def fake_preview_prescan_workflow(
+                client, routed_message, package_request
+            ):
                 captured["message"] = routed_message
                 captured["request"] = package_request
 
@@ -1738,7 +1792,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             else:
                 bot_module._bot.pending_prescan_sessions = old_sessions
 
-    async def test_handle_prescan_text_keeps_session_when_text_handler_gets_invalid_link(self):
+    async def test_handle_prescan_text_keeps_session_when_text_handler_gets_invalid_link(
+        self,
+    ):
         from module import bot as bot_module
 
         class FakeClient:
@@ -1820,7 +1876,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 from_user=MockUser(id=123),
             )
 
-            async def fake_preview_prescan_workflow(client, routed_message, package_request):
+            async def fake_preview_prescan_workflow(
+                client, routed_message, package_request
+            ):
                 raise RuntimeError("preview failed")
 
             with patch(
@@ -1837,7 +1895,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             else:
                 bot_module._bot.pending_prescan_sessions = old_sessions
 
-    async def test_download_from_link_keeps_prescan_session_when_preview_returns_false(self):
+    async def test_download_from_link_keeps_prescan_session_when_preview_returns_false(
+        self,
+    ):
         from module import bot as bot_module
 
         class FakeClient:
@@ -1873,9 +1933,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 bot_module._bot.pending_prescan_sessions = old_sessions
 
     async def test_preview_prescan_workflow_stores_plan_and_sends_selection_page(self):
+        from media_downloader import PrescanScanResult
         from module import bot as bot_module
         from module.comment_workflow import build_message_package_workflow_request
-        from media_downloader import PrescanScanResult
         from module.prescan_workflow import PrescanLimits, plan_prescan_packages
 
         request = build_message_package_workflow_request(
@@ -1961,9 +2021,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 bot_module._bot.pending_prescan_workflows = old_pending
 
     async def test_preview_prescan_workflow_uses_unique_tokens_for_same_link(self):
+        from media_downloader import PrescanScanResult
         from module import bot as bot_module
         from module.comment_workflow import build_message_package_workflow_request
-        from media_downloader import PrescanScanResult
         from module.prescan_workflow import PrescanLimits, plan_prescan_packages
 
         request = build_message_package_workflow_request(
@@ -1997,7 +2057,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             async def edit_message_text(self, *args, **kwargs):
                 return None
 
-        async def fake_scan_prescan_packages(client, chat_id, start_message_id, **kwargs):
+        async def fake_scan_prescan_packages(
+            client, chat_id, start_message_id, **kwargs
+        ):
             plan = plan_prescan_packages(messages, start_message_id, PrescanLimits())
             return PrescanScanResult(chat_id, plan, messages, [])
 
@@ -2030,7 +2092,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.client = old_client
             bot_module._bot.pending_prescan_workflows = old_pending
 
-    async def test_preview_prescan_workflow_reports_failure_without_success_handoff(self):
+    async def test_preview_prescan_workflow_reports_failure_without_success_handoff(
+        self,
+    ):
         from module import bot as bot_module
         from module.comment_workflow import build_message_package_workflow_request
 
@@ -2129,9 +2193,7 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 from_user=MockUser(id=123),
             )
 
-            handled = await bot_module.handle_prescan_workflow_callback(
-                client, query
-            )
+            handled = await bot_module.handle_prescan_workflow_callback(client, query)
 
             self.assertTrue(handled)
             self.assertEqual(selected_package_ids, {1})
@@ -2185,9 +2247,7 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 from_user=MockUser(id=123),
             )
 
-            handled = await bot_module.handle_prescan_workflow_callback(
-                client, query
-            )
+            handled = await bot_module.handle_prescan_workflow_callback(client, query)
 
             self.assertTrue(handled)
             self.assertEqual(client.edits[0][2], "无效的预扫操作。")
@@ -2245,9 +2305,7 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 from_user=MockUser(id=123),
             )
 
-            handled = await bot_module.handle_prescan_workflow_callback(
-                client, query
-            )
+            handled = await bot_module.handle_prescan_workflow_callback(client, query)
 
             self.assertTrue(handled)
             self.assertEqual(selected_package_ids, set())
@@ -2303,9 +2361,7 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 from_user=MockUser(id=123),
             )
 
-            handled = await bot_module.handle_prescan_workflow_callback(
-                client, query
-            )
+            handled = await bot_module.handle_prescan_workflow_callback(client, query)
 
             self.assertTrue(handled)
             self.assertIn("请先选择至少一个包。", client.edits[0][2])
@@ -2441,7 +2497,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 id=126711 + index * 20,
                 media="video",
                 caption=f"课程 第{index + 1:02d}章",
-                video=MockVideo(file_name=f"{index + 1:02d}.mp4", mime_type="video/mp4"),
+                video=MockVideo(
+                    file_name=f"{index + 1:02d}.mp4", mime_type="video/mp4"
+                ),
             )
             for index in range(9)
         ]
@@ -2473,16 +2531,16 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             )
 
             await bot_module.handle_prescan_workflow_callback(client, page_query)
-            await bot_module.handle_prescan_workflow_callback(
-                client, select_page_query
-            )
+            await bot_module.handle_prescan_workflow_callback(client, select_page_query)
 
             self.assertEqual(
                 bot_module._bot.pending_prescan_workflows[token]["page"], 1
             )
             self.assertEqual(selected_package_ids, {9})
             self.assertIn("已选：1 个", client.edits[-1][2])
-            self.assertEqual(client.edits[-1][3]["reply_markup"].inline_keyboard[0][0].text, "[x] 9")
+            self.assertEqual(
+                client.edits[-1][3]["reply_markup"].inline_keyboard[0][0].text, "[x] 9"
+            )
         finally:
             bot_module._bot.pending_prescan_workflows = old_pending
 
@@ -2683,7 +2741,9 @@ class BotPrescanWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
 
             @staticmethod
             def user(user_ids):
-                return FakeFilter(f"user:{','.join(str(user_id) for user_id in user_ids)}")
+                return FakeFilter(
+                    f"user:{','.join(str(user_id) for user_id in user_ids)}"
+                )
 
         class FakeMessageHandler:
             def __init__(self, callback, filters=None):
@@ -2811,7 +2871,9 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview_calls[0][2].start_comment_id, 4978)
         parse_link.assert_not_called()
 
-    async def test_download_from_link_routes_private_message_link_to_package_preview(self):
+    async def test_download_from_link_routes_private_message_link_to_package_preview(
+        self,
+    ):
         from module import bot as bot_module
 
         comment_preview_calls = []
@@ -2836,7 +2898,9 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
         ), patch(
             "module.bot.preview_package_workflow",
             new=fake_preview_package_workflow,
-        ), patch("module.bot.parse_link") as parse_link:
+        ), patch(
+            "module.bot.parse_link"
+        ) as parse_link:
             await bot_module.download_from_link(bot_client, message)
 
         self.assertEqual(comment_preview_calls, [])
@@ -2900,9 +2964,9 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bot_client.sent_messages[0][2]["reply_to_message_id"], 92)
 
     async def test_preview_package_workflow_stores_plan_items_and_buttons(self):
+        from media_downloader import MessagePackageScanResult
         from module import bot as bot_module
         from module.comment_workflow import build_message_package_workflow_request
-        from media_downloader import MessagePackageScanResult
 
         request = build_message_package_workflow_request(
             "https://t.me/c/1298283297/126711"
@@ -2999,9 +3063,7 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             id=-1001, username="zhyseseb", title="Channel Title"
         )
         base_message = MockMessage(id=422, text="夏日合集")
-        discussion_message = MockMessage(
-            id=5, chat_id=-200, chat_title="Discussion"
-        )
+        discussion_message = MockMessage(id=5, chat_id=-200, chat_title="Discussion")
         scanned_comments = [
             MockMessage(
                 id=4978,
@@ -3032,7 +3094,9 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 self.sent_messages.append((chat_id, text, kwargs))
 
         async def fake_get_chat_history_v2(*args, **kwargs):
-            raise AssertionError("comment preview should not use global discussion history")
+            raise AssertionError(
+                "comment preview should not use global discussion history"
+            )
             yield
 
         async def fake_scan_comment_range(
@@ -3076,7 +3140,9 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
 
             with patch(
                 "module.bot.get_chat_history_v2", new=fake_get_chat_history_v2
-            ), patch("media_downloader.scan_comment_range", new=fake_scan_comment_range):
+            ), patch(
+                "media_downloader.scan_comment_range", new=fake_scan_comment_range
+            ):
                 await bot_module.preview_comment_workflow(bot_client, message, request)
 
             self.assertEqual(
@@ -3121,14 +3187,14 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
         )
         base_message = MockMessage(id=605, text="夏日合集")
         base_message.replies = SimpleNamespace(replies=5)
-        discussion_message = MockMessage(
-            id=6050, chat_id=-200, chat_title="Discussion"
-        )
+        discussion_message = MockMessage(id=6050, chat_id=-200, chat_title="Discussion")
         scanned_comments = [
             MockMessage(
                 id=6844,
                 media="photo",
-                photo=MockPhoto(date=datetime.datetime(2026, 6, 8), file_unique_id="p1"),
+                photo=MockPhoto(
+                    date=datetime.datetime(2026, 6, 8), file_unique_id="p1"
+                ),
                 reply_to_message_id=6050,
             ),
             MockMessage(
@@ -3173,7 +3239,9 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
                 self.sent_messages.append((chat_id, text, kwargs))
 
         async def fake_get_chat_history_v2(*args, **kwargs):
-            raise AssertionError("comment preview should not use global discussion history")
+            raise AssertionError(
+                "comment preview should not use global discussion history"
+            )
             yield
 
         async def fake_scan_comment_range(
@@ -3217,7 +3285,9 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
 
             with patch(
                 "module.bot.get_chat_history_v2", new=fake_get_chat_history_v2
-            ), patch("media_downloader.scan_comment_range", new=fake_scan_comment_range):
+            ), patch(
+                "media_downloader.scan_comment_range", new=fake_scan_comment_range
+            ):
                 await bot_module.preview_comment_workflow(bot_client, message, request)
 
             self.assertEqual(
@@ -3250,9 +3320,7 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             id=-1001, username="zhyseseb", title="Channel Title"
         )
         base_message = MockMessage(id=422, text="夏日合集")
-        discussion_message = MockMessage(
-            id=5, chat_id=-200, chat_title="Discussion"
-        )
+        discussion_message = MockMessage(id=5, chat_id=-200, chat_title="Discussion")
         scanned_comments = [
             MockMessage(
                 id=4978,
@@ -3307,14 +3375,14 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
 
             with patch(
                 "module.bot.get_chat_history_v2", new=fake_get_chat_history_v2
-            ), patch("media_downloader.scan_comment_range", new=fake_scan_comment_range):
+            ), patch(
+                "media_downloader.scan_comment_range", new=fake_scan_comment_range
+            ):
                 await bot_module.preview_comment_workflow(bot_client, message, request)
 
             pending = next(iter(bot_module._bot.pending_comment_workflows.values()))
             self.assertEqual(pending["failed_comment_ids"], [4980, 4981])
-            self.assertEqual(
-                pending["scan_warning"], "部分评论扫描失败，预览结果可能不完整。"
-            )
+            self.assertEqual(pending["scan_warning"], "部分评论扫描失败，预览结果可能不完整。")
             self.assertEqual(pending["latest_comment_id"], 4981)
             self.assertIn("扫描警告：部分评论扫描失败，预览结果可能不完整。", bot_client.sent_messages[0][1])
             self.assertIn("扫描失败评论：2", bot_client.sent_messages[0][1])
@@ -3333,9 +3401,7 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             id=-1001, username="zhyseseb", title="Channel Title"
         )
         base_message = MockMessage(id=422, text="夏日合集")
-        discussion_message = MockMessage(
-            id=5, chat_id=-200, chat_title="Discussion"
-        )
+        discussion_message = MockMessage(id=5, chat_id=-200, chat_title="Discussion")
         captured_scan = {}
         scanned_comments = [
             MockMessage(
@@ -3400,7 +3466,9 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
 
             with patch(
                 "module.bot.get_chat_history_v2", new=fake_get_chat_history_v2
-            ), patch("media_downloader.scan_comment_range", new=fake_scan_comment_range):
+            ), patch(
+                "media_downloader.scan_comment_range", new=fake_scan_comment_range
+            ):
                 await bot_module.preview_comment_workflow(bot_client, message, request)
 
             pending = next(iter(bot_module._bot.pending_comment_workflows.values()))
@@ -3423,9 +3491,7 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
             id=-1001, username="zhyseseb", title="Channel Title"
         )
         base_message = MockMessage(id=422, text="夏日合集")
-        discussion_message = MockMessage(
-            id=5, chat_id=-200, chat_title="Discussion"
-        )
+        discussion_message = MockMessage(id=5, chat_id=-200, chat_title="Discussion")
         scanned_comments = [
             MockMessage(
                 id=4978,
@@ -3478,7 +3544,9 @@ class BotPreviewWorkflowTestCase(unittest.IsolatedAsyncioTestCase):
 
             with patch(
                 "module.bot.get_chat_history_v2", new=fake_get_chat_history_v2
-            ), patch("media_downloader.scan_comment_range", new=fake_scan_comment_range):
+            ), patch(
+                "media_downloader.scan_comment_range", new=fake_scan_comment_range
+            ):
                 await bot_module.preview_comment_workflow(bot_client, message, request)
 
             pending = next(iter(bot_module._bot.pending_comment_workflows.values()))
@@ -3605,7 +3673,9 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
                 self.sent_messages.append((chat_id, text, kwargs, message))
                 return message
 
-        node = TaskNode(chat_id=-1001, from_user_id=123, reply_message_id=10, task_id=99)
+        node = TaskNode(
+            chat_id=-1001, from_user_id=123, reply_message_id=10, task_id=99
+        )
         node.total_download_task = 1
         node.success_download_task = 1
         node.prescan_batch_in_progress = True
@@ -3623,7 +3693,9 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.sent_messages), 1)
         self.assertTrue(node.summary_sent)
 
-    async def test_prescan_batch_status_stays_in_progress_until_outer_batch_finishes(self):
+    async def test_prescan_batch_status_stays_in_progress_until_outer_batch_finishes(
+        self,
+    ):
         from module.app import TaskNode
         from module.download_stat import (
             add_active_task_node,
@@ -3699,8 +3771,12 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
         first_plan = plan_message_package(first_messages, 100)
         second_plan = plan_message_package(second_messages, 120)
         packages = [
-            PrescanPackage(1, "课程 第01章", 100, 100, first_plan.items, first_plan, first_messages),
-            PrescanPackage(2, "课程 第02章", 120, 120, second_plan.items, second_plan, second_messages),
+            PrescanPackage(
+                1, "课程 第01章", 100, 100, first_plan.items, first_plan, first_messages
+            ),
+            PrescanPackage(
+                2, "课程 第02章", 120, 120, second_plan.items, second_plan, second_messages
+            ),
         ]
         node = TaskNode(chat_id=-1001, bot=None, task_id=99)
         calls = []
@@ -3755,7 +3831,9 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
         finally:
             bot_module._bot.pending_comment_workflows = old_pending
 
-    async def test_package_cancel_callback_removes_pending_workflow_and_edits_message(self):
+    async def test_package_cancel_callback_removes_pending_workflow_and_edits_message(
+        self,
+    ):
         from module import bot as bot_module
 
         class FakeClient:
@@ -3885,7 +3963,9 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(node.chat_id, -1001)
             self.assertEqual(node.from_user_id, 123)
             self.assertEqual(node.reply_message_id, 77)
-            self.assertEqual(node.comment_naming_context.strategy, NamingStrategy.RECOMMENDED)
+            self.assertEqual(
+                node.comment_naming_context.strategy, NamingStrategy.RECOMMENDED
+            )
             self.assertEqual(node.comment_naming_context.channel, "zhyseseb")
             self.assertEqual(node.comment_naming_context.post_id, 422)
             self.assertEqual(node.comment_naming_context.post_title, "夏日合集")
@@ -3994,7 +4074,9 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.task_node = old_task_node
             bot_module._bot.task_id = old_task_id
 
-    async def test_package_confirm_callback_starts_prepared_download_with_naming_context(self):
+    async def test_package_confirm_callback_starts_prepared_download_with_naming_context(
+        self,
+    ):
         from module import bot as bot_module
         from module.comment_workflow import (
             build_message_package_workflow_request,
@@ -4116,9 +4198,7 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(node.package_naming_context.channel, "Private Course")
             self.assertEqual(node.package_naming_context.start_message_id, 126711)
-            self.assertEqual(
-                node.package_naming_context.package_title, "课程 第01章 01_40"
-            )
+            self.assertEqual(node.package_naming_context.package_title, "课程 第01章 01_40")
             self.assertIs(node.package_plan, package_plan)
             self.assertIs(node.package_media_items, package_media_items)
             self.assertIs(node.package_media_items[126712], package_plan.items[1])
@@ -4140,7 +4220,9 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
             bot_module._bot.task_node = old_task_node
             bot_module._bot.task_id = old_task_id
 
-    async def test_package_confirm_callback_rejects_forged_non_recommended_strategy(self):
+    async def test_package_confirm_callback_rejects_forged_non_recommended_strategy(
+        self,
+    ):
         from module import bot as bot_module
         from module.comment_workflow import (
             build_message_package_workflow_request,
@@ -4533,7 +4615,9 @@ class BotCommentWorkflowCallbackTestCase(unittest.IsolatedAsyncioTestCase):
         finally:
             bot_module._bot.pending_comment_workflows = old_pending
 
-    async def test_package_expired_token_callback_is_handled_without_starting_download(self):
+    async def test_package_expired_token_callback_is_handled_without_starting_download(
+        self,
+    ):
         from module import bot as bot_module
 
         class FakeClient:

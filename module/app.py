@@ -177,12 +177,12 @@ class TaskNode:
         self.summary_sent = False
         self.summary_message_ids = []  # 可选：用于记录发了哪些汇总消息，便于你以后撤回/更新
         self.last_report_time = time.time()  # 上次发送状态的时间，用于节流
-        
+
         # 添加用于跟踪详细任务状态的列表
         self.success_tasks = []  # 格式: [(chat_id, message_id, file_name)]
-        self.failed_tasks = []   # 格式: [(chat_id, message_id, file_name)]
+        self.failed_tasks = []  # 格式: [(chat_id, message_id, file_name)]
         self.skipped_tasks = []  # 格式: [(chat_id, message_id, file_name)]
-        
+
         # 文件名标签：用于在下载评论时添加到文件名中
         self.file_name_tag: Optional[str] = None
         # Comment-link guided workflow naming context.
@@ -859,13 +859,16 @@ class Application:
             unfinished_ids = set(value.ids_to_retry)
 
             for it in value.ids_to_retry:
-                if  value.node.download_status.get(
+                if value.node.download_status.get(
                     it, DownloadStatus.FailedDownload
                 ) in [DownloadStatus.SuccessDownload, DownloadStatus.SkipDownload]:
                     unfinished_ids.remove(it)
 
             for _idx, _value in value.node.download_status.items():
-                if DownloadStatus.SuccessDownload != _value and DownloadStatus.SkipDownload != _value:
+                if (
+                    DownloadStatus.SuccessDownload != _value
+                    and DownloadStatus.SkipDownload != _value
+                ):
                     unfinished_ids.add(_idx)
 
             self.chat_download_config[key].ids_to_retry = list(unfinished_ids)

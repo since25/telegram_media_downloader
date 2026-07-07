@@ -13,23 +13,31 @@ class PrescanWorkflowTestCase(unittest.TestCase):
                 id=100,
                 media="video",
                 caption="课程 第01章 01/20",
-                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+                video=MockVideo(
+                    file_name="01.mp4", mime_type="video/mp4", file_size=100
+                ),
             ),
             MockMessage(
                 id=101,
                 media="video",
-                video=MockVideo(file_name="02.mp4", mime_type="video/mp4", file_size=200),
+                video=MockVideo(
+                    file_name="02.mp4", mime_type="video/mp4", file_size=200
+                ),
             ),
             MockMessage(
                 id=120,
                 media="video",
                 caption="课程 第02章 01/20",
-                video=MockVideo(file_name="03.mp4", mime_type="video/mp4", file_size=300),
+                video=MockVideo(
+                    file_name="03.mp4", mime_type="video/mp4", file_size=300
+                ),
             ),
             MockMessage(
                 id=121,
                 media="video",
-                video=MockVideo(file_name="04.mp4", mime_type="video/mp4", file_size=400),
+                video=MockVideo(
+                    file_name="04.mp4", mime_type="video/mp4", file_size=400
+                ),
             ),
         ]
 
@@ -44,7 +52,9 @@ class PrescanWorkflowTestCase(unittest.TestCase):
         self.assertEqual(plan.packages[0].start_message_id, 100)
         self.assertEqual(plan.packages[0].end_message_id, 101)
         self.assertEqual(plan.packages[0].title, "课程 第01章 01/20")
-        self.assertEqual([item.message.id for item in plan.packages[0].items], [100, 101])
+        self.assertEqual(
+            [item.message.id for item in plan.packages[0].items], [100, 101]
+        )
         self.assertEqual(plan.packages[1].start_message_id, 120)
         self.assertEqual(plan.packages[1].end_message_id, 121)
 
@@ -56,12 +66,16 @@ class PrescanWorkflowTestCase(unittest.TestCase):
                 id=100,
                 media="video",
                 caption="课程 第01章",
-                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+                video=MockVideo(
+                    file_name="01.mp4", mime_type="video/mp4", file_size=100
+                ),
             ),
             MockMessage(
                 id=101,
                 media="video",
-                video=MockVideo(file_name="02.mp4", mime_type="video/mp4", file_size=200),
+                video=MockVideo(
+                    file_name="02.mp4", mime_type="video/mp4", file_size=200
+                ),
             ),
         ]
 
@@ -81,12 +95,16 @@ class PrescanWorkflowTestCase(unittest.TestCase):
                 id=100,
                 media="video",
                 caption="课程 第01章",
-                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+                video=MockVideo(
+                    file_name="01.mp4", mime_type="video/mp4", file_size=100
+                ),
             ),
             MockMessage(
                 id=101,
                 media="video",
-                video=MockVideo(file_name="02.mp4", mime_type="video/mp4", file_size=200),
+                video=MockVideo(
+                    file_name="02.mp4", mime_type="video/mp4", file_size=200
+                ),
             ),
         ]
 
@@ -107,13 +125,17 @@ class PrescanWorkflowTestCase(unittest.TestCase):
                 id=100,
                 media="video",
                 caption="课程 第01章",
-                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+                video=MockVideo(
+                    file_name="01.mp4", mime_type="video/mp4", file_size=100
+                ),
             ),
             MockMessage(
                 id=120,
                 media="video",
                 caption="课程 第02章",
-                video=MockVideo(file_name="02.mp4", mime_type="video/mp4", file_size=200),
+                video=MockVideo(
+                    file_name="02.mp4", mime_type="video/mp4", file_size=200
+                ),
             ),
         ]
 
@@ -126,7 +148,9 @@ class PrescanWorkflowTestCase(unittest.TestCase):
         self.assertEqual(len(plan.packages), 1)
         self.assertEqual(plan.warning, "预扫已达到包数量上限，结果可能不是频道最新消息。")
 
-    def test_plan_prescan_packages_zero_package_limit_returns_empty_without_warning(self):
+    def test_plan_prescan_packages_zero_package_limit_returns_empty_without_warning(
+        self,
+    ):
         from module.prescan_workflow import PrescanLimits, plan_prescan_packages
 
         messages = [
@@ -134,7 +158,9 @@ class PrescanWorkflowTestCase(unittest.TestCase):
                 id=100,
                 media="video",
                 caption="课程 第01章",
-                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+                video=MockVideo(
+                    file_name="01.mp4", mime_type="video/mp4", file_size=100
+                ),
             ),
         ]
 
@@ -172,13 +198,17 @@ class PrescanWorkflowTestCase(unittest.TestCase):
                 id=100,
                 media="video",
                 caption="课程 第01章",
-                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+                video=MockVideo(
+                    file_name="01.mp4", mime_type="video/mp4", file_size=100
+                ),
             ),
             MockMessage(
                 id=120,
                 media="video",
                 caption="课程 第02章",
-                video=MockVideo(file_name="02.mp4", mime_type="video/mp4", file_size=200),
+                video=MockVideo(
+                    file_name="02.mp4", mime_type="video/mp4", file_size=200
+                ),
             ),
         ]
         plan = plan_prescan_packages(messages, 100, PrescanLimits())
@@ -212,7 +242,9 @@ class PrescanWorkflowTestCase(unittest.TestCase):
                 id=100,
                 media="video",
                 caption="课程 第01章",
-                video=MockVideo(file_name="01.mp4", mime_type="video/mp4", file_size=100),
+                video=MockVideo(
+                    file_name="01.mp4", mime_type="video/mp4", file_size=100
+                ),
             ),
         ]
         plan = plan_prescan_packages(messages, 100, PrescanLimits())

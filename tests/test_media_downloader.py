@@ -915,13 +915,15 @@ class MediaDownloaderTestCase(unittest.TestCase):
             [6844, 6845, 6846, 6847],
         )
 
-    def test_download_prepared_messages_preserves_planned_later_caption_for_package_naming_context(self):
+    def test_download_prepared_messages_preserves_planned_later_caption_for_package_naming_context(
+        self,
+    ):
+        from media_downloader import download_prepared_messages
         from module.comment_workflow import (
             NamingStrategy,
             PackageNamingContext,
             plan_message_package,
         )
-        from media_downloader import download_prepared_messages
 
         rest_app(MOCK_CONF)
         app.save_path = MOCK_DIR
@@ -1162,8 +1164,8 @@ class MediaDownloaderTestCase(unittest.TestCase):
         self.assertEqual(report_calls[-1], (0, 1, 1))
 
     def test_download_prepared_messages_filter_queues_only_matching_media(self):
-        from media_downloader import download_prepared_messages
         import media_downloader
+        from media_downloader import download_prepared_messages
 
         rest_app(MOCK_CONF)
         messages = [

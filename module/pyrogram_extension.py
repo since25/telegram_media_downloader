@@ -14,7 +14,8 @@ from typing import Callable, Iterable, List, Optional, Union
 import pyrogram
 from loguru import logger
 from pyrogram import types
-from pyrogram.client import Cache, Client as PyrogramClient
+from pyrogram.client import Cache
+from pyrogram.client import Client as PyrogramClient
 from pyrogram.file_id import (
     FILE_REFERENCE_FLAG,
     PHOTO_TYPES,
@@ -48,8 +49,8 @@ from utils.meta_data import MetaData
 
 _mimetypes = MimeTypes()
 _mimetypes.readfp(StringIO(mime_types))
-_download_cache = Cache(4*1024 * 1024 * 1024)
-MAX_ACTIVE_ITEMS = 5   # 状态页最多显示 5 个进行中任务
+_download_cache = Cache(4 * 1024 * 1024 * 1024)
+MAX_ACTIVE_ITEMS = 5  # 状态页最多显示 5 个进行中任务
 
 
 def reset_download_cache():
@@ -795,7 +796,7 @@ async def report_bot_download_status(
     """
     node.stat(download_status, chat_id, message_id, file_name)
     node.total_download_byte += download_size
-    
+
     # 检查任务是否完成，完成时立即回复
     # 对于ListenForward类型任务，使用is_running状态判断
     # 对于普通下载任务，检查total_download_task是否有变化
@@ -807,7 +808,7 @@ async def report_bot_download_status(
         # 普通下载任务，每次状态更新都可能是最后一次
         # 使用immediate_reply=True确保最后一次更新被发送
         immediate_reply = True
-    
+
     await report_bot_status(client, node, immediate_reply)
 
 
@@ -830,6 +831,7 @@ async def report_bot_forward_status(
     node.stat_forward(status)
     await report_bot_status(client, node)
 
+
 async def report_bot_status(
     client: pyrogram.Client,
     node: TaskNode,
@@ -837,14 +839,25 @@ async def report_bot_status(
 ):
     """see _report_bot_status"""
     current_time = time.time()
-    
+
     # 节流逻辑：只有在非立即回复、距离上次更新不到5秒且没有新任务开始时才跳过
     # 新增：如果有新任务开始（总任务数增加但完成任务数未增加），立即更新
-    has_new_tasks = (node.total_download_task - (node.success_download_task + node.failed_download_task + node.skip_download_task)) > 0
-    
-    if not immediate_reply and current_time - node.last_report_time < 5.0 and not has_new_tasks:
+    has_new_tasks = (
+        node.total_download_task
+        - (
+            node.success_download_task
+            + node.failed_download_task
+            + node.skip_download_task
+        )
+    ) > 0
+
+    if (
+        not immediate_reply
+        and current_time - node.last_report_time < 5.0
+        and not has_new_tasks
+    ):
         return
-    
+
     try:
         node.last_report_time = current_time
         # 同时更新last_reply_time以确保can_reply()方法正常工作
@@ -855,6 +868,8 @@ async def report_bot_status(
 
 
 MAX_TG_TEXT = 3800  # 留余量避免 markdown/转义贴边
+
+
 def _split_text_chunks(text: str, limit: int = MAX_TG_TEXT) -> list[str]:
     """
     按行切分，保证每段 <= limit
@@ -898,22 +913,30 @@ async def _report_bot_status(
 
     if immediate_reply or node.can_reply():
         # 确定任务状态（包括skip_not_found）
-        finished_tasks = node.success_download_task + node.failed_download_task + node.skip_download_task
-        if hasattr(node, 'skip_not_found_download_task'):
+        finished_tasks = (
+            node.success_download_task
+            + node.failed_download_task
+            + node.skip_download_task
+        )
+        if hasattr(node, "skip_not_found_download_task"):
             finished_tasks += node.skip_not_found_download_task
         is_completed = (
             node.total_download_task > 0
             and finished_tasks == node.total_download_task
             and not getattr(node, "prescan_batch_in_progress", False)
         )
-        task_status = _t('Completed') if is_completed else _t('In Progress')
-        
+        task_status = _t("Completed") if is_completed else _t("In Progress")
+
         # 简化消息格式，只显示核心信息
         # 计算总完成数（包括skip_not_found）
-        total_finished = node.success_download_task + node.failed_download_task + node.skip_download_task
-        if hasattr(node, 'skip_not_found_download_task'):
+        total_finished = (
+            node.success_download_task
+            + node.failed_download_task
+            + node.skip_download_task
+        )
+        if hasattr(node, "skip_not_found_download_task"):
             total_finished += node.skip_not_found_download_task
-        
+
         new_msg_str = (
             f"`\n"
             f"🆔 task id: {node.task_id}\n"
@@ -924,24 +947,27 @@ async def _report_bot_status(
             f"├─ ❌ {_t('Download Failed')}: {node.failed_download_task}\n"
             f"├─ ⏩ {_t('Skipped')}: {node.skip_download_task}\n"
         )
-        
+
         # 如果有skip_not_found，单独显示
-        if hasattr(node, 'skip_not_found_download_task') and node.skip_not_found_download_task > 0:
-            new_msg_str += f"└─ 🔍 {_t('Not Found')}: {node.skip_not_found_download_task}\n"
+        if (
+            hasattr(node, "skip_not_found_download_task")
+            and node.skip_not_found_download_task > 0
+        ):
+            new_msg_str += (
+                f"└─ 🔍 {_t('Not Found')}: {node.skip_not_found_download_task}\n"
+            )
         else:
             new_msg_str += f"└─ 🔍 {_t('Not Found')}: 0\n"
 
         # 只添加必要的转发统计
-        if node.upload_telegram_chat_id and (node.total_forward_task > 0 or node.success_forward_task > 0):
-            new_msg_str += (
-                f"🔄 {_t('Forward')}: {node.success_forward_task}/{node.total_forward_task}\n"
-            )
+        if node.upload_telegram_chat_id and (
+            node.total_forward_task > 0 or node.success_forward_task > 0
+        ):
+            new_msg_str += f"🔄 {_t('Forward')}: {node.success_forward_task}/{node.total_forward_task}\n"
 
         # 只添加必要的上传统计
         if node.upload_success_count > 0:
-            new_msg_str += (
-                f"☁️ {_t('Upload Success')}: {node.upload_success_count}\n"
-            )
+            new_msg_str += f"☁️ {_t('Upload Success')}: {node.upload_success_count}\n"
 
         # 显示活跃下载任务的详细进度
         download_result = get_download_result()
@@ -949,14 +975,17 @@ async def _report_bot_status(
         if node.chat_id in download_result:
             messages = download_result[node.chat_id]
             for idx, value in messages.items():
-                if value["task_id"] == node.task_id and value["down_byte"] < value["total_size"]:
+                if (
+                    value["task_id"] == node.task_id
+                    and value["down_byte"] < value["total_size"]
+                ):
                     active_downloads.append(value)
-        
+
         active_uploads_count = 0
         for idx, value in node.upload_stat_dict.items():
             if value.total_size > value.upload_size:
                 active_uploads_count += 1
-        
+
         if active_downloads:
             new_msg_str += f"📥 {_t('Active Downloads')}: {len(active_downloads)}\n"
             # 最多显示5个任务的详情，避免消息过长
@@ -976,13 +1005,20 @@ async def _report_bot_status(
                 # 格式化速度
                 speed_str = format_byte(speed, 1) + "/s" if speed > 0 else "⏳"
                 # 树形符号
-                prefix = " └" if (i == len(active_downloads[:max_display]) - 1 and len(active_downloads) <= max_display) else " ├"
+                prefix = (
+                    " └"
+                    if (
+                        i == len(active_downloads[:max_display]) - 1
+                        and len(active_downloads) <= max_display
+                    )
+                    else " ├"
+                )
                 new_msg_str += f"{prefix} 📄 {fname}  {pct:.0f}% ⚡{speed_str}\n"
             if len(active_downloads) > max_display:
                 new_msg_str += f" └ ... +{len(active_downloads) - max_display} more\n"
         if active_uploads_count > 0:
             new_msg_str += f"📤 {_t('Active Uploads')}: {active_uploads_count}\n"
-        
+
         new_msg_str += "`"
 
         if new_msg_str != node.last_edit_msg:
@@ -998,10 +1034,11 @@ async def _report_bot_status(
                 await _send_finish_summary(client, node)
             except Exception as e:
                 logger.debug(f"send_finish_summary failed: {e}")
-        
+
         # 任务完成后从活跃列表中移除
         if is_completed:
             remove_active_task_node(node.task_id)
+
 
 def _collect_finish_lists(node: "TaskNode"):
     """
@@ -1021,6 +1058,7 @@ def _collect_finish_lists(node: "TaskNode"):
         skipped_tasks = node.skipped_tasks
 
     return success_tasks, failed_tasks, skipped_tasks
+
 
 async def _send_finish_summary(client: pyrogram.Client, node: "TaskNode"):
     """
@@ -1062,21 +1100,21 @@ async def _send_finish_summary(client: pyrogram.Client, node: "TaskNode"):
 
     # 详细任务列表
     details = ""
-    
+
     # 成功任务列表
     if success_tasks:
         details += f"\n✅ {_t('Success Tasks')}: {len(success_tasks)}\n"
         details += f"chat id|id\n"
         for chat_id, msg_id, _ in success_tasks:
             details += f"{chat_id}|{msg_id}\n"
-    
+
     # 失败任务列表
     if failed_tasks:
         details += f"\n❌ {_t('Failed Tasks')}: {len(failed_tasks)}\n"
         details += f"chat id|id\n"
         for chat_id, msg_id, _ in failed_tasks:
             details += f"{chat_id}|{msg_id}\n"
-    
+
     # 跳过任务列表
     if skipped_tasks:
         details += f"\n⏩ {_t('Skipped Tasks')}: {len(skipped_tasks)}\n"
@@ -1273,22 +1311,20 @@ def set_meta_data(
 async def parse_link(client: pyrogram.Client, link_str: str):
     """Parse link"""
     link = extract_info_from_link(link_str)
-    
+
     # 检查是否是评论URL，无论是单个评论还是评论范围
-    from urllib.parse import urlparse, parse_qs
+    from urllib.parse import parse_qs, urlparse
+
     u = urlparse(link_str)
     query = parse_qs(u.query)
     is_comment_url = "comment" in query
-    
+
     if link.comment_id or is_comment_url:
         chat = await client.get_chat(link.group_id)
-        if chat and hasattr(chat, 'linked_chat') and chat.linked_chat:
+        if chat and hasattr(chat, "linked_chat") and chat.linked_chat:
             return chat.linked_chat.id, link.comment_id, link.topic_id
 
     return link.group_id, link.post_id, link.topic_id
-
-
-
 
 
 async def update_cloud_upload_stat(

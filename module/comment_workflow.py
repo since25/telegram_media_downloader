@@ -433,9 +433,8 @@ def is_media_comment(comment: Optional[CommentLike]) -> bool:
         return False
 
     media_name = _media_name(comment)
-    return (
-        media_name in SUPPORTED_MEDIA_TYPES
-        and bool(getattr(comment, media_name, None))
+    return media_name in SUPPORTED_MEDIA_TYPES and bool(
+        getattr(comment, media_name, None)
     )
 
 
@@ -584,7 +583,9 @@ def build_name_for_strategy(
         return f"{post_title}/{comment.id} - {caption_summary} - {original_file_name}"
     if context.strategy is NamingStrategy.MONTH_CAPTION:
         return f"{channel}/{month_for_comment(comment)}/{post_title}/{comment.id} - {caption_summary}.{extension}"
-    return f"{channel}/{context.post_id}-{post_title}/{comment.id} - {original_file_name}"
+    return (
+        f"{channel}/{context.post_id}-{post_title}/{comment.id} - {original_file_name}"
+    )
 
 
 def build_package_name_for_strategy(
@@ -719,8 +720,7 @@ def build_recommended_naming_previews(
             strategy=NamingStrategy.RECOMMENDED,
             title="推荐C：频道/原帖ID-标题/评论ID - 原文件名",
             examples=[
-                build_name_for_strategy(comment, context)
-                for comment in sample_comments
+                build_name_for_strategy(comment, context) for comment in sample_comments
             ],
         )
     ]
@@ -747,8 +747,7 @@ def build_recommended_package_naming_previews(
             strategy=NamingStrategy.RECOMMENDED,
             title="推荐C：频道/起始ID-标题/消息ID - 原文件名",
             examples=[
-                build_package_name_for_strategy(item, context)
-                for item in sample_items
+                build_package_name_for_strategy(item, context) for item in sample_items
             ],
         )
     ]
@@ -877,10 +876,13 @@ def format_package_preview_message(
 
     media_ids = [item.message.id for item in package_plan.items]
     range_text = f"{min(media_ids)} - {max(media_ids)}" if media_ids else "无"
-    media_types = ", ".join(
-        f"{key} {value} 个"
-        for key, value in sorted(package_plan.summary.media_type_counts.items())
-    ) or "无"
+    media_types = (
+        ", ".join(
+            f"{key} {value} 个"
+            for key, value in sorted(package_plan.summary.media_type_counts.items())
+        )
+        or "无"
+    )
 
     lines = [
         "识别到连续资源包：",
