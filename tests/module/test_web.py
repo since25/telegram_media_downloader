@@ -37,12 +37,14 @@ def build_web_test_app(tmp_dir):
 class WebTestCase(unittest.TestCase):
     def setUp(self):
         from module import web as web_module
+        from module.task_state import get_task_store
 
         self.web_module = web_module
         self.old_auth_env = os.environ.get(web_module.WEB_AUTH_FILE_ENV)
         self.old_current_app = web_module._current_app
         self.old_login_disabled = web_module._flask_app.config.get("LOGIN_DISABLED")
         web_module._flask_app.config["TESTING"] = True
+        get_task_store().clear()
 
     def tearDown(self):
         if self.old_auth_env is None:
@@ -51,6 +53,9 @@ class WebTestCase(unittest.TestCase):
             os.environ[self.web_module.WEB_AUTH_FILE_ENV] = self.old_auth_env
         self.web_module._current_app = self.old_current_app
         self.web_module._flask_app.config["LOGIN_DISABLED"] = self.old_login_disabled
+        from module.task_state import get_task_store
+
+        get_task_store().clear()
 
     def test_web_auth_generates_local_password_and_allows_login(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -145,3 +150,69 @@ class WebTestCase(unittest.TestCase):
             self.assertIn("enable_web: true", saved_config)
             self.assertIn("web_port: 80", saved_config)
             self.assertIn("after_upload_file_delete: false", saved_config)
+
+    def test_task_dashboard_returns_task_summary(self):
+        from module.task_state import FileStatus, TaskStatus, get_task_store
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            store = get_task_store()
+            task = store.create_task(
+                task_id=99,
+                source="bot",
+                task_type="package",
+                chat_id=-1001,
+                title="demo",
+                status=TaskStatus.DOWNLOADING,
+                total_count=1,
+            )
+            store.upsert_file(
+                task.task_id,
+                501,
+                status=FileStatus.DOWNLOADING,
+                filename="/data/tg/demo.mp4",
+                total_size=100,
+                downloaded_size=50,
+                download_speed=10,
+            )
+
+            client = self.web_module.get_flask_app().test_client()
+            response = client.get("/api/task-dashboard")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["active_task_count"], 1)
+            self.assertEqual(payload["completed_task_count"], 0)
+            self.assertEqual(payload["tasks"][0]["task_id"], "99")
+            self.assertEqual(
+                payload["tasks"][0]["current_file"]["filename"], "demo.mp4"
+            )
+            self.assertEqual(
+                payload["tasks"][0]["current_file"]["download_progress"], 50.0
+            )
+
+    def test_task_detail_returns_files(self):
+        from module.task_state import FileStatus, TaskStatus, get_task_store
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            store = get_task_store()
+            task = store.create_task(
+                task_id="web-1",
+                source="web",
+                task_type="comment",
+                status=TaskStatus.QUEUED,
+            )
+            store.upsert_file(task.task_id, 11, status=FileStatus.QUEUED)
+
+            client = self.web_module.get_flask_app().test_client()
+            response = client.get("/api/tasks/web-1")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["task_id"], "web-1")
+            self.assertEqual(payload["files"][0]["message_id"], "11")

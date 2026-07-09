@@ -35,6 +35,7 @@ from module.download_stat import (
     get_download_result,
     update_download_status,
 )
+from module.task_state import FileStatus, TaskStatus, get_task_store, snapshot_node
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import _t
 from module.pyrogram_extension import (
@@ -572,6 +573,20 @@ async def add_download_task(
 
         # 标记下载中
         node.download_status[msg_id] = DownloadStatus.Downloading
+        if getattr(node, "task_id", None):
+            snapshot_node(node)
+            get_task_store().update_task(
+                node.task_id,
+                status=TaskStatus.QUEUED,
+                total_count=max(
+                    node.total_download_task + 1, len(node.download_status)
+                ),
+            )
+            get_task_store().upsert_file(
+                node.task_id,
+                msg_id,
+                status=FileStatus.QUEUED,
+            )
 
         # ---- 入队：这是核心，必须尽快完成 ----
         # 记录任务进入队列的时间
@@ -699,6 +714,13 @@ async def download_task(
         logger.info(
             f"download_task: Processing message id={message_id}, type={type(message)}, has_media={message.media is not None}, queue_wait_time={queue_wait_time:.2f}s"
         )
+        if getattr(node, "task_id", None):
+            get_task_store().update_task(node.task_id, status=TaskStatus.DOWNLOADING)
+            get_task_store().upsert_file(
+                node.task_id,
+                message_id,
+                status=FileStatus.DOWNLOADING,
+            )
 
         # 下载媒体
         download_status, file_name = await download_media(
@@ -714,6 +736,20 @@ async def download_task(
             app.set_download_id(node, message_id, download_status)
 
         node.download_status[message_id] = download_status
+        if getattr(node, "task_id", None):
+            if download_status is DownloadStatus.SuccessDownload:
+                file_status = FileStatus.DOWNLOADED
+            elif download_status is DownloadStatus.SkipDownload:
+                file_status = FileStatus.SKIPPED
+            else:
+                file_status = FileStatus.FAILED
+            get_task_store().upsert_file(
+                node.task_id,
+                message_id,
+                status=file_status,
+                filename=file_name or "",
+                save_path=file_name or "",
+            )
 
         # 更新任务完成状态
         # 使用stat方法更新状态，这样会同时填充success_tasks列表
@@ -758,6 +794,17 @@ async def download_task(
                     ui_file_name = f"****{os.path.splitext(file_name)[-1]}"
 
                 try:
+                    if getattr(node, "task_id", None):
+                        get_task_store().update_task(
+                            node.task_id, status=TaskStatus.UPLOADING
+                        )
+                        get_task_store().upsert_file(
+                            node.task_id,
+                            message_id,
+                            status=FileStatus.UPLOADING,
+                            filename=file_name,
+                            save_path=file_name,
+                        )
                     upload_result = await app.upload_file(
                         file_name,
                         update_cloud_upload_stat,
@@ -765,12 +812,37 @@ async def download_task(
                     )
                     if upload_result:
                         node.upload_success_count += 1
+                        if getattr(node, "task_id", None):
+                            get_task_store().upsert_file(
+                                node.task_id,
+                                message_id,
+                                status=FileStatus.UPLOADED,
+                                filename=file_name,
+                                save_path=file_name,
+                            )
                         logger.info(
                             f"download_task: 文件上传成功 - file_name={file_name}, upload_success_count={node.upload_success_count}"
                         )
                     else:
+                        if getattr(node, "task_id", None):
+                            get_task_store().upsert_file(
+                                node.task_id,
+                                message_id,
+                                status=FileStatus.UPLOAD_FAILED,
+                                filename=file_name,
+                                save_path=file_name,
+                            )
                         logger.warning(f"download_task: 文件上传失败 - file_name={file_name}")
                 except Exception as e:
+                    if getattr(node, "task_id", None):
+                        get_task_store().upsert_file(
+                            node.task_id,
+                            message_id,
+                            status=FileStatus.UPLOAD_FAILED,
+                            filename=file_name,
+                            save_path=file_name,
+                            error=str(e),
+                        )
                     logger.error(
                         f"download_task: 文件上传异常 - file_name={file_name}, error={e}",
                         exc_info=True,
@@ -787,6 +859,8 @@ async def download_task(
             message_id=message_id,
             file_name=file_name,
         )
+        if getattr(node, "task_id", None):
+            snapshot_node(node)
 
     except Exception as e:
         logger.error(f"Error in download_task: {e}")

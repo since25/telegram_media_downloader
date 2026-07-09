@@ -6,6 +6,7 @@ from enum import Enum
 from pyrogram import Client
 
 from module.app import TaskNode
+from module.task_state import FileStatus, TaskStatus, get_task_store, snapshot_node
 
 DOWNLOAD_LAST_PROGRESS_TS: dict[int, float] = {}
 DOWNLOAD_LAST_PROGRESS_BYTES: dict[int, int] = {}
@@ -39,6 +40,7 @@ def add_active_task_node(node) -> None:
     """
     if node.task_id:
         _active_task_nodes[node.task_id] = node
+        snapshot_node(node)
 
 
 def remove_active_task_node(task_id: int) -> None:
@@ -48,6 +50,8 @@ def remove_active_task_node(task_id: int) -> None:
         task_id: TaskNode的task_id
     """
     if task_id in _active_task_nodes:
+        snapshot_node(_active_task_nodes[task_id])
+        get_task_store().complete_task(task_id)
         del _active_task_nodes[task_id]
 
 
@@ -114,6 +118,25 @@ async def update_download_status(
     if not _download_result.get(chat_id):
         _download_result[chat_id] = {}
 
+    if getattr(node, "task_id", None):
+        get_task_store().update_task(
+            node.task_id,
+            status=TaskStatus.DOWNLOADING,
+            total_count=max(
+                int(getattr(node, "total_download_task", 0) or 0),
+                len(getattr(node, "download_status", {}) or {}),
+            ),
+        )
+        get_task_store().upsert_file(
+            node.task_id,
+            message_id,
+            status=FileStatus.DOWNLOADING,
+            filename=file_name,
+            save_path=file_name,
+            total_size=total_size,
+            downloaded_size=down_byte,
+        )
+
     if _download_result[chat_id].get(message_id):
         last_download_byte = _download_result[chat_id][message_id]["down_byte"]
         last_time = _download_result[chat_id][message_id]["end_time"]
@@ -139,6 +162,13 @@ async def update_download_status(
         _download_result[chat_id][message_id][
             "each_second_total_download"
         ] = each_second_total_download
+        if getattr(node, "task_id", None):
+            get_task_store().upsert_file(
+                node.task_id,
+                message_id,
+                download_speed=download_speed,
+                downloaded_size=down_byte,
+            )
     else:
         each_second_total_download = down_byte
         _download_result[chat_id][message_id] = {

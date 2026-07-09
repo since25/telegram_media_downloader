@@ -21,6 +21,7 @@ from module.download_stat import (
     get_total_download_speed,
     set_download_state,
 )
+from module.task_state import get_task_store
 from utils.crypto import AesBase64
 from utils.format import format_byte
 
@@ -315,6 +316,60 @@ def get_download_list():
             )
 
     return jsonify(result)
+
+
+def _task_dashboard_payload(app: Optional[Application] = None) -> dict:
+    """Build the Web task dashboard payload."""
+
+    hide_file_name = bool(getattr(app, "hide_file_name", False)) if app else False
+    payload = get_task_store().dashboard(hide_file_name=hide_file_name)
+    payload.update(
+        {
+            "download_state": get_download_state().name,
+            "download_speed": format_byte(get_total_download_speed()) + "/s",
+            "download_speed_bytes": get_total_download_speed(),
+        }
+    )
+    return payload
+
+
+@_flask_app.route("/api/task-dashboard")
+@login_required
+def task_dashboard():
+    """Return task dashboard summary for the Web UI."""
+
+    app = _active_app()
+    return jsonify(_task_dashboard_payload(app))
+
+
+@_flask_app.route("/api/tasks")
+@login_required
+def task_list():
+    """Return task summaries for the Web UI."""
+
+    app = _active_app()
+    return jsonify(
+        get_task_store().serialize_tasks(
+            hide_file_name=bool(getattr(app, "hide_file_name", False))
+        )
+    )
+
+
+@_flask_app.route("/api/tasks/<task_id>")
+@login_required
+def task_detail(task_id: str):
+    """Return one task with file details."""
+
+    app = _active_app()
+    task = get_task_store().get_task(task_id)
+    if not task:
+        return jsonify({"error": "task not found"}), 404
+    return jsonify(
+        task.to_dict(
+            hide_file_name=bool(getattr(app, "hide_file_name", False)),
+            include_files=True,
+        )
+    )
 
 
 def _active_app() -> Application:
