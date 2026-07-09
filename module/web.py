@@ -318,6 +318,7 @@ def get_download_list():
     already_down = request.args.get("already_down") == "true"
 
     result = []
+    download_result = get_download_result()
     for chat_id, messages in download_result.items():
         for idx, value in messages.items():
             is_already_down = value["down_byte"] == value["total_size"]
@@ -549,6 +550,29 @@ def _package_summary(package, selected: bool = False) -> dict:
     }
 
 
+def _update_web_prescan_progress(task_id: str, progress: dict) -> None:
+    """Publish bounded prescan progress while scan is still running."""
+
+    scanned_count = int(progress.get("scanned_count") or 0)
+    package_count = int(progress.get("package_count") or 0)
+    rate_limited_seconds = progress.get("rate_limited_seconds")
+    summary = f"Prescanning: {scanned_count} messages, {package_count} packages"
+    if rate_limited_seconds is not None:
+        summary = f"{summary}. Rate limited for {rate_limited_seconds}s"
+    get_task_store().update_task(
+        task_id,
+        status=TaskStatus.SCANNING,
+        workflow=WorkflowSnapshot(
+            workflow_type="prescan",
+            status=TaskStatus.SCANNING,
+            scan_count=scanned_count,
+            media_count=package_count,
+            selected_count=0,
+            summary=summary,
+        ),
+    )
+
+
 async def _run_web_prescan_task(
     app: Application,
     client,
@@ -588,6 +612,9 @@ async def _run_web_prescan_task(
             max_packages=limits["max_packages"],
             batch_size=limits["batch_size"],
             batch_delay_seconds=limits["batch_delay_seconds"],
+            progress_callback=lambda progress: _update_web_prescan_progress(
+                task_id, progress
+            ),
         )
         plan = scan_result.prescan_plan
         packages = list(getattr(plan, "packages", []) or [])

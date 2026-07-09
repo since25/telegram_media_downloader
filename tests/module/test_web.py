@@ -50,6 +50,7 @@ class WebTestCase(unittest.TestCase):
         web_module._pending_web_task_previews.clear()
         web_module._pending_web_prescans.clear()
         web_module._active_web_prescan_task_id = None
+        web_module.get_download_result().clear()
         get_task_store().clear()
 
     def tearDown(self):
@@ -64,6 +65,7 @@ class WebTestCase(unittest.TestCase):
         self.web_module._pending_web_task_previews.clear()
         self.web_module._pending_web_prescans.clear()
         self.web_module._active_web_prescan_task_id = None
+        self.web_module.get_download_result().clear()
         get_task_store().clear()
 
     def test_web_auth_generates_local_password_and_allows_login(self):
@@ -253,6 +255,18 @@ class WebTestCase(unittest.TestCase):
             self.assertEqual(payload["total"], 60)
             self.assertEqual(payload["items"][0]["message_id"], "26")
 
+    def test_download_list_uses_download_result_store(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.get("/get_download_list?already_down=false")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json(), [])
+
     def test_prescan_slot_allows_only_one_running_scan(self):
         self.assertTrue(self.web_module._try_acquire_prescan_slot("scan-1"))
         self.assertFalse(self.web_module._try_acquire_prescan_slot("scan-2"))
@@ -269,6 +283,27 @@ class WebTestCase(unittest.TestCase):
         self.assertEqual(limits["max_messages"], self.web_module.WEB_PRESCAN_MAX_MESSAGES)
         self.assertEqual(limits["max_packages"], self.web_module.WEB_PRESCAN_MAX_PACKAGES)
         self.assertEqual(limits["batch_size"], self.web_module.WEB_PRESCAN_MAX_BATCH_SIZE)
+
+    def test_prescan_progress_updates_task_workflow(self):
+        from module.task_state import TaskStatus, get_task_store
+
+        get_task_store().create_task(
+            "web-prescan-progress",
+            source="web",
+            task_type="prescan",
+            status=TaskStatus.SCANNING,
+        )
+
+        self.web_module._update_web_prescan_progress(
+            "web-prescan-progress",
+            {"scanned_count": 150, "package_count": 3},
+        )
+
+        task = get_task_store().get_task("web-prescan-progress")
+        self.assertEqual(task.status, TaskStatus.SCANNING)
+        self.assertEqual(task.workflow.scan_count, 150)
+        self.assertEqual(task.workflow.media_count, 3)
+        self.assertIn("150", task.workflow.summary)
 
     def test_web_prescan_waits_for_package_selection(self):
         from module.comment_workflow import build_message_package_workflow_request

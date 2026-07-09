@@ -276,3 +276,25 @@ Changed files:
 
 Rollback:
 - On the server, run `cd /root/telegram_media_downloader && git revert b6fe588 edc71e1 && systemctl restart tg-downloader.service`.
+
+## 2026-07-09 - Task: Fix Web prescan progress visibility
+
+### What was done
+
+- Fixed the legacy `/get_download_list` endpoint so it reads the active download result store instead of an undefined local variable.
+- Added Web prescan progress updates during long scans so the dashboard shows scanned message/package counts before the scan reaches package selection.
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/module/test_task_state.py tests/module/test_web.py tests/test_media_downloader.py tests/module/test_comment_workflow.py -q`
+- Result: 151 passed.
+
+### Notes
+
+Changed files:
+- `module/web.py`: Fixed `get_download_list` and added prescan progress publishing.
+- `tests/module/test_web.py`: Added regressions for download-list access and prescan progress updates.
+- `progress.md`: Recorded this bugfix.
+
+Rollback:
+- `git revert <prescan-progress-fix-commit>` after the implementation commit is created, then redeploy and restart `tg-downloader.service`.
