@@ -98,3 +98,33 @@ Changed files:
 
 Rollback:
 - `git revert <phase2-web-submission-commit>` after the implementation commit is created.
+
+## 2026-07-09 - Task: Deploy Web console Phase 2 to RackNerd
+
+### What was done
+
+- Pushed the Phase 1 and Phase 2 Web console commits to `origin/master`.
+- Updated the RackNerd checkout at `/root/telegram_media_downloader` with a fast-forward pull.
+- Restarted `tg-downloader.service` on the server.
+- Verified the public Cloudflare-proxied Web route still reaches the service and redirects unauthenticated users to login.
+
+### Testing
+
+- `git push origin master`
+- Result: `master -> master`, latest pushed commit `a8ea37a`.
+- `ssh rn 'cd /root/telegram_media_downloader && git pull --ff-only origin master'`
+- Result: fast-forwarded server checkout to `a8ea37a`.
+- `ssh rn 'cd /root/telegram_media_downloader && systemctl restart tg-downloader.service && sleep 3 && systemctl is-active tg-downloader.service && git log --oneline -1'`
+- Result: service `active`, latest server commit `a8ea37a feat: add web task submission`.
+- `curl -I https://tgdn.wyichuan.cc/`
+- Result: `HTTP/2 302`, `location: /login?next=%2F`.
+- `curl -I https://tgdn.wyichuan.cc/api/task-dashboard`
+- Result: `HTTP/2 302`, `location: /login?next=%2Fapi%2Ftask-dashboard`.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the RackNerd deployment and verification evidence.
+
+Rollback:
+- On the server, run `cd /root/telegram_media_downloader && git revert a8ea37a 44e31c0 9c58a10 08a6cb6 8f45025 && systemctl restart tg-downloader.service`, or reset to the pre-deployment commit only after explicitly confirming that runtime local files should be left untouched.
