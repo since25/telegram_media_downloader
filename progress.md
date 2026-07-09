@@ -67,3 +67,34 @@ Changed files:
 
 Rollback:
 - `git revert <phase1-ui-commit>` after the UI commit is created.
+
+## 2026-07-09 - Task: Implement Web task submission
+
+### What was done
+
+- Added authenticated Web task submission for Telegram package links and comment links.
+- Connected Web submissions to the running downloader client and existing scan/download queue so submitted tasks appear in the task dashboard lifecycle.
+- Added a Tasks-tab submission control and user-facing submission status.
+- Documented the Web console task submission behavior and API surface.
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/module/test_task_state.py tests/module/test_web.py tests/test_media_downloader.py tests/module/test_comment_workflow.py -q`
+- Result: 135 passed.
+
+### Notes
+
+Changed files:
+- `module/web.py`: Added Web task submission validation, scheduling, and package/comment orchestration.
+- `media_downloader.py`: Passes the running Pyrogram client into the Web layer.
+- `module/download_stat.py`: Allows task source/type metadata to be preserved for Web-created active nodes.
+- `module/task_state.py`: Preserves node-provided display source/type in snapshots.
+- `module/templates/index.html`: Added the Web task submission control and submit handling.
+- `module/static/css/index.css`: Added responsive submission control styles.
+- `tests/module/test_web.py`: Added Web task submission API coverage.
+- `docs/web-control-console.md`: Documented the Web dashboard APIs and submission behavior.
+- `README_CN.md`: Linked the Web task submission documentation from the Web UI section.
+- `progress.md`: Recorded this implementation step.
+
+Rollback:
+- `git revert <phase2-web-submission-commit>` after the implementation commit is created.

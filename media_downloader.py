@@ -2902,7 +2902,7 @@ def main():
     try:
         app.pre_run()
         if app.enable_web:
-            init_web(app)
+            init_web(app, client)
         else:
             logger.info("Web UI disabled (enable_web=false)")
 

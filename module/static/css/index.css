@@ -67,6 +67,19 @@ body {
   font-weight: 700;
 }
 
+.task-submit {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto minmax(160px, auto);
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.task-submit-status {
+  color: #4b5563;
+  overflow-wrap: anywhere;
+}
+
 .config-form {
   padding: 6px 0 24px;
 }
@@ -202,6 +215,10 @@ body {
 
   .task-summary {
     grid-template-columns: repeat(2, minmax(120px, 1fr));
+  }
+
+  .task-submit {
+    grid-template-columns: 1fr;
   }
 
   .config-form .layui-form-label {

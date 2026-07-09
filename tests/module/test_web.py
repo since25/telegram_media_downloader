@@ -217,6 +217,69 @@ class WebTestCase(unittest.TestCase):
             self.assertEqual(payload["task_id"], "web-1")
             self.assertEqual(payload["files"][0]["message_id"], "11")
 
+    def test_task_submission_rejects_invalid_link(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.post("/api/tasks", json={"link": "not-a-telegram-link"})
+
+            self.assertEqual(response.status_code, 400)
+            payload = response.get_json()
+            self.assertFalse(payload["ok"])
+            self.assertIn("unsupported", payload["error"])
+
+    def test_task_submission_requires_running_telegram_client(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.post(
+                "/api/tasks",
+                json={"link": "https://t.me/c/12345/99"},
+            )
+
+            self.assertEqual(response.status_code, 503)
+            payload = response.get_json()
+            self.assertFalse(payload["ok"])
+            self.assertIn("telegram client", payload["error"])
+
+    def test_task_submission_schedules_valid_package_link(self):
+        class FakeLoop:
+            def __init__(self):
+                self.scheduled = []
+
+            def is_running(self):
+                return False
+
+            def create_task(self, coroutine):
+                self.scheduled.append(coroutine)
+                coroutine.close()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            app.web_client = object()
+            app.loop = FakeLoop()
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.post(
+                "/api/tasks",
+                json={"link": "https://t.me/c/12345/99"},
+            )
+
+            self.assertEqual(response.status_code, 202)
+            payload = response.get_json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["task_type"], "package")
+            self.assertEqual(payload["status"], "scanning")
+            self.assertEqual(len(app.loop.scheduled), 1)
+
     def test_index_contains_task_dashboard_shell(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
@@ -229,5 +292,7 @@ class WebTestCase(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             html = response.get_data(as_text=True)
             self.assertIn('id="task_dashboard_summary"', html)
+            self.assertIn('id="web_task_link"', html)
+            self.assertIn('id="submit_task_btn"', html)
             self.assertIn('id="task_list"', html)
             self.assertIn('id="task_detail_list"', html)

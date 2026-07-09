@@ -383,15 +383,17 @@ def _status_from_node(node) -> str:
 
 def snapshot_node(
     node,
-    source: str = "bot",
+    source: Optional[str] = None,
     task_type: Optional[str] = None,
     title: Optional[str] = None,
 ) -> TaskSnapshot:
     task_id = getattr(node, "task_id", None) or f"{getattr(node, 'chat_id', 'unknown')}"
     task = get_task_store().create_task(
         task_id=task_id,
-        source=source,
-        task_type=task_type or getattr(node, "task_type", "unknown"),
+        source=source or getattr(node, "task_source", "bot"),
+        task_type=task_type
+        or getattr(node, "task_display_type", None)
+        or getattr(node, "task_type", "unknown"),
         chat_id=getattr(node, "chat_id", None),
         title=title
         or getattr(node, "replay_message", "")

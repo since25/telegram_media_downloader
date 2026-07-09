@@ -32,13 +32,17 @@ def get_download_result() -> dict:
     return _download_result
 
 
-def add_active_task_node(node) -> None:
+def add_active_task_node(node, source: str = None, task_type: str = None) -> None:
     """添加或更新活跃的TaskNode
 
     Args:
         node: TaskNode实例
     """
     if node.task_id:
+        if source:
+            node.task_source = source
+        if task_type:
+            node.task_display_type = task_type
         _active_task_nodes[node.task_id] = node
         snapshot_node(node)
 

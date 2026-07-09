@@ -1,11 +1,13 @@
 """web ui for media download"""
 
+import asyncio
 import hmac
 import json
 import logging
 import os
 import secrets
 import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -13,15 +15,23 @@ from flask import Flask, jsonify, render_template, request
 from flask_login import LoginManager, UserMixin, login_required, login_user, logout_user
 
 import utils
-from module.app import Application
+from module.app import Application, TaskNode
+from module.comment_workflow import (
+    CommentNamingContext,
+    NamingStrategy,
+    PackageNamingContext,
+    build_comment_workflow_request,
+    build_message_package_workflow_request,
+)
 from module.download_stat import (
     DownloadState,
+    add_active_task_node,
     get_download_result,
     get_download_state,
     get_total_download_speed,
     set_download_state,
 )
-from module.task_state import get_task_store
+from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
 from utils.crypto import AesBase64
 from utils.format import format_byte
 
@@ -41,6 +51,7 @@ _login_manager.login_view = "login"
 _login_manager.init_app(_flask_app)
 web_login_users: dict = {}
 _current_app: Optional[Application] = None
+_web_task_counter = 0
 deAesCrypt = AesBase64("1234123412ABCDEF", "ABCDEF1234123412")
 WEB_AUTH_FILE_ENV = "TMD_WEB_AUTH_FILE"
 WEB_AUTH_FILE_NAME = ".web_auth.json"
@@ -162,7 +173,7 @@ def _ensure_web_auth(app: Application) -> None:
 
 
 # pylint: disable = W0603
-def init_web(app: Application):
+def init_web(app: Application, client=None):
     """
     Set the value of the users variable.
 
@@ -174,6 +185,8 @@ def init_web(app: Application):
     """
     global _current_app
     _current_app = app
+    if client is not None:
+        app.web_client = client
     _ensure_web_auth(app)
     if app.debug_web:
         threading.Thread(target=run_web_server, args=(app,)).start()
@@ -370,6 +383,255 @@ def task_detail(task_id: str):
             include_files=True,
         )
     )
+
+
+def _next_web_task_id() -> str:
+    """Return a process-local Web task id."""
+
+    global _web_task_counter
+    _web_task_counter += 1
+    return f"web-{int(time.time() * 1000)}-{_web_task_counter}"
+
+
+def _schedule_web_coroutine(app: Application, coroutine) -> None:
+    """Schedule a coroutine on the downloader loop from the Flask thread."""
+
+    loop = getattr(app, "loop", None)
+    if loop is None:
+        coroutine.close()
+        raise RuntimeError("application loop is not available")
+    if loop.is_running():
+        asyncio.run_coroutine_threadsafe(coroutine, loop)
+    else:
+        loop.create_task(coroutine)
+
+
+def _web_client(app: Application):
+    """Return the running Telegram client bound to the Web UI."""
+
+    client = getattr(app, "web_client", None)
+    if client is None:
+        raise RuntimeError("telegram client is not available for web submissions")
+    return client
+
+
+def _create_web_task(
+    task_id: str,
+    task_type: str,
+    chat_id,
+    title: str,
+    workflow_type: str,
+) -> TaskNode:
+    """Create a Web-visible task node before async scan/download starts."""
+
+    node = TaskNode(
+        chat_id=chat_id,
+        from_user_id="web",
+        replay_message=title,
+        task_id=task_id,
+    )
+    node.task_source = "web"
+    node.task_display_type = task_type
+    node.is_running = True
+    get_task_store().create_task(
+        task_id=task_id,
+        source="web",
+        task_type=task_type,
+        chat_id=chat_id,
+        title=title,
+        status=TaskStatus.SCANNING,
+        workflow=WorkflowSnapshot(
+            workflow_type=workflow_type,
+            status=TaskStatus.SCANNING,
+            summary="Scanning Telegram link",
+        ),
+    )
+    return node
+
+
+async def _run_web_package_task(app: Application, client, task_id: str, workflow_request):
+    """Scan an ordinary message package link and enqueue the package download."""
+
+    from media_downloader import download_prepared_messages, scan_message_package
+
+    node = None
+    try:
+        entity = await client.get_chat(workflow_request.source_chat)
+        channel = entity.username or entity.title or str(entity.id)
+        title = f"{channel}/{workflow_request.start_message_id}"
+        node = _create_web_task(
+            task_id,
+            "package",
+            entity.id,
+            title,
+            "message_package",
+        )
+        node.client = client
+
+        scan_result = await scan_message_package(
+            client,
+            entity.id,
+            workflow_request.start_message_id,
+        )
+        package_plan = scan_result.package_plan
+        package_items = list(getattr(package_plan, "items", []) or [])
+        if not package_items:
+            get_task_store().update_task(
+                task_id,
+                status=TaskStatus.FAILED,
+                error="No downloadable media package was found.",
+                workflow=WorkflowSnapshot(
+                    workflow_type="message_package",
+                    status=TaskStatus.FAILED,
+                    summary="No downloadable media package was found.",
+                ),
+            )
+            return
+
+        package_title = package_plan.package_title
+        node.replay_message = f"{channel}/{workflow_request.start_message_id}"
+        node.package_naming_context = PackageNamingContext(
+            strategy=NamingStrategy.RECOMMENDED,
+            channel=channel,
+            start_message_id=workflow_request.start_message_id,
+            package_title=package_title,
+        )
+        node.package_plan = package_plan
+        node.package_media_items = {item.message.id: item for item in package_items}
+        get_task_store().update_task(
+            task_id,
+            status=TaskStatus.QUEUED,
+            title=package_title or node.replay_message,
+            total_count=len(package_items),
+            workflow=WorkflowSnapshot(
+                workflow_type="message_package",
+                status=TaskStatus.QUEUED,
+                scan_count=getattr(package_plan.summary, "scanned_count", 0),
+                media_count=getattr(package_plan.summary, "media_count", 0),
+                selected_count=len(package_items),
+                summary=f"Queued {len(package_items)} media files",
+            ),
+        )
+        add_active_task_node(node, source="web", task_type="package")
+        await download_prepared_messages(
+            scan_result.messages,
+            None,
+            node,
+            failed_message_ids=getattr(scan_result, "failed_message_ids", None),
+        )
+    except Exception as error:
+        logger.error("web package task failed: %s", error, exc_info=True)
+        get_task_store().update_task(
+            task_id,
+            status=TaskStatus.FAILED,
+            error=str(error),
+            workflow=WorkflowSnapshot(
+                workflow_type="message_package",
+                status=TaskStatus.FAILED,
+                error=str(error),
+            ),
+        )
+
+
+async def _run_web_comment_task(app: Application, client, task_id: str, workflow_request):
+    """Scan a comment link and enqueue the comment media download."""
+
+    from media_downloader import download_comments
+
+    node = None
+    try:
+        entity = await client.get_chat(workflow_request.source_chat)
+        channel = entity.username or entity.title or str(entity.id)
+        title = f"{channel}/{workflow_request.post_id}?comment={workflow_request.start_comment_id}"
+        node = _create_web_task(
+            task_id,
+            "comment",
+            entity.id,
+            title,
+            "comment",
+        )
+        node.client = client
+        node.comment_naming_context = CommentNamingContext(
+            strategy=NamingStrategy.RECOMMENDED,
+            channel=channel,
+            post_id=workflow_request.post_id,
+            post_title=title,
+        )
+        get_task_store().update_task(
+            task_id,
+            status=TaskStatus.QUEUED,
+            workflow=WorkflowSnapshot(
+                workflow_type="comment",
+                status=TaskStatus.QUEUED,
+                summary="Queued comment media scan",
+            ),
+        )
+        add_active_task_node(node, source="web", task_type="comment")
+        await download_comments(
+            client,
+            entity.id,
+            workflow_request.post_id,
+            workflow_request.start_comment_id,
+            workflow_request.start_comment_id,
+            None,
+            node,
+        )
+    except Exception as error:
+        logger.error("web comment task failed: %s", error, exc_info=True)
+        get_task_store().update_task(
+            task_id,
+            status=TaskStatus.FAILED,
+            error=str(error),
+            workflow=WorkflowSnapshot(
+                workflow_type="comment",
+                status=TaskStatus.FAILED,
+                error=str(error),
+            ),
+        )
+
+
+def _submit_web_task(app: Application, link: str) -> dict:
+    """Validate and schedule a Web-submitted Telegram task."""
+
+    link = str(link or "").strip()
+    if not link:
+        return {"ok": False, "error": "link is required"}, 400
+
+    comment_request = build_comment_workflow_request(link)
+    package_request = build_message_package_workflow_request(link)
+    if not comment_request and not package_request:
+        return {"ok": False, "error": "unsupported telegram link"}, 400
+
+    client = _web_client(app)
+    task_id = _next_web_task_id()
+    if comment_request:
+        coroutine = _run_web_comment_task(app, client, task_id, comment_request)
+        task_type = "comment"
+    else:
+        coroutine = _run_web_package_task(app, client, task_id, package_request)
+        task_type = "package"
+
+    _schedule_web_coroutine(app, coroutine)
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "task_type": task_type,
+        "status": TaskStatus.SCANNING,
+    }, 202
+
+
+@_flask_app.route("/api/tasks", methods=["POST"])
+@login_required
+def submit_task():
+    """Submit a Telegram link from the Web UI."""
+
+    app = _active_app()
+    payload = request.get_json(silent=True) or {}
+    try:
+        response_payload, status_code = _submit_web_task(app, payload.get("link"))
+    except RuntimeError as error:
+        response_payload, status_code = {"ok": False, "error": str(error)}, 503
+    return jsonify(response_payload), status_code
 
 
 def _active_app() -> Application:

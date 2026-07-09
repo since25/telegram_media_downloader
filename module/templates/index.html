@@ -46,6 +46,11 @@
               <strong id="summary_download_speed">0.00 B/s</strong>
             </div>
           </div>
+          <div class="task-submit">
+            <input type="text" id="web_task_link" autocomplete="off" class="layui-input" placeholder="https://t.me/c/...">
+            <button type="button" class="layui-btn" id="submit_task_btn">Submit</button>
+            <span id="task_submit_status" class="task-submit-status"></span>
+          </div>
           <table class="layui-hide" id="task_list" lay-filter="task_list"></table>
           <table class="layui-hide" id="task_detail_list" lay-filter="task_detail_list"></table>
         </div>
@@ -473,6 +478,40 @@
       });
 
       $('#save_config_btn').on('click', saveSettings);
+
+      function submitWebTask() {
+        var link = $('#web_task_link').val();
+        $('#task_submit_status').text('Submitting...');
+        $('#submit_task_btn').prop('disabled', true).addClass('layui-btn-disabled');
+        $.ajax({
+          url: 'api/tasks',
+          type: 'post',
+          data: JSON.stringify({ link: link }),
+          contentType: 'application/json',
+          dataType: 'json',
+          success: function (response) {
+            $('#web_task_link').val('');
+            $('#task_submit_status').text('Submitted: ' + response.task_id);
+            selectedTaskId = response.task_id;
+            updateTaskDashboard();
+          },
+          error: function (xhr) {
+            var response = xhr.responseJSON || {};
+            $('#task_submit_status').text(response.error || 'Submit failed.');
+          },
+          complete: function () {
+            $('#submit_task_btn').prop('disabled', false).removeClass('layui-btn-disabled');
+          }
+        });
+      }
+
+      $('#submit_task_btn').on('click', submitWebTask);
+      $('#web_task_link').on('keydown', function (event) {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          submitWebTask();
+        }
+      });
 
       function countText(task) {
         return [
