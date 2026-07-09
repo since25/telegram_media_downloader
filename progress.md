@@ -245,3 +245,34 @@ Changed files:
 
 Rollback:
 - `git revert <phase3c-prescan-selection-commit>` after the implementation commit is created, then redeploy and restart `tg-downloader.service`.
+
+## 2026-07-09 - Task: Deploy Web Phase 3B and 3C to RackNerd
+
+### What was done
+
+- Pushed the Phase 3B and Phase 3C commits to `origin/master`.
+- Fast-forwarded the RackNerd checkout at `/root/telegram_media_downloader`.
+- Restarted `tg-downloader.service` on the server.
+- Verified Cloudflare-proxied Web routes still reach the login flow.
+- Checked the SQLite task database and post-restart memory footprint.
+
+### Testing
+
+- `git push origin master`
+- Result: `master -> master`, latest pushed commit `b6fe588`.
+- `ssh rn 'cd /root/telegram_media_downloader && git pull --ff-only origin master && systemctl restart tg-downloader.service && sleep 4 && systemctl is-active tg-downloader.service && git log --oneline -2'`
+- Result: service `active`, latest server commits `b6fe588` and `edc71e1`.
+- `curl -I https://tgdn.wyichuan.cc/`
+- Result: `HTTP/2 302`, `location: /login?next=%2F`.
+- `curl -I https://tgdn.wyichuan.cc/api/task-dashboard`
+- Result: `HTTP/2 302`, `location: /login?next=%2Fapi%2Ftask-dashboard`.
+- `ssh rn 'cd /root/telegram_media_downloader && ls -lh web_tasks.sqlite3* && free -h'`
+- Result: SQLite task DB initialized at `24K`; memory available about `524MiB`.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the RackNerd deployment and verification evidence for Phase 3B/3C.
+
+Rollback:
+- On the server, run `cd /root/telegram_media_downloader && git revert b6fe588 edc71e1 && systemctl restart tg-downloader.service`.
