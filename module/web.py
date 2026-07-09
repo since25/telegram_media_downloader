@@ -26,6 +26,7 @@ from module.comment_workflow import (
 from module.download_stat import (
     DownloadState,
     add_active_task_node,
+    get_active_task_nodes,
     get_download_result,
     get_download_state,
     get_total_download_speed,
@@ -54,6 +55,7 @@ web_login_users: dict = {}
 _current_app: Optional[Application] = None
 _web_task_counter = 0
 _pending_web_task_previews: dict[str, dict] = {}
+_pending_web_prescans: dict[str, dict] = {}
 deAesCrypt = AesBase64("1234123412ABCDEF", "ABCDEF1234123412")
 WEB_AUTH_FILE_ENV = "TMD_WEB_AUTH_FILE"
 WEB_AUTH_FILE_NAME = ".web_auth.json"
@@ -530,6 +532,109 @@ def _create_web_task(
     return node
 
 
+def _package_summary(package, selected: bool = False) -> dict:
+    """Return a Web-safe prescan package summary."""
+
+    size_summary = getattr(package, "size_summary", None)
+    known_total_size = int(getattr(size_summary, "known_total_size", 0) or 0)
+    return {
+        "package_id": int(getattr(package, "package_id", 0) or 0),
+        "title": str(getattr(package, "title", "") or ""),
+        "start_message_id": int(getattr(package, "start_message_id", 0) or 0),
+        "end_message_id": int(getattr(package, "end_message_id", 0) or 0),
+        "media_count": int(getattr(package, "media_count", 0) or 0),
+        "known_total_size": format_byte(known_total_size),
+        "known_total_size_bytes": known_total_size,
+        "selected": selected,
+    }
+
+
+async def _run_web_prescan_task(
+    app: Application,
+    client,
+    task_id: str,
+    workflow_request,
+    limits: dict,
+):
+    """Run a bounded Web prescan and wait for package selection."""
+
+    from media_downloader import scan_prescan_packages
+
+    if not _try_acquire_prescan_slot(task_id):
+        get_task_store().update_task(
+            task_id,
+            status=TaskStatus.FAILED,
+            error="another web prescan is already running",
+            workflow=WorkflowSnapshot(
+                workflow_type="prescan",
+                status=TaskStatus.FAILED,
+                error="another web prescan is already running",
+            ),
+        )
+        return
+
+    try:
+        entity = await client.get_chat(workflow_request.source_chat)
+        channel = entity.username or entity.title or str(entity.id)
+        title = f"Prescan {channel}/{workflow_request.start_message_id}"
+        node = _create_web_task(task_id, "prescan", entity.id, title, "prescan")
+        node.client = client
+
+        scan_result = await scan_prescan_packages(
+            client,
+            entity.id,
+            workflow_request.start_message_id,
+            max_messages=limits["max_messages"],
+            max_packages=limits["max_packages"],
+            batch_size=limits["batch_size"],
+            batch_delay_seconds=limits["batch_delay_seconds"],
+        )
+        plan = scan_result.prescan_plan
+        packages = list(getattr(plan, "packages", []) or [])
+        _pending_web_prescans[task_id] = {
+            "channel": channel,
+            "node": node,
+            "packages": packages,
+            "selected_package_ids": set(),
+        }
+        summary = (
+            f"Prescan ready: {len(packages)} packages, "
+            f"{getattr(plan, 'scanned_count', 0)} messages scanned"
+        )
+        warning = getattr(plan, "warning", None)
+        if warning:
+            summary = f"{summary}. {warning}"
+        get_task_store().update_task(
+            task_id,
+            status=TaskStatus.WAITING_CONFIRMATION,
+            title=title,
+            total_count=len(packages),
+            needs_confirmation=True,
+            workflow=WorkflowSnapshot(
+                workflow_type="prescan",
+                status=TaskStatus.WAITING_CONFIRMATION,
+                scan_count=int(getattr(plan, "scanned_count", 0) or 0),
+                media_count=sum(int(getattr(package, "media_count", 0) or 0) for package in packages),
+                selected_count=0,
+                summary=summary,
+            ),
+        )
+    except Exception as error:
+        logger.error("web prescan task failed: %s", error, exc_info=True)
+        get_task_store().update_task(
+            task_id,
+            status=TaskStatus.FAILED,
+            error=str(error),
+            workflow=WorkflowSnapshot(
+                workflow_type="prescan",
+                status=TaskStatus.FAILED,
+                error=str(error),
+            ),
+        )
+    finally:
+        _release_prescan_slot(task_id)
+
+
 async def _run_web_package_task(app: Application, client, task_id: str, workflow_request):
     """Scan an ordinary message package link and wait for Web confirmation."""
 
@@ -744,6 +849,39 @@ async def _run_confirmed_comment_download(preview: dict, client):
     )
 
 
+async def _run_confirmed_prescan_download(prescan: dict):
+    """Start confirmed Web prescan package downloads."""
+
+    from media_downloader import download_prescan_packages
+
+    node = prescan["node"]
+    task_id = node.task_id
+    selected_ids = set(prescan.get("selected_package_ids") or set())
+    get_task_store().update_task(
+        task_id,
+        status=TaskStatus.QUEUED,
+        needs_confirmation=False,
+        workflow=WorkflowSnapshot(
+            workflow_type="prescan",
+            status=TaskStatus.QUEUED,
+            selected_count=len(selected_ids),
+            summary=f"Confirmed {len(selected_ids)} packages for download",
+        ),
+    )
+    add_active_task_node(
+        node,
+        source="web",
+        task_type="prescan",
+        publish_snapshot=False,
+    )
+    await download_prescan_packages(
+        prescan.get("packages") or [],
+        prescan.get("channel") or "",
+        node,
+        selected_ids,
+    )
+
+
 def _submit_web_task(app: Application, link: str) -> dict:
     """Validate and schedule a Web-submitted Telegram task."""
 
@@ -774,6 +912,31 @@ def _submit_web_task(app: Application, link: str) -> dict:
     }, 202
 
 
+def _submit_web_prescan(app: Application, link: str, payload: dict) -> dict:
+    """Validate and schedule a Web prescan task."""
+
+    link = str(link or "").strip()
+    if not link:
+        return {"ok": False, "error": "link is required"}, 400
+    workflow_request = build_message_package_workflow_request(link)
+    if not workflow_request:
+        return {"ok": False, "error": "unsupported prescan link"}, 400
+    client = _web_client(app)
+    task_id = _next_web_task_id()
+    if not _try_acquire_prescan_slot(task_id):
+        return {"ok": False, "error": "another web prescan is already running"}, 409
+    _release_prescan_slot(task_id)
+    limits = _prescan_limits_from_payload(payload)
+    coroutine = _run_web_prescan_task(app, client, task_id, workflow_request, limits)
+    _schedule_web_coroutine(app, coroutine)
+    return {
+        "ok": True,
+        "task_id": task_id,
+        "task_type": "prescan",
+        "status": TaskStatus.SCANNING,
+    }, 202
+
+
 @_flask_app.route("/api/tasks", methods=["POST"])
 @login_required
 def submit_task():
@@ -782,7 +945,12 @@ def submit_task():
     app = _active_app()
     payload = request.get_json(silent=True) or {}
     try:
-        response_payload, status_code = _submit_web_task(app, payload.get("link"))
+        if payload.get("mode") == "prescan":
+            response_payload, status_code = _submit_web_prescan(
+                app, payload.get("link"), payload
+            )
+        else:
+            response_payload, status_code = _submit_web_task(app, payload.get("link"))
     except RuntimeError as error:
         response_payload, status_code = {"ok": False, "error": str(error)}, 503
     return jsonify(response_payload), status_code
@@ -795,17 +963,27 @@ def confirm_task(task_id: str):
 
     app = _active_app()
     preview = _pending_web_task_previews.pop(task_id, None)
-    if not preview:
+    prescan = _pending_web_prescans.pop(task_id, None)
+    if not preview and not prescan:
         return jsonify({"ok": False, "error": "task is not waiting for confirmation"}), 404
 
     try:
-        if preview["task_type"] == "comment":
+        if prescan:
+            selected_ids = set(prescan.get("selected_package_ids") or set())
+            if not selected_ids:
+                _pending_web_prescans[task_id] = prescan
+                return jsonify({"ok": False, "error": "select at least one package"}), 400
+            coroutine = _run_confirmed_prescan_download(prescan)
+        elif preview["task_type"] == "comment":
             coroutine = _run_confirmed_comment_download(preview, _web_client(app))
         else:
             coroutine = _run_confirmed_package_download(preview)
         _schedule_web_coroutine(app, coroutine)
     except RuntimeError as error:
-        _pending_web_task_previews[task_id] = preview
+        if prescan:
+            _pending_web_prescans[task_id] = prescan
+        else:
+            _pending_web_task_previews[task_id] = preview
         return jsonify({"ok": False, "error": str(error)}), 503
 
     return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.QUEUED})
@@ -817,10 +995,12 @@ def cancel_task(task_id: str):
     """Cancel a Web task that is waiting for confirmation."""
 
     preview = _pending_web_task_previews.pop(task_id, None)
-    if not preview:
-        return jsonify({"ok": False, "error": "task is not waiting for confirmation"}), 404
-
-    node = preview.get("node")
+    prescan = _pending_web_prescans.pop(task_id, None)
+    node = (preview or prescan or {}).get("node")
+    if not node:
+        node = get_active_task_nodes().get(task_id)
+    if not node:
+        return jsonify({"ok": False, "error": "task is not cancellable"}), 404
     if node:
         node.stop_transmission()
     get_task_store().update_task(
@@ -828,12 +1008,117 @@ def cancel_task(task_id: str):
         status=TaskStatus.CANCELLED,
         needs_confirmation=False,
         workflow=WorkflowSnapshot(
-            workflow_type=preview.get("task_type", ""),
+            workflow_type=(preview or prescan).get("task_type", "prescan"),
             status=TaskStatus.CANCELLED,
             summary="Cancelled before download",
         ),
     )
     return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
+
+
+@_flask_app.route("/api/tasks/<task_id>/clear", methods=["POST"])
+@login_required
+def clear_task(task_id: str):
+    """Remove one terminal task from Web history."""
+
+    task = get_task_store().get_task(task_id)
+    if not task:
+        return jsonify({"ok": False, "error": "task not found"}), 404
+    if task.status not in {TaskStatus.COMPLETED, TaskStatus.COMPLETED_WITH_ERRORS, TaskStatus.CANCELLED, TaskStatus.FAILED}:
+        return jsonify({"ok": False, "error": "only terminal tasks can be cleared"}), 400
+    removed = get_task_store().remove_task(task_id)
+    return jsonify({"ok": removed, "task_id": task_id})
+
+
+@_flask_app.route("/api/tasks/clear-completed", methods=["POST"])
+@login_required
+def clear_completed_tasks():
+    """Remove completed task history from the Web dashboard."""
+
+    return jsonify({"ok": True, "cleared": get_task_store().clear_completed()})
+
+
+@_flask_app.route("/api/tasks/<task_id>/retry", methods=["POST"])
+@login_required
+def retry_task(task_id: str):
+    """Return a clear retry limitation until retry metadata is persisted."""
+
+    if not get_task_store().get_task(task_id):
+        return jsonify({"ok": False, "error": "task not found"}), 404
+    return (
+        jsonify(
+            {
+                "ok": False,
+                "error": "retry requires persisted original command metadata",
+            }
+        ),
+        409,
+    )
+
+
+@_flask_app.route("/api/prescans/<task_id>/packages")
+@login_required
+def prescan_packages(task_id: str):
+    """Return paginated packages for a Web prescan."""
+
+    prescan = _pending_web_prescans.get(task_id)
+    if not prescan:
+        return jsonify({"error": "prescan not found"}), 404
+    page = _as_positive_int(request.args.get("page"), 1, minimum=1, maximum=100000)
+    page_size = _as_positive_int(
+        request.args.get("page_size"), 50, minimum=1, maximum=200
+    )
+    packages = list(prescan.get("packages") or [])
+    selected_ids = set(prescan.get("selected_package_ids") or set())
+    start = (page - 1) * page_size
+    end = start + page_size
+    return jsonify(
+        {
+            "task_id": task_id,
+            "page": page,
+            "page_size": page_size,
+            "total": len(packages),
+            "selected_count": len(selected_ids),
+            "items": [
+                _package_summary(
+                    package,
+                    selected=int(getattr(package, "package_id", 0) or 0)
+                    in selected_ids,
+                )
+                for package in packages[start:end]
+            ],
+        }
+    )
+
+
+@_flask_app.route("/api/prescans/<task_id>/packages/<int:package_id>/select", methods=["POST"])
+@login_required
+def select_prescan_package(task_id: str, package_id: int):
+    """Select or deselect one Web prescan package."""
+
+    prescan = _pending_web_prescans.get(task_id)
+    if not prescan:
+        return jsonify({"ok": False, "error": "prescan not found"}), 404
+    selected_ids = prescan.setdefault("selected_package_ids", set())
+    payload = request.get_json(silent=True) or {}
+    selected = _as_bool(payload.get("selected"), True)
+    if selected:
+        selected_ids.add(package_id)
+    else:
+        selected_ids.discard(package_id)
+    task = get_task_store().get_task(task_id)
+    if task and task.workflow:
+        task.workflow.selected_count = len(selected_ids)
+        get_task_store().update_task(task_id, workflow=task.workflow)
+    return jsonify(
+        {
+            "ok": True,
+            "task_id": task_id,
+            "package_id": package_id,
+            "selected": package_id in selected_ids,
+            "selected_count": len(selected_ids),
+        }
+    )
 
 
 def _active_app() -> Application:

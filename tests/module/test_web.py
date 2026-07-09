@@ -48,6 +48,7 @@ class WebTestCase(unittest.TestCase):
         self.old_login_disabled = web_module._flask_app.config.get("LOGIN_DISABLED")
         web_module._flask_app.config["TESTING"] = True
         web_module._pending_web_task_previews.clear()
+        web_module._pending_web_prescans.clear()
         web_module._active_web_prescan_task_id = None
         get_task_store().clear()
 
@@ -61,6 +62,7 @@ class WebTestCase(unittest.TestCase):
         from module.task_state import get_task_store
 
         self.web_module._pending_web_task_previews.clear()
+        self.web_module._pending_web_prescans.clear()
         self.web_module._active_web_prescan_task_id = None
         get_task_store().clear()
 
@@ -268,6 +270,163 @@ class WebTestCase(unittest.TestCase):
         self.assertEqual(limits["max_packages"], self.web_module.WEB_PRESCAN_MAX_PACKAGES)
         self.assertEqual(limits["batch_size"], self.web_module.WEB_PRESCAN_MAX_BATCH_SIZE)
 
+    def test_web_prescan_waits_for_package_selection(self):
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.task_state import TaskStatus, get_task_store
+
+        class FakeClient:
+            async def get_chat(self, chat_id):
+                return SimpleNamespace(id=-10012345, username="demo", title="Demo")
+
+        package = SimpleNamespace(
+            package_id=1,
+            title="Pack 1",
+            start_message_id=100,
+            end_message_id=105,
+            media_count=2,
+            messages=[],
+            failed_message_ids=[],
+        )
+        scan_result = SimpleNamespace(
+            prescan_plan=SimpleNamespace(
+                start_message_id=99,
+                scanned_count=20,
+                packages=[package],
+                warning=None,
+            ),
+            messages=[],
+            failed_message_ids=[],
+        )
+
+        async def fake_scan(*_args, **_kwargs):
+            return scan_result
+
+        request = build_message_package_workflow_request("https://t.me/c/12345/99")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            with patch("media_downloader.scan_prescan_packages", fake_scan):
+                asyncio.run(
+                    self.web_module._run_web_prescan_task(
+                        app,
+                        FakeClient(),
+                        "web-prescan-1",
+                        request,
+                        self.web_module._prescan_limits_from_payload({}),
+                    )
+                )
+
+            task = get_task_store().get_task("web-prescan-1")
+            self.assertEqual(task.status, TaskStatus.WAITING_CONFIRMATION)
+            self.assertTrue(task.needs_confirmation)
+            self.assertEqual(task.workflow.selected_count, 0)
+            self.assertIn("web-prescan-1", self.web_module._pending_web_prescans)
+
+    def test_prescan_packages_api_and_selection(self):
+        package = SimpleNamespace(
+            package_id=1,
+            title="Pack 1",
+            start_message_id=100,
+            end_message_id=105,
+            media_count=2,
+            messages=[],
+            failed_message_ids=[],
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            self.web_module._pending_web_prescans["web-prescan-2"] = {
+                "packages": [package],
+                "selected_package_ids": set(),
+            }
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.get("/api/prescans/web-prescan-2/packages")
+            select_response = client.post(
+                "/api/prescans/web-prescan-2/packages/1/select",
+                json={"selected": True},
+            )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["total"], 1)
+            self.assertFalse(payload["items"][0]["selected"])
+            self.assertEqual(select_response.status_code, 200)
+            self.assertTrue(select_response.get_json()["selected"])
+
+    def test_confirm_prescan_schedules_selected_download(self):
+        class FakeLoop:
+            def __init__(self):
+                self.scheduled = []
+
+            def is_running(self):
+                return False
+
+            def create_task(self, coroutine):
+                self.scheduled.append(coroutine)
+                coroutine.close()
+
+        package = SimpleNamespace(package_id=1, messages=[], failed_message_ids=[])
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            app.loop = FakeLoop()
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            node = self.web_module._create_web_task(
+                "web-prescan-3",
+                "prescan",
+                -10012345,
+                "Demo prescan",
+                "prescan",
+            )
+            self.web_module._pending_web_prescans["web-prescan-3"] = {
+                "channel": "demo",
+                "node": node,
+                "packages": [package],
+                "selected_package_ids": {1},
+            }
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.post("/api/tasks/web-prescan-3/confirm")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["status"], "queued")
+            self.assertEqual(len(app.loop.scheduled), 1)
+
+    def test_clear_terminal_task_removes_history(self):
+        from module.task_state import TaskStatus, get_task_store
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            store = get_task_store()
+            store.create_task("clear-1", status=TaskStatus.COMPLETED)
+            store.update_task("clear-1", status=TaskStatus.COMPLETED)
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.post("/api/tasks/clear-1/clear")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.get_json()["ok"])
+            self.assertIsNone(store.get_task("clear-1"))
+
+    def test_retry_without_metadata_returns_clear_error(self):
+        from module.task_state import TaskStatus, get_task_store
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            get_task_store().create_task("retry-1", status=TaskStatus.FAILED)
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.post("/api/tasks/retry-1/retry")
+
+            self.assertEqual(response.status_code, 409)
+            self.assertIn("metadata", response.get_json()["error"])
+
     def test_task_submission_rejects_invalid_link(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
@@ -465,7 +624,9 @@ class WebTestCase(unittest.TestCase):
             html = response.get_data(as_text=True)
             self.assertIn('id="task_dashboard_summary"', html)
             self.assertIn('id="web_task_link"', html)
+            self.assertIn('id="web_task_mode"', html)
             self.assertIn('id="submit_task_btn"', html)
             self.assertIn('id="task_list"', html)
             self.assertIn('id="task_detail_list"', html)
             self.assertIn('lay-filter="task_actions"', html)
+            self.assertIn('lay-filter="prescan_package_actions"', html)

@@ -214,3 +214,34 @@ Changed files:
 
 Rollback:
 - `git revert <phase3b-persistence-guardrails-commit>` after the implementation commit is created, then redeploy and restart `tg-downloader.service`.
+
+## 2026-07-09 - Task: Add Web prescan package selection
+
+### What was done
+
+- Added Prescan submission mode for Web tasks.
+- Added bounded Web prescan scanning that waits for package selection instead of downloading immediately.
+- Added paginated prescan package APIs and include/exclude selection.
+- Confirming a prescan queues selected packages through the existing serial prescan download path.
+- Added terminal task clearing and explicit retry limitation response.
+- Updated the dashboard UI with Prescan mode and package selection actions.
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/module/test_web.py tests/module/test_task_state.py -q`
+- Result: 27 passed.
+
+### Notes
+
+Changed files:
+- `module/web.py`: Added Web prescan scheduling, package pagination/selection, selected-package confirmation, clear, and retry limitation APIs.
+- `module/task_state.py`: Added task removal and completed-history clearing helpers.
+- `module/templates/index.html`: Added Prescan mode, package detail rendering, and include/exclude actions.
+- `module/static/css/index.css`: Adjusted the task submission layout for mode selection.
+- `tests/module/test_web.py`: Added Web prescan, package selection, confirm, clear, and retry limitation coverage.
+- `docs/web-control-console.md`: Documented Prescan mode and new APIs.
+- `README_CN.md`: Updated the Web UI behavior summary.
+- `progress.md`: Recorded this implementation step.
+
+Rollback:
+- `git revert <phase3c-prescan-selection-commit>` after the implementation commit is created, then redeploy and restart `tg-downloader.service`.

@@ -69,7 +69,7 @@ body {
 
 .task-submit {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto minmax(160px, auto);
+  grid-template-columns: minmax(220px, 1fr) 132px auto minmax(160px, auto);
   gap: 8px;
   align-items: center;
   margin-bottom: 10px;

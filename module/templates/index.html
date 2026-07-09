@@ -48,6 +48,10 @@
           </div>
           <div class="task-submit">
             <input type="text" id="web_task_link" autocomplete="off" class="layui-input" placeholder="https://t.me/c/...">
+            <select id="web_task_mode">
+              <option value="auto">Preview</option>
+              <option value="prescan">Prescan</option>
+            </select>
             <button type="button" class="layui-btn" id="submit_task_btn">Submit</button>
             <span id="task_submit_status" class="task-submit-status"></span>
           </div>
@@ -60,6 +64,15 @@
               <button type="button" class="layui-btn layui-btn-primary layui-btn-xs" lay-event="cancel">Cancel</button>
             {{# } else { }}
               <span class="task-action-empty">-</span>
+            {{# } }}
+            {% endraw %}
+          </script>
+          <script type="text/html" id="prescan_package_actions" lay-filter="prescan_package_actions">
+            {% raw %}
+            {{# if (d.selected) { }}
+              <button type="button" class="layui-btn layui-btn-primary layui-btn-xs" lay-event="deselect">Exclude</button>
+            {{# } else { }}
+              <button type="button" class="layui-btn layui-btn-xs" lay-event="select">Include</button>
             {{# } }}
             {% endraw %}
           </script>
@@ -276,6 +289,7 @@
       var downloadedListTimer = 0;
       var statusTimer = 0;
       var selectedTaskId = null;
+      var selectedTaskType = null;
 
       function escapeHtml(value) {
         return String(value == null ? '' : value)
@@ -496,13 +510,14 @@
         $.ajax({
           url: 'api/tasks',
           type: 'post',
-          data: JSON.stringify({ link: link }),
+          data: JSON.stringify({ link: link, mode: $('#web_task_mode').val() }),
           contentType: 'application/json',
           dataType: 'json',
           success: function (response) {
             $('#web_task_link').val('');
             $('#task_submit_status').text('Submitted: ' + response.task_id);
             selectedTaskId = response.task_id;
+            selectedTaskType = response.task_type;
             updateTaskDashboard();
           },
           error: function (xhr) {
@@ -577,6 +592,29 @@
         });
       }
 
+      function postPrescanPackageSelection(taskId, packageId, selected) {
+        $.ajax({
+          url: 'api/prescans/' + encodeURIComponent(taskId) + '/packages/' + encodeURIComponent(packageId) + '/select',
+          type: 'post',
+          data: JSON.stringify({ selected: selected }),
+          contentType: 'application/json',
+          dataType: 'json',
+          success: function (response) {
+            $('#task_submit_status').text('Selected packages: ' + response.selected_count);
+            loadTaskDetail(taskId, 'prescan');
+            updateTaskDashboard();
+          },
+          error: function (xhr) {
+            var response = xhr.responseJSON || {};
+            $('#task_submit_status').text(response.error || 'Package selection failed.');
+          }
+        });
+      }
+
+      function packageSelectedText(row) {
+        return row.selected ? 'yes' : 'no';
+      }
+
       table.render({
         elem: '#task_list',
         id: 'task_list_table',
@@ -618,14 +656,22 @@
 
       table.on('row(task_list)', function (obj) {
         selectedTaskId = obj.data.task_id;
+        selectedTaskType = obj.data.task_type;
         obj.tr.addClass('layui-table-click').siblings().removeClass('layui-table-click');
-        loadTaskDetail(selectedTaskId);
+        loadTaskDetail(selectedTaskId, selectedTaskType);
       });
 
       table.on('tool(task_list)', function (obj) {
         if (obj.event === 'confirm' || obj.event === 'cancel') {
           selectedTaskId = obj.data.task_id;
+          selectedTaskType = obj.data.task_type;
           postTaskAction(obj.data.task_id, obj.event);
+        }
+      });
+
+      table.on('tool(task_detail_list)', function (obj) {
+        if (obj.event === 'select' || obj.event === 'deselect') {
+          postPrescanPackageSelection(selectedTaskId, obj.data.package_id, obj.event === 'select');
         }
       });
 
@@ -683,23 +729,60 @@
             $('#download_speed_title').html(result.download_speed || '0.00 B/s');
             table.reload('task_list_table', { data: result.tasks || [] });
             if (selectedTaskId) {
-              loadTaskDetail(selectedTaskId);
+              loadTaskDetail(selectedTaskId, selectedTaskType);
             }
           }
         });
       }
 
-      function loadTaskDetail(taskId) {
+      function loadTaskDetail(taskId, taskType) {
+        if (taskType === 'prescan') {
+          $.ajax({
+            url: 'api/prescans/' + encodeURIComponent(taskId) + '/packages?page=1&page_size=50',
+            type: 'get',
+            dataType: 'json',
+            success: function (result) {
+              table.reload('task_detail_list_table', {
+                data: result.items || [],
+                cols: [[
+                  { field: 'package_id', title: 'package', width: 100 },
+                  { field: 'selected', title: 'selected', width: 100, templet: packageSelectedText },
+                  { field: 'start_message_id', title: 'start', width: 110 },
+                  { field: 'end_message_id', title: 'end', width: 110 },
+                  { field: 'media_count', title: 'media', width: 90 },
+                  { field: 'known_total_size', title: 'known size', width: 120 },
+                  { field: 'title', title: 'title', minWidth: 220 },
+                  { fixed: 'right', title: 'action', width: 110, toolbar: '#prescan_package_actions' }
+                ]]
+              });
+            },
+            error: function () {
+              table.reload('task_detail_list_table', { data: [] });
+            }
+          });
+          return;
+        }
         $.ajax({
-          url: 'api/tasks/' + encodeURIComponent(taskId),
+          url: 'api/tasks/' + encodeURIComponent(taskId) + '/files?page=1&page_size=50',
           type: 'get',
           dataType: 'json',
           success: function (result) {
-            table.reload('task_detail_list_table', { data: result.files || [] });
+            table.reload('task_detail_list_table', {
+              data: result.items || [],
+              cols: [[
+                { field: 'message_id', title: 'message', width: 110 },
+                { field: 'status', title: 'status', width: 130 },
+                { field: 'filename', title: 'file name', minWidth: 180 },
+                { field: 'total_size', title: 'size', width: 110 },
+                { field: 'download_progress', title: 'progress', width: 110 },
+                { field: 'download_speed', title: 'speed', width: 130 }
+              ]]
+            });
           },
           error: function () {
             table.reload('task_detail_list_table', { data: [] });
             selectedTaskId = null;
+            selectedTaskType = null;
           }
         });
       }

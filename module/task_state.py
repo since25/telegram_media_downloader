@@ -328,6 +328,35 @@ class TaskStateStore:
         with self._lock:
             return self._active.get(task_key) or self._completed.get(task_key)
 
+    def remove_task(self, task_id: Any) -> bool:
+        task_key = str(task_id)
+        with self._lock:
+            removed = self._active.pop(task_key, None) or self._completed.pop(
+                task_key, None
+            )
+            if self.storage_path:
+                with self._connect() as connection:
+                    connection.execute("DELETE FROM task_files WHERE task_id = ?", (task_key,))
+                    connection.execute("DELETE FROM tasks WHERE task_id = ?", (task_key,))
+            return removed is not None
+
+    def clear_completed(self) -> int:
+        with self._lock:
+            count = len(self._completed)
+            completed_keys = list(self._completed)
+            self._completed.clear()
+            if self.storage_path and completed_keys:
+                with self._connect() as connection:
+                    connection.executemany(
+                        "DELETE FROM task_files WHERE task_id = ?",
+                        [(task_id,) for task_id in completed_keys],
+                    )
+                    connection.executemany(
+                        "DELETE FROM tasks WHERE task_id = ?",
+                        [(task_id,) for task_id in completed_keys],
+                    )
+            return count
+
     def tasks(self) -> list[TaskSnapshot]:
         with self._lock:
             return list(self._active.values()) + list(self._completed.values())
