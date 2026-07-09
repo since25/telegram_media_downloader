@@ -32,7 +32,12 @@ def get_download_result() -> dict:
     return _download_result
 
 
-def add_active_task_node(node, source: str = None, task_type: str = None) -> None:
+def add_active_task_node(
+    node,
+    source: str = None,
+    task_type: str = None,
+    publish_snapshot: bool = True,
+) -> None:
     """添加或更新活跃的TaskNode
 
     Args:
@@ -44,7 +49,8 @@ def add_active_task_node(node, source: str = None, task_type: str = None) -> Non
         if task_type:
             node.task_display_type = task_type
         _active_task_nodes[node.task_id] = node
-        snapshot_node(node)
+        if publish_snapshot:
+            snapshot_node(node)
 
 
 def remove_active_task_node(task_id: int) -> None:

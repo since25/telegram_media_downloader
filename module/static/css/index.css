@@ -80,6 +80,10 @@ body {
   overflow-wrap: anywhere;
 }
 
+.task-action-empty {
+  color: #9ca3af;
+}
+
 .config-form {
   padding: 6px 0 24px;
 }

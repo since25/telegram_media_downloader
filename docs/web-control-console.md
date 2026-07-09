@@ -11,7 +11,9 @@ After logging in, the Tasks tab can submit Telegram links directly:
 
 Submitted links are scheduled on the running downloader event loop. The Web process must be started by `media_downloader.py` so the Web layer has access to the active Pyrogram client; calling the Flask app without the downloader client returns `503`.
 
-Web-submitted package/comment tasks use the existing scan and download pipeline and the recommended naming strategy. Task rows move through scan, queue, download, upload, and completion states on `/api/task-dashboard`.
+Web-submitted package/comment tasks first scan into a preview state. The task row shows the detected type, title, media count, scan count, and preview file rows where available. The downloader does not enqueue media until the user clicks `Start`; clicking `Cancel` marks the waiting task cancelled.
+
+Confirmed tasks use the existing scan and download pipeline and the recommended naming strategy. Task rows move through scan, confirmation, queue, download, upload, and completion states on `/api/task-dashboard`.
 
 ## APIs
 
@@ -19,5 +21,7 @@ Web-submitted package/comment tasks use the existing scan and download pipeline 
 - `GET /api/tasks`: task summaries.
 - `GET /api/tasks/<task_id>`: one task with file rows.
 - `POST /api/tasks`: submit JSON `{"link": "https://t.me/..."}`.
+- `POST /api/tasks/<task_id>/confirm`: confirm a preview and queue the download.
+- `POST /api/tasks/<task_id>/cancel`: cancel a preview before download.
 
 All APIs require the existing Web login session.

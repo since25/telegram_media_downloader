@@ -1,9 +1,12 @@
 """Tests for the Flask web control surface."""
 
+import asyncio
 import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from module.app import Application
 
@@ -44,6 +47,7 @@ class WebTestCase(unittest.TestCase):
         self.old_current_app = web_module._current_app
         self.old_login_disabled = web_module._flask_app.config.get("LOGIN_DISABLED")
         web_module._flask_app.config["TESTING"] = True
+        web_module._pending_web_task_previews.clear()
         get_task_store().clear()
 
     def tearDown(self):
@@ -55,6 +59,7 @@ class WebTestCase(unittest.TestCase):
         self.web_module._flask_app.config["LOGIN_DISABLED"] = self.old_login_disabled
         from module.task_state import get_task_store
 
+        self.web_module._pending_web_task_previews.clear()
         get_task_store().clear()
 
     def test_web_auth_generates_local_password_and_allows_login(self):
@@ -280,6 +285,127 @@ class WebTestCase(unittest.TestCase):
             self.assertEqual(payload["status"], "scanning")
             self.assertEqual(len(app.loop.scheduled), 1)
 
+    def test_package_scan_waits_for_web_confirmation_before_downloading(self):
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.task_state import TaskStatus, get_task_store
+
+        class FakeClient:
+            async def get_chat(self, chat_id):
+                return SimpleNamespace(id=-10012345, username="demo", title="Demo")
+
+        message = SimpleNamespace(id=99)
+        scan_result = SimpleNamespace(
+            messages=[message],
+            failed_message_ids=[],
+            package_plan=SimpleNamespace(
+                package_title="Demo package",
+                summary=SimpleNamespace(scanned_count=5, media_count=1),
+                items=[SimpleNamespace(message=message)],
+            ),
+        )
+        download_calls = []
+
+        async def fake_scan(*_args, **_kwargs):
+            return scan_result
+
+        async def fake_download(*args, **_kwargs):
+            download_calls.append(args)
+
+        request = build_message_package_workflow_request("https://t.me/c/12345/99")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            with patch("media_downloader.scan_message_package", fake_scan), patch(
+                "media_downloader.download_prepared_messages", fake_download
+            ):
+                asyncio.run(
+                    self.web_module._run_web_package_task(
+                        app, FakeClient(), "web-preview-1", request
+                    )
+                )
+
+            task = get_task_store().get_task("web-preview-1")
+            self.assertEqual(task.status, TaskStatus.WAITING_CONFIRMATION)
+            self.assertTrue(task.needs_confirmation)
+            self.assertEqual(task.workflow.selected_count, 1)
+            self.assertIn("web-preview-1", self.web_module._pending_web_task_previews)
+            self.assertEqual(download_calls, [])
+
+    def test_confirm_preview_schedules_package_download(self):
+        class FakeLoop:
+            def __init__(self):
+                self.scheduled = []
+
+            def is_running(self):
+                return False
+
+            def create_task(self, coroutine):
+                self.scheduled.append(coroutine)
+                coroutine.close()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            app.loop = FakeLoop()
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            node = self.web_module._create_web_task(
+                "web-preview-2",
+                "package",
+                -10012345,
+                "Demo package",
+                "message_package",
+            )
+            self.web_module._pending_web_task_previews["web-preview-2"] = {
+                "task_type": "package",
+                "node": node,
+                "messages": [],
+                "failed_message_ids": [],
+            }
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.post("/api/tasks/web-preview-2/confirm")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["status"], "queued")
+            self.assertEqual(len(app.loop.scheduled), 1)
+
+    def test_cancel_preview_marks_task_cancelled(self):
+        from module.task_state import TaskStatus, get_task_store
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            node = self.web_module._create_web_task(
+                "web-preview-3",
+                "package",
+                -10012345,
+                "Demo package",
+                "message_package",
+            )
+            self.web_module._pending_web_task_previews["web-preview-3"] = {
+                "task_type": "package",
+                "node": node,
+                "messages": [],
+                "failed_message_ids": [],
+            }
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.post("/api/tasks/web-preview-3/cancel")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["status"], "cancelled")
+            self.assertTrue(node.is_stop_transmission)
+            self.assertNotIn("web-preview-3", self.web_module._pending_web_task_previews)
+            self.assertEqual(
+                get_task_store().get_task("web-preview-3").status,
+                TaskStatus.CANCELLED,
+            )
+
     def test_index_contains_task_dashboard_shell(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
@@ -296,3 +422,4 @@ class WebTestCase(unittest.TestCase):
             self.assertIn('id="submit_task_btn"', html)
             self.assertIn('id="task_list"', html)
             self.assertIn('id="task_detail_list"', html)
+            self.assertIn('lay-filter="task_actions"', html)

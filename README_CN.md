@@ -53,7 +53,7 @@
 > 运行后打开浏览器访问`localhost:5000`
 > 如果是远程机器需要配置web_host: 0.0.0.0
 
-网页端 Tasks 页支持直接提交 Telegram 私密消息资源包链接和评论链接，并在同一页查看扫描、排队、下载、上传和完成状态。接口和使用边界见 [`docs/web-control-console.md`](docs/web-control-console.md)。
+网页端 Tasks 页支持提交 Telegram 私密消息资源包链接和评论链接；提交后先扫描预览，确认后才开始下载，并在同一页查看排队、下载、上传和完成状态。接口和使用边界见 [`docs/web-control-console.md`](docs/web-control-console.md)。
 
 
 <img alt="Code style: black" style="width:100%; high:60%;" src="./screenshot/web_ui.gif"/>

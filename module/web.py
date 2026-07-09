@@ -32,6 +32,7 @@ from module.download_stat import (
     set_download_state,
 )
 from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
+from module.task_state import FileStatus
 from utils.crypto import AesBase64
 from utils.format import format_byte
 
@@ -52,6 +53,7 @@ _login_manager.init_app(_flask_app)
 web_login_users: dict = {}
 _current_app: Optional[Application] = None
 _web_task_counter = 0
+_pending_web_task_previews: dict[str, dict] = {}
 deAesCrypt = AesBase64("1234123412ABCDEF", "ABCDEF1234123412")
 WEB_AUTH_FILE_ENV = "TMD_WEB_AUTH_FILE"
 WEB_AUTH_FILE_NAME = ".web_auth.json"
@@ -450,9 +452,9 @@ def _create_web_task(
 
 
 async def _run_web_package_task(app: Application, client, task_id: str, workflow_request):
-    """Scan an ordinary message package link and enqueue the package download."""
+    """Scan an ordinary message package link and wait for Web confirmation."""
 
-    from media_downloader import download_prepared_messages, scan_message_package
+    from media_downloader import scan_message_package
 
     node = None
     try:
@@ -498,26 +500,34 @@ async def _run_web_package_task(app: Application, client, task_id: str, workflow
         )
         node.package_plan = package_plan
         node.package_media_items = {item.message.id: item for item in package_items}
+        _pending_web_task_previews[task_id] = {
+            "task_type": "package",
+            "node": node,
+            "messages": scan_result.messages,
+            "failed_message_ids": getattr(scan_result, "failed_message_ids", None),
+        }
+        for item in package_items:
+            message_id = getattr(getattr(item, "message", None), "id", None)
+            if message_id is not None:
+                get_task_store().upsert_file(
+                    task_id,
+                    message_id,
+                    status=FileStatus.QUEUED,
+                )
         get_task_store().update_task(
             task_id,
-            status=TaskStatus.QUEUED,
+            status=TaskStatus.WAITING_CONFIRMATION,
             title=package_title or node.replay_message,
             total_count=len(package_items),
+            needs_confirmation=True,
             workflow=WorkflowSnapshot(
                 workflow_type="message_package",
-                status=TaskStatus.QUEUED,
+                status=TaskStatus.WAITING_CONFIRMATION,
                 scan_count=getattr(package_plan.summary, "scanned_count", 0),
                 media_count=getattr(package_plan.summary, "media_count", 0),
                 selected_count=len(package_items),
-                summary=f"Queued {len(package_items)} media files",
+                summary=f"Preview ready: {len(package_items)} media files",
             ),
-        )
-        add_active_task_node(node, source="web", task_type="package")
-        await download_prepared_messages(
-            scan_result.messages,
-            None,
-            node,
-            failed_message_ids=getattr(scan_result, "failed_message_ids", None),
         )
     except Exception as error:
         logger.error("web package task failed: %s", error, exc_info=True)
@@ -534,9 +544,7 @@ async def _run_web_package_task(app: Application, client, task_id: str, workflow
 
 
 async def _run_web_comment_task(app: Application, client, task_id: str, workflow_request):
-    """Scan a comment link and enqueue the comment media download."""
-
-    from media_downloader import download_comments
+    """Prepare a comment link and wait for Web confirmation."""
 
     node = None
     try:
@@ -557,24 +565,25 @@ async def _run_web_comment_task(app: Application, client, task_id: str, workflow
             post_id=workflow_request.post_id,
             post_title=title,
         )
+        _pending_web_task_previews[task_id] = {
+            "task_type": "comment",
+            "node": node,
+            "request": workflow_request,
+            "entity_id": entity.id,
+        }
         get_task_store().update_task(
             task_id,
-            status=TaskStatus.QUEUED,
+            status=TaskStatus.WAITING_CONFIRMATION,
+            needs_confirmation=True,
+            total_count=1,
             workflow=WorkflowSnapshot(
                 workflow_type="comment",
-                status=TaskStatus.QUEUED,
-                summary="Queued comment media scan",
+                status=TaskStatus.WAITING_CONFIRMATION,
+                scan_count=1,
+                media_count=1,
+                selected_count=1,
+                summary="Comment link ready for confirmation",
             ),
-        )
-        add_active_task_node(node, source="web", task_type="comment")
-        await download_comments(
-            client,
-            entity.id,
-            workflow_request.post_id,
-            workflow_request.start_comment_id,
-            workflow_request.start_comment_id,
-            None,
-            node,
         )
     except Exception as error:
         logger.error("web comment task failed: %s", error, exc_info=True)
@@ -588,6 +597,72 @@ async def _run_web_comment_task(app: Application, client, task_id: str, workflow
                 error=str(error),
             ),
         )
+
+
+async def _run_confirmed_package_download(preview: dict):
+    """Start a confirmed package preview download."""
+
+    from media_downloader import download_prepared_messages
+
+    node = preview["node"]
+    task_id = node.task_id
+    get_task_store().update_task(
+        task_id,
+        status=TaskStatus.QUEUED,
+        needs_confirmation=False,
+        workflow=WorkflowSnapshot(
+            workflow_type="message_package",
+            status=TaskStatus.QUEUED,
+            summary="Confirmed and queued for download",
+        ),
+    )
+    add_active_task_node(
+        node,
+        source="web",
+        task_type="package",
+        publish_snapshot=False,
+    )
+    await download_prepared_messages(
+        preview.get("messages") or [],
+        None,
+        node,
+        failed_message_ids=preview.get("failed_message_ids"),
+    )
+
+
+async def _run_confirmed_comment_download(preview: dict, client):
+    """Start a confirmed comment preview download."""
+
+    from media_downloader import download_comments
+
+    node = preview["node"]
+    workflow_request = preview["request"]
+    task_id = node.task_id
+    get_task_store().update_task(
+        task_id,
+        status=TaskStatus.QUEUED,
+        needs_confirmation=False,
+        workflow=WorkflowSnapshot(
+            workflow_type="comment",
+            status=TaskStatus.QUEUED,
+            summary="Confirmed and queued for download",
+        ),
+    )
+    add_active_task_node(
+        node,
+        source="web",
+        task_type="comment",
+        publish_snapshot=False,
+    )
+    await download_comments(
+        client,
+        preview["entity_id"],
+        workflow_request.post_id,
+        workflow_request.start_comment_id,
+        workflow_request.start_comment_id,
+        None,
+        node,
+    )
 
 
 def _submit_web_task(app: Application, link: str) -> dict:
@@ -632,6 +707,54 @@ def submit_task():
     except RuntimeError as error:
         response_payload, status_code = {"ok": False, "error": str(error)}, 503
     return jsonify(response_payload), status_code
+
+
+@_flask_app.route("/api/tasks/<task_id>/confirm", methods=["POST"])
+@login_required
+def confirm_task(task_id: str):
+    """Confirm a scanned Web preview and queue its download."""
+
+    app = _active_app()
+    preview = _pending_web_task_previews.pop(task_id, None)
+    if not preview:
+        return jsonify({"ok": False, "error": "task is not waiting for confirmation"}), 404
+
+    try:
+        if preview["task_type"] == "comment":
+            coroutine = _run_confirmed_comment_download(preview, _web_client(app))
+        else:
+            coroutine = _run_confirmed_package_download(preview)
+        _schedule_web_coroutine(app, coroutine)
+    except RuntimeError as error:
+        _pending_web_task_previews[task_id] = preview
+        return jsonify({"ok": False, "error": str(error)}), 503
+
+    return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.QUEUED})
+
+
+@_flask_app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
+@login_required
+def cancel_task(task_id: str):
+    """Cancel a Web task that is waiting for confirmation."""
+
+    preview = _pending_web_task_previews.pop(task_id, None)
+    if not preview:
+        return jsonify({"ok": False, "error": "task is not waiting for confirmation"}), 404
+
+    node = preview.get("node")
+    if node:
+        node.stop_transmission()
+    get_task_store().update_task(
+        task_id,
+        status=TaskStatus.CANCELLED,
+        needs_confirmation=False,
+        workflow=WorkflowSnapshot(
+            workflow_type=preview.get("task_type", ""),
+            status=TaskStatus.CANCELLED,
+            summary="Cancelled before download",
+        ),
+    )
+    return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
 
 
 def _active_app() -> Application:

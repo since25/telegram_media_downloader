@@ -53,6 +53,16 @@
           </div>
           <table class="layui-hide" id="task_list" lay-filter="task_list"></table>
           <table class="layui-hide" id="task_detail_list" lay-filter="task_detail_list"></table>
+          <script type="text/html" id="task_actions" lay-filter="task_actions">
+            {% raw %}
+            {{# if (d.needs_confirmation) { }}
+              <button type="button" class="layui-btn layui-btn-xs" lay-event="confirm">Start</button>
+              <button type="button" class="layui-btn layui-btn-primary layui-btn-xs" lay-event="cancel">Cancel</button>
+            {{# } else { }}
+              <span class="task-action-empty">-</span>
+            {{# } }}
+            {% endraw %}
+          </script>
         </div>
         <div class="layui-tab-item">
           <table class="layui-hide" id="download_list" lay-filter="download_list"></table>
@@ -532,6 +542,41 @@
         return escapeHtml(name) + (progress ? ' (' + progress + '%)' : '');
       }
 
+      function workflowText(task) {
+        if (!task.workflow) {
+          return '';
+        }
+        var parts = [];
+        if (task.workflow.summary) {
+          parts.push(task.workflow.summary);
+        }
+        if (task.workflow.media_count || task.workflow.selected_count) {
+          parts.push('media ' + (task.workflow.selected_count || task.workflow.media_count || 0));
+        }
+        if (task.workflow.scan_count) {
+          parts.push('scanned ' + task.workflow.scan_count);
+        }
+        return escapeHtml(parts.join(' · '));
+      }
+
+      function postTaskAction(taskId, action) {
+        $('#task_submit_status').text(action === 'confirm' ? 'Queueing task...' : 'Cancelling task...');
+        $.ajax({
+          url: 'api/tasks/' + encodeURIComponent(taskId) + '/' + action,
+          type: 'post',
+          dataType: 'json',
+          success: function () {
+            $('#task_submit_status').text(action === 'confirm' ? 'Task queued.' : 'Task cancelled.');
+            updateTaskDashboard();
+            loadTaskDetail(taskId);
+          },
+          error: function (xhr) {
+            var response = xhr.responseJSON || {};
+            $('#task_submit_status').text(response.error || 'Task action failed.');
+          }
+        });
+      }
+
       table.render({
         elem: '#task_list',
         id: 'task_list_table',
@@ -545,8 +590,10 @@
           { field: 'task_type', title: 'type', width: 104 },
           { field: 'status', title: 'status', width: 150 },
           { field: 'title', title: 'title', minWidth: 180 },
+          { field: 'workflow', title: 'preview', minWidth: 220, templet: workflowText },
           { field: 'counts', title: 'ok/fail/skip/up', width: 150, templet: countText },
-          { field: 'current_file', title: 'current file', minWidth: 220, templet: currentFileText }
+          { field: 'current_file', title: 'current file', minWidth: 220, templet: currentFileText },
+          { fixed: 'right', title: 'action', width: 132, toolbar: '#task_actions' }
         ]],
         done: function () { element.render(); }
       });
@@ -573,6 +620,13 @@
         selectedTaskId = obj.data.task_id;
         obj.tr.addClass('layui-table-click').siblings().removeClass('layui-table-click');
         loadTaskDetail(selectedTaskId);
+      });
+
+      table.on('tool(task_list)', function (obj) {
+        if (obj.event === 'confirm' || obj.event === 'cancel') {
+          selectedTaskId = obj.data.task_id;
+          postTaskAction(obj.data.task_id, obj.event);
+        }
       });
 
       table.render({

@@ -128,3 +128,32 @@ Changed files:
 
 Rollback:
 - On the server, run `cd /root/telegram_media_downloader && git revert a8ea37a 44e31c0 9c58a10 08a6cb6 8f45025 && systemctl restart tg-downloader.service`, or reset to the pre-deployment commit only after explicitly confirming that runtime local files should be left untouched.
+
+## 2026-07-09 - Task: Add Web preview confirmation before download
+
+### What was done
+
+- Changed Web task submission so package/comment links scan into a preview state instead of immediately starting downloads.
+- Added Web confirm and cancel APIs for tasks waiting on preview confirmation.
+- Added dashboard preview summaries and Start/Cancel actions for waiting tasks.
+- Documented the new scan-preview-confirm behavior.
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/module/test_task_state.py tests/module/test_web.py tests/test_media_downloader.py tests/module/test_comment_workflow.py -q`
+- Result: 138 passed.
+
+### Notes
+
+Changed files:
+- `module/web.py`: Stores Web preview results, waits for confirmation, and queues downloads only after confirmation.
+- `module/download_stat.py`: Allows active-node registration without overwriting preview snapshots.
+- `module/templates/index.html`: Adds preview summary and Start/Cancel actions to the task dashboard.
+- `module/static/css/index.css`: Adds the dashboard action empty-state style.
+- `tests/module/test_web.py`: Covers preview waiting, confirmation scheduling, cancellation, and dashboard action markup.
+- `docs/web-control-console.md`: Documents preview confirmation and the confirm/cancel APIs.
+- `README_CN.md`: Updates the Web UI usage summary.
+- `progress.md`: Records this implementation step.
+
+Rollback:
+- `git revert <phase3a-preview-confirmation-commit>` after the implementation commit is created, then redeploy and restart `tg-downloader.service`.
