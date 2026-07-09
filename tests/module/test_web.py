@@ -216,3 +216,18 @@ class WebTestCase(unittest.TestCase):
             payload = response.get_json()
             self.assertEqual(payload["task_id"], "web-1")
             self.assertEqual(payload["files"][0]["message_id"], "11")
+
+    def test_index_contains_task_dashboard_shell(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.get("/")
+
+            self.assertEqual(response.status_code, 200)
+            html = response.get_data(as_text=True)
+            self.assertIn('id="task_dashboard_summary"', html)
+            self.assertIn('id="task_list"', html)
+            self.assertIn('id="task_detail_list"', html)

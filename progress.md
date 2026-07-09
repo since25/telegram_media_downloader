@@ -44,3 +44,26 @@ Changed files:
 
 Rollback:
 - `git revert <phase1-backend-commit>` after the backend commit is created.
+
+## 2026-07-09 - Task: Implement Web task dashboard UI
+
+### What was done
+
+- Replaced the primary Web tab with a task dashboard backed by `/api/task-dashboard`.
+- Added dashboard summary counters and task/file detail tables while keeping the existing file-progress tables available under the Files tab.
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/module/test_task_state.py tests/module/test_web.py tests/test_media_downloader.py -q`
+- Result: 30 passed.
+
+### Notes
+
+Changed files:
+- `module/templates/index.html`: Added task dashboard tables, summary counters, row detail loading, and dashboard polling.
+- `module/static/css/index.css`: Added task summary layout styles.
+- `tests/module/test_web.py`: Added index-page smoke coverage for the task dashboard shell.
+- `progress.md`: Recorded this implementation step.
+
+Rollback:
+- `git revert <phase1-ui-commit>` after the UI commit is created.

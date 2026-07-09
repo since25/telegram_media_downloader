@@ -14,8 +14,8 @@
     <div class="layui-tab" lay-filter="telegram_media_downloader">
       <div class="header-title layui-tab-brief">
         <ul class="layui-tab-title">
-          <li class="layui-this">Downloading</li>
-          <li>Downloaded</li>
+          <li class="layui-this">Tasks</li>
+          <li>Files</li>
           <li>Advanced Config</li>
         </ul>
         <div class="header-actions">
@@ -28,9 +28,29 @@
 
       <div class="layui-tab-content">
         <div class="layui-tab-item layui-show">
-          <table class="layui-hide" id="download_list" lay-filter="download_list"></table>
+          <div class="task-summary" id="task_dashboard_summary">
+            <div class="task-summary-item">
+              <span class="summary-label">Active</span>
+              <strong id="summary_active_tasks">0</strong>
+            </div>
+            <div class="task-summary-item">
+              <span class="summary-label">Completed</span>
+              <strong id="summary_completed_tasks">0</strong>
+            </div>
+            <div class="task-summary-item">
+              <span class="summary-label">State</span>
+              <strong id="summary_download_state">{{ download_state }}</strong>
+            </div>
+            <div class="task-summary-item">
+              <span class="summary-label">Speed</span>
+              <strong id="summary_download_speed">0.00 B/s</strong>
+            </div>
+          </div>
+          <table class="layui-hide" id="task_list" lay-filter="task_list"></table>
+          <table class="layui-hide" id="task_detail_list" lay-filter="task_detail_list"></table>
         </div>
         <div class="layui-tab-item">
+          <table class="layui-hide" id="download_list" lay-filter="download_list"></table>
           <table class="layui-hide" id="already_download_list" lay-filter="already_download_list"></table>
         </div>
         <div class="layui-tab-item">
@@ -236,9 +256,11 @@
       var $ = layui.$;
       var settingsCache = null;
       var settingsLoaded = false;
+      var taskDashboardTimer = 0;
       var downloadListTimer = 0;
       var downloadedListTimer = 0;
       var statusTimer = 0;
+      var selectedTaskId = null;
 
       function escapeHtml(value) {
         return String(value == null ? '' : value)
@@ -452,6 +474,68 @@
 
       $('#save_config_btn').on('click', saveSettings);
 
+      function countText(task) {
+        return [
+          task.success_count || 0,
+          task.failed_count || 0,
+          task.skipped_count || 0,
+          task.upload_success_count || 0
+        ].join(' / ');
+      }
+
+      function currentFileText(task) {
+        if (!task.current_file) {
+          return '';
+        }
+        var file = task.current_file;
+        var name = file.filename || file.message_id || '';
+        var progress = Number(file.download_progress || 0);
+        return escapeHtml(name) + (progress ? ' (' + progress + '%)' : '');
+      }
+
+      table.render({
+        elem: '#task_list',
+        id: 'task_list_table',
+        data: [],
+        title: 'task_list',
+        height: 'full-268',
+        limit: 10000,
+        cols: [[
+          { field: 'task_id', title: 'task', width: 92 },
+          { field: 'source', title: 'source', width: 88 },
+          { field: 'task_type', title: 'type', width: 104 },
+          { field: 'status', title: 'status', width: 150 },
+          { field: 'title', title: 'title', minWidth: 180 },
+          { field: 'counts', title: 'ok/fail/skip/up', width: 150, templet: countText },
+          { field: 'current_file', title: 'current file', minWidth: 220, templet: currentFileText }
+        ]],
+        done: function () { element.render(); }
+      });
+
+      table.render({
+        elem: '#task_detail_list',
+        id: 'task_detail_list_table',
+        data: [],
+        title: 'task_detail_list',
+        height: 180,
+        limit: 10000,
+        cols: [[
+          { field: 'message_id', title: 'message', width: 110 },
+          { field: 'status', title: 'status', width: 130 },
+          { field: 'filename', title: 'file name', minWidth: 180 },
+          { field: 'total_size', title: 'size', width: 110 },
+          { field: 'download_progress', title: 'progress', width: 110 },
+          { field: 'download_speed', title: 'speed', width: 130 }
+        ]],
+        done: function () { element.render(); }
+      });
+
+      table.on('row(task_list)', function (obj) {
+        selectedTaskId = obj.data.task_id;
+        obj.tr.addClass('layui-table-click').siblings().removeClass('layui-table-click');
+        loadTaskDetail(selectedTaskId);
+      });
+
       table.render({
         elem: '#download_list',
         id: 'download_list_table',
@@ -493,6 +577,40 @@
         done: function () { element.render(); }
       });
 
+      function updateTaskDashboard() {
+        $.ajax({
+          url: 'api/task-dashboard',
+          type: 'get',
+          dataType: 'json',
+          success: function (result) {
+            $('#summary_active_tasks').text(result.active_task_count || 0);
+            $('#summary_completed_tasks').text(result.completed_task_count || 0);
+            $('#summary_download_state').text(result.download_state || '');
+            $('#summary_download_speed').text(result.download_speed || '0.00 B/s');
+            $('#download_speed_title').html(result.download_speed || '0.00 B/s');
+            table.reload('task_list_table', { data: result.tasks || [] });
+            if (selectedTaskId) {
+              loadTaskDetail(selectedTaskId);
+            }
+          }
+        });
+      }
+
+      function loadTaskDetail(taskId) {
+        $.ajax({
+          url: 'api/tasks/' + encodeURIComponent(taskId),
+          type: 'get',
+          dataType: 'json',
+          success: function (result) {
+            table.reload('task_detail_list_table', { data: result.files || [] });
+          },
+          error: function () {
+            table.reload('task_detail_list_table', { data: [] });
+            selectedTaskId = null;
+          }
+        });
+      }
+
       function updateDownloadList() {
         $.ajax({
           url: 'get_download_list?already_down=false',
@@ -531,13 +649,16 @@
       }
 
       function setActiveTimers(tabIndex) {
+        clearInterval(taskDashboardTimer);
         clearInterval(downloadListTimer);
         clearInterval(downloadedListTimer);
         if (tabIndex === 0) {
-          updateDownloadList();
-          downloadListTimer = self.setInterval(updateDownloadList, 1000);
+          updateTaskDashboard();
+          taskDashboardTimer = self.setInterval(updateTaskDashboard, 1000);
         }
         if (tabIndex === 1) {
+          updateDownloadList();
+          downloadListTimer = self.setInterval(updateDownloadList, 1000);
           updateDownloadedList();
           downloadedListTimer = self.setInterval(updateDownloadedList, 1000);
         }
@@ -550,9 +671,9 @@
         setActiveTimers(data.index);
       });
 
-      updateDownloadList();
+      updateTaskDashboard();
       updateDownloadStatus();
-      downloadListTimer = self.setInterval(updateDownloadList, 1000);
+      taskDashboardTimer = self.setInterval(updateTaskDashboard, 1000);
       statusTimer = self.setInterval(updateDownloadStatus, 1000);
     });
   </script>

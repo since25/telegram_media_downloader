@@ -39,6 +39,34 @@ body {
   padding: 0;
 }
 
+.task-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.task-summary-item {
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid #e3e6eb;
+  background: #fff;
+  border-radius: 6px;
+}
+
+.summary-label {
+  display: block;
+  margin-bottom: 4px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.task-summary-item strong {
+  color: #111827;
+  font-size: 18px;
+  font-weight: 700;
+}
+
 .config-form {
   padding: 6px 0 24px;
 }
@@ -170,6 +198,10 @@ body {
   .header-actions {
     width: 100%;
     justify-content: flex-end;
+  }
+
+  .task-summary {
+    grid-template-columns: repeat(2, minmax(120px, 1fr));
   }
 
   .config-form .layui-form-label {
