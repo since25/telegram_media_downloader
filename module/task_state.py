@@ -1,9 +1,11 @@
 """In-memory Web task state snapshots."""
 
 import os
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from module.app import DownloadStatus
@@ -219,16 +221,24 @@ class TaskSnapshot:
 class TaskStateStore:
     """Process-local store for task snapshots."""
 
-    def __init__(self, recent_limit: int = 200):
+    def __init__(self, recent_limit: int = 200, storage_path: Optional[Path] = None):
         self.recent_limit = recent_limit
         self._lock = threading.RLock()
         self._active: dict[str, TaskSnapshot] = {}
         self._completed: dict[str, TaskSnapshot] = {}
+        self.storage_path = Path(storage_path) if storage_path else None
+        if self.storage_path:
+            self._init_storage()
+            self._load_storage()
 
     def clear(self) -> None:
         with self._lock:
             self._active.clear()
             self._completed.clear()
+            if self.storage_path:
+                with self._connect() as connection:
+                    connection.execute("DELETE FROM task_files")
+                    connection.execute("DELETE FROM tasks")
 
     def create_task(
         self,
@@ -262,6 +272,7 @@ class TaskStateStore:
                 **updates,
             )
             self._active[task_key] = task
+            self._persist_task(task)
             return task
 
     def update_task(self, task_id: Any, **updates) -> Optional[TaskSnapshot]:
@@ -273,6 +284,8 @@ class TaskStateStore:
             self._apply_updates(task, **updates)
             if task.status in TERMINAL_TASK_STATUSES:
                 self._move_completed(task_key, task)
+            else:
+                self._persist_task(task)
             return task
 
     def upsert_file(self, task_id: Any, message_id: Any, **updates) -> FileSnapshot:
@@ -291,6 +304,8 @@ class TaskStateStore:
             task.current_file = file_snapshot
             task.updated_at = file_snapshot.updated_at
             task.refresh_counts_from_files()
+            self._persist_task(task)
+            self._persist_file(task_key, file_snapshot)
             return file_snapshot
 
     def complete_task(self, task_id: Any) -> Optional[TaskSnapshot]:
@@ -318,18 +333,55 @@ class TaskStateStore:
             return list(self._active.values()) + list(self._completed.values())
 
     def serialize_tasks(
-        self, hide_file_name: bool = False, include_files: bool = False
+        self,
+        hide_file_name: bool = False,
+        include_files: bool = False,
+        limit: Optional[int] = None,
     ) -> list[dict]:
+        tasks = sorted(self.tasks(), key=lambda item: item.updated_at, reverse=True)
+        if limit is not None:
+            tasks = tasks[: max(int(limit), 0)]
         return [
             task.to_dict(hide_file_name=hide_file_name, include_files=include_files)
-            for task in sorted(
-                self.tasks(), key=lambda item: item.updated_at, reverse=True
-            )
+            for task in tasks
         ]
 
-    def dashboard(self, hide_file_name: bool = False) -> dict:
+    def paginate_files(
+        self,
+        task_id: Any,
+        page: int = 1,
+        page_size: int = 50,
+        max_page_size: int = 200,
+        hide_file_name: bool = False,
+    ) -> dict:
+        task = self.get_task(task_id)
+        safe_page = max(int(page or 1), 1)
+        safe_page_size = min(max(int(page_size or 50), 1), max_page_size)
+        if not task:
+            return {
+                "task_id": str(task_id),
+                "page": safe_page,
+                "page_size": safe_page_size,
+                "total": 0,
+                "items": [],
+            }
+        files = sorted(task.files.values(), key=lambda file: _sort_message_key(file.message_id))
+        total = len(files)
+        start = (safe_page - 1) * safe_page_size
+        end = start + safe_page_size
+        return {
+            "task_id": task.task_id,
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total": total,
+            "items": [
+                item.to_dict(hide_file_name=hide_file_name) for item in files[start:end]
+            ],
+        }
+
+    def dashboard(self, hide_file_name: bool = False, limit: int = 100) -> dict:
         with self._lock:
-            tasks = self.serialize_tasks(hide_file_name=hide_file_name)
+            tasks = self.serialize_tasks(hide_file_name=hide_file_name, limit=limit)
             return {
                 "active_task_count": len(self._active),
                 "completed_task_count": len(self._completed),
@@ -345,6 +397,7 @@ class TaskStateStore:
                 key=lambda key: self._completed[key].updated_at,
             )[0]
             self._completed.pop(oldest_key, None)
+        self._persist_task(task)
 
     @staticmethod
     def _apply_updates(task: TaskSnapshot, **updates) -> None:
@@ -355,8 +408,237 @@ class TaskStateStore:
                 setattr(task, key, value)
         task.updated_at = _now()
 
+    def _connect(self):
+        connection = sqlite3.connect(self.storage_path)
+        connection.row_factory = sqlite3.Row
+        return connection
 
-_TASK_STORE = TaskStateStore()
+    def _init_storage(self) -> None:
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id TEXT PRIMARY KEY,
+                    source TEXT,
+                    task_type TEXT,
+                    chat_id INTEGER,
+                    title TEXT,
+                    status TEXT,
+                    created_at REAL,
+                    updated_at REAL,
+                    total_count INTEGER,
+                    success_count INTEGER,
+                    failed_count INTEGER,
+                    skipped_count INTEGER,
+                    upload_success_count INTEGER,
+                    workflow_type TEXT,
+                    workflow_status TEXT,
+                    workflow_scan_count INTEGER,
+                    workflow_media_count INTEGER,
+                    workflow_selected_count INTEGER,
+                    workflow_summary TEXT,
+                    workflow_error TEXT,
+                    error TEXT,
+                    needs_confirmation INTEGER
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_files (
+                    task_id TEXT,
+                    message_id TEXT,
+                    status TEXT,
+                    filename TEXT,
+                    total_size INTEGER,
+                    downloaded_size INTEGER,
+                    download_speed INTEGER,
+                    save_path TEXT,
+                    error TEXT,
+                    updated_at REAL,
+                    PRIMARY KEY (task_id, message_id)
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at)"
+            )
+
+    def _load_storage(self) -> None:
+        with self._connect() as connection:
+            task_rows = connection.execute("SELECT * FROM tasks").fetchall()
+            file_rows = connection.execute("SELECT * FROM task_files").fetchall()
+
+        files_by_task: dict[str, dict[str, FileSnapshot]] = {}
+        for row in file_rows:
+            task_files = files_by_task.setdefault(row["task_id"], {})
+            task_files[row["message_id"]] = FileSnapshot(
+                message_id=row["message_id"],
+                status=row["status"],
+                filename=row["filename"] or "",
+                total_size=int(row["total_size"] or 0),
+                downloaded_size=int(row["downloaded_size"] or 0),
+                download_speed=int(row["download_speed"] or 0),
+                save_path=row["save_path"] or "",
+                error=row["error"] or "",
+                updated_at=float(row["updated_at"] or _now()),
+            )
+
+        for row in task_rows:
+            workflow = None
+            if row["workflow_type"] or row["workflow_status"]:
+                workflow = WorkflowSnapshot(
+                    workflow_type=row["workflow_type"] or "",
+                    status=row["workflow_status"] or "",
+                    scan_count=int(row["workflow_scan_count"] or 0),
+                    media_count=int(row["workflow_media_count"] or 0),
+                    selected_count=int(row["workflow_selected_count"] or 0),
+                    summary=row["workflow_summary"] or "",
+                    error=row["workflow_error"] or "",
+                )
+            task = TaskSnapshot(
+                task_id=row["task_id"],
+                source=row["source"] or "bot",
+                task_type=row["task_type"] or "unknown",
+                chat_id=row["chat_id"],
+                title=row["title"] or "",
+                status=row["status"] or TaskStatus.CREATED,
+                created_at=float(row["created_at"] or _now()),
+                updated_at=float(row["updated_at"] or _now()),
+                total_count=int(row["total_count"] or 0),
+                success_count=int(row["success_count"] or 0),
+                failed_count=int(row["failed_count"] or 0),
+                skipped_count=int(row["skipped_count"] or 0),
+                upload_success_count=int(row["upload_success_count"] or 0),
+                workflow=workflow,
+                error=row["error"] or "",
+                needs_confirmation=bool(row["needs_confirmation"]),
+                files=files_by_task.get(row["task_id"], {}),
+            )
+            if task.files:
+                task.current_file = sorted(
+                    task.files.values(), key=lambda item: item.updated_at, reverse=True
+                )[0]
+            if task.status in TERMINAL_TASK_STATUSES:
+                self._completed[task.task_id] = task
+            else:
+                self._active[task.task_id] = task
+
+    def _persist_task(self, task: TaskSnapshot) -> None:
+        if not self.storage_path:
+            return
+        workflow = task.workflow or WorkflowSnapshot()
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, source, task_type, chat_id, title, status,
+                    created_at, updated_at, total_count, success_count,
+                    failed_count, skipped_count, upload_success_count,
+                    workflow_type, workflow_status, workflow_scan_count,
+                    workflow_media_count, workflow_selected_count,
+                    workflow_summary, workflow_error, error, needs_confirmation
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    source=excluded.source,
+                    task_type=excluded.task_type,
+                    chat_id=excluded.chat_id,
+                    title=excluded.title,
+                    status=excluded.status,
+                    updated_at=excluded.updated_at,
+                    total_count=excluded.total_count,
+                    success_count=excluded.success_count,
+                    failed_count=excluded.failed_count,
+                    skipped_count=excluded.skipped_count,
+                    upload_success_count=excluded.upload_success_count,
+                    workflow_type=excluded.workflow_type,
+                    workflow_status=excluded.workflow_status,
+                    workflow_scan_count=excluded.workflow_scan_count,
+                    workflow_media_count=excluded.workflow_media_count,
+                    workflow_selected_count=excluded.workflow_selected_count,
+                    workflow_summary=excluded.workflow_summary,
+                    workflow_error=excluded.workflow_error,
+                    error=excluded.error,
+                    needs_confirmation=excluded.needs_confirmation
+                """,
+                (
+                    task.task_id,
+                    task.source,
+                    str(task.task_type),
+                    task.chat_id,
+                    task.title,
+                    task.status,
+                    task.created_at,
+                    task.updated_at,
+                    task.total_count,
+                    task.success_count,
+                    task.failed_count,
+                    task.skipped_count,
+                    task.upload_success_count,
+                    workflow.workflow_type,
+                    workflow.status,
+                    workflow.scan_count,
+                    workflow.media_count,
+                    workflow.selected_count,
+                    workflow.summary,
+                    workflow.error,
+                    task.error,
+                    1 if task.needs_confirmation else 0,
+                ),
+            )
+
+    def _persist_file(self, task_id: str, file_snapshot: FileSnapshot) -> None:
+        if not self.storage_path:
+            return
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO task_files (
+                    task_id, message_id, status, filename, total_size,
+                    downloaded_size, download_speed, save_path, error, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id, message_id) DO UPDATE SET
+                    status=excluded.status,
+                    filename=excluded.filename,
+                    total_size=excluded.total_size,
+                    downloaded_size=excluded.downloaded_size,
+                    download_speed=excluded.download_speed,
+                    save_path=excluded.save_path,
+                    error=excluded.error,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    task_id,
+                    file_snapshot.message_id,
+                    file_snapshot.status,
+                    file_snapshot.filename,
+                    file_snapshot.total_size,
+                    file_snapshot.downloaded_size,
+                    file_snapshot.download_speed,
+                    file_snapshot.save_path,
+                    file_snapshot.error,
+                    file_snapshot.updated_at,
+                ),
+            )
+
+
+def _default_storage_path() -> Optional[Path]:
+    configured = os.environ.get("TMD_TASK_DB_PATH")
+    if configured:
+        return Path(configured)
+    return Path(os.path.abspath(".")) / "web_tasks.sqlite3"
+
+
+_TASK_STORE = TaskStateStore(storage_path=_default_storage_path())
+
+
+def _sort_message_key(message_id: str):
+    try:
+        return (0, int(message_id))
+    except (TypeError, ValueError):
+        return (1, str(message_id))
 
 
 def get_task_store() -> TaskStateStore:

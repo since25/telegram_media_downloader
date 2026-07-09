@@ -61,6 +61,15 @@ SUPPORTED_MEDIA_TYPES = ["audio", "photo", "video", "document", "voice", "video_
 PATH_PREFIX_OPTIONS = ["chat_title", "media_datetime", "media_type"]
 NAME_PREFIX_OPTIONS = ["message_id", "file_name", "caption"]
 FILE_FORMAT_TYPES = ["audio", "document", "video"]
+WEB_PRESCAN_DEFAULT_MESSAGES = 1000
+WEB_PRESCAN_MAX_MESSAGES = 2000
+WEB_PRESCAN_DEFAULT_PACKAGES = 20
+WEB_PRESCAN_MAX_PACKAGES = 30
+WEB_PRESCAN_DEFAULT_BATCH_SIZE = 50
+WEB_PRESCAN_MAX_BATCH_SIZE = 100
+WEB_PRESCAN_BATCH_DELAY_SECONDS = 1
+_active_web_prescan_task_id: Optional[str] = None
+_prescan_lock = threading.RLock()
 
 
 class User(UserMixin):
@@ -387,6 +396,30 @@ def task_detail(task_id: str):
     )
 
 
+@_flask_app.route("/api/tasks/<task_id>/files")
+@login_required
+def task_files(task_id: str):
+    """Return one task's file rows with pagination."""
+
+    app = _active_app()
+    page = _as_positive_int(request.args.get("page"), 1, minimum=1, maximum=100000)
+    page_size = _as_positive_int(
+        request.args.get("page_size"), 50, minimum=1, maximum=200
+    )
+    task = get_task_store().get_task(task_id)
+    if not task:
+        return jsonify({"error": "task not found"}), 404
+    return jsonify(
+        get_task_store().paginate_files(
+            task_id,
+            page=page,
+            page_size=page_size,
+            max_page_size=200,
+            hide_file_name=bool(getattr(app, "hide_file_name", False)),
+        )
+    )
+
+
 def _next_web_task_id() -> str:
     """Return a process-local Web task id."""
 
@@ -415,6 +448,52 @@ def _web_client(app: Application):
     if client is None:
         raise RuntimeError("telegram client is not available for web submissions")
     return client
+
+
+def _prescan_limits_from_payload(payload: dict) -> dict:
+    """Return bounded Web prescan limits for small RackNerd servers."""
+
+    return {
+        "max_messages": _as_positive_int(
+            payload.get("max_messages"),
+            WEB_PRESCAN_DEFAULT_MESSAGES,
+            minimum=1,
+            maximum=WEB_PRESCAN_MAX_MESSAGES,
+        ),
+        "max_packages": _as_positive_int(
+            payload.get("max_packages"),
+            WEB_PRESCAN_DEFAULT_PACKAGES,
+            minimum=1,
+            maximum=WEB_PRESCAN_MAX_PACKAGES,
+        ),
+        "batch_size": _as_positive_int(
+            payload.get("batch_size"),
+            WEB_PRESCAN_DEFAULT_BATCH_SIZE,
+            minimum=1,
+            maximum=WEB_PRESCAN_MAX_BATCH_SIZE,
+        ),
+        "batch_delay_seconds": WEB_PRESCAN_BATCH_DELAY_SECONDS,
+    }
+
+
+def _try_acquire_prescan_slot(task_id: str) -> bool:
+    """Allow only one Web prescan scan to run at a time."""
+
+    global _active_web_prescan_task_id
+    with _prescan_lock:
+        if _active_web_prescan_task_id and _active_web_prescan_task_id != task_id:
+            return False
+        _active_web_prescan_task_id = task_id
+        return True
+
+
+def _release_prescan_slot(task_id: str) -> None:
+    """Release the Web prescan slot if this task owns it."""
+
+    global _active_web_prescan_task_id
+    with _prescan_lock:
+        if _active_web_prescan_task_id == task_id:
+            _active_web_prescan_task_id = None
 
 
 def _create_web_task(

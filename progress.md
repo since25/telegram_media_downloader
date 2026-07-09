@@ -185,3 +185,32 @@ Changed files:
 
 Rollback:
 - On the server, run `cd /root/telegram_media_downloader && git revert d1c5336 && systemctl restart tg-downloader.service`.
+
+## 2026-07-09 - Task: Add Web persistence and resource guardrails
+
+### What was done
+
+- Added SQLite-backed task/file snapshot persistence with WAL mode for Web task history across process restarts.
+- Added paginated task file retrieval so Web does not need to fetch large file lists in one response.
+- Limited dashboard task rows returned during polling.
+- Added Web prescan resource bounds and a single-prescan concurrency slot for small RackNerd servers.
+- Ignored local SQLite runtime files in git.
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/module/test_web.py tests/module/test_task_state.py -q`
+- Result: 22 passed.
+
+### Notes
+
+Changed files:
+- `module/task_state.py`: Added optional SQLite persistence, reload, bounded dashboard rows, and file pagination.
+- `module/web.py`: Added paginated file API and Web prescan resource guardrail helpers.
+- `tests/module/test_task_state.py`: Added persistence, pagination, and dashboard-limit coverage.
+- `tests/module/test_web.py`: Added file pagination and prescan guardrail coverage.
+- `docs/web-control-console.md`: Documented resource boundaries and paginated file API.
+- `.gitignore`: Excludes SQLite runtime files.
+- `progress.md`: Recorded this implementation step.
+
+Rollback:
+- `git revert <phase3b-persistence-guardrails-commit>` after the implementation commit is created, then redeploy and restart `tg-downloader.service`.

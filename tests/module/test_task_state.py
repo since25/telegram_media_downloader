@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 from module.app import DownloadStatus, TaskNode
 
@@ -135,6 +137,66 @@ class TaskStateStoreTestCase(unittest.TestCase):
         self.assertEqual(snapshot.status, TaskStatus.DOWNLOADING)
         self.assertEqual(snapshot.current_file.status, FileStatus.DOWNLOADING)
         self.assertEqual(snapshot.current_file.download_progress, 50.0)
+
+    def test_sqlite_store_persists_task_and_files(self):
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            store = TaskStateStore(storage_path=db_path)
+            task = store.create_task(
+                task_id="persist-1",
+                source="web",
+                task_type="package",
+                title="Persisted",
+                status=TaskStatus.WAITING_CONFIRMATION,
+                total_count=2,
+            )
+            store.upsert_file(task.task_id, 101, status=FileStatus.QUEUED)
+            store.upsert_file(task.task_id, 102, status=FileStatus.FAILED)
+
+            reloaded = TaskStateStore(storage_path=db_path)
+            snapshot = reloaded.get_task("persist-1")
+
+            self.assertIsNotNone(snapshot)
+            self.assertEqual(snapshot.status, TaskStatus.WAITING_CONFIRMATION)
+            self.assertEqual(snapshot.task_type, "package")
+            self.assertEqual(len(snapshot.files), 2)
+
+    def test_paginate_files_bounds_page_size(self):
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+        store = TaskStateStore()
+        store.create_task("page-1", status=TaskStatus.QUEUED)
+        for message_id in range(1, 121):
+            store.upsert_file("page-1", message_id, status=FileStatus.QUEUED)
+
+        page = store.paginate_files("page-1", page=2, page_size=50, max_page_size=100)
+        oversized = store.paginate_files(
+            "page-1", page=1, page_size=1000, max_page_size=100
+        )
+
+        self.assertEqual(page["page"], 2)
+        self.assertEqual(page["page_size"], 50)
+        self.assertEqual(page["total"], 120)
+        self.assertEqual(page["items"][0]["message_id"], "51")
+        self.assertEqual(len(oversized["items"]), 100)
+
+    def test_dashboard_limits_task_rows(self):
+        from module.task_state import TaskStateStore, TaskStatus
+
+        store = TaskStateStore()
+        for index in range(5):
+            store.create_task(
+                f"task-{index}",
+                status=TaskStatus.QUEUED,
+                title=f"Task {index}",
+            )
+
+        payload = store.dashboard(limit=2)
+
+        self.assertEqual(payload["active_task_count"], 5)
+        self.assertEqual(len(payload["tasks"]), 2)
 
 
 if __name__ == "__main__":

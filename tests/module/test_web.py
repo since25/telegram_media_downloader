@@ -48,6 +48,7 @@ class WebTestCase(unittest.TestCase):
         self.old_login_disabled = web_module._flask_app.config.get("LOGIN_DISABLED")
         web_module._flask_app.config["TESTING"] = True
         web_module._pending_web_task_previews.clear()
+        web_module._active_web_prescan_task_id = None
         get_task_store().clear()
 
     def tearDown(self):
@@ -60,6 +61,7 @@ class WebTestCase(unittest.TestCase):
         from module.task_state import get_task_store
 
         self.web_module._pending_web_task_previews.clear()
+        self.web_module._active_web_prescan_task_id = None
         get_task_store().clear()
 
     def test_web_auth_generates_local_password_and_allows_login(self):
@@ -221,6 +223,50 @@ class WebTestCase(unittest.TestCase):
             payload = response.get_json()
             self.assertEqual(payload["task_id"], "web-1")
             self.assertEqual(payload["files"][0]["message_id"], "11")
+
+    def test_task_files_api_returns_paginated_files(self):
+        from module.task_state import FileStatus, TaskStatus, get_task_store
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            store = get_task_store()
+            task = store.create_task(
+                task_id="web-files-1",
+                source="web",
+                task_type="package",
+                status=TaskStatus.QUEUED,
+            )
+            for message_id in range(1, 61):
+                store.upsert_file(task.task_id, message_id, status=FileStatus.QUEUED)
+
+            client = self.web_module.get_flask_app().test_client()
+            response = client.get("/api/tasks/web-files-1/files?page=2&page_size=25")
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["page"], 2)
+            self.assertEqual(payload["page_size"], 25)
+            self.assertEqual(payload["total"], 60)
+            self.assertEqual(payload["items"][0]["message_id"], "26")
+
+    def test_prescan_slot_allows_only_one_running_scan(self):
+        self.assertTrue(self.web_module._try_acquire_prescan_slot("scan-1"))
+        self.assertFalse(self.web_module._try_acquire_prescan_slot("scan-2"))
+
+        self.web_module._release_prescan_slot("scan-1")
+
+        self.assertTrue(self.web_module._try_acquire_prescan_slot("scan-2"))
+
+    def test_prescan_limits_are_bounded_for_rn_server(self):
+        limits = self.web_module._prescan_limits_from_payload(
+            {"max_messages": 999999, "max_packages": 999999, "batch_size": 999999}
+        )
+
+        self.assertEqual(limits["max_messages"], self.web_module.WEB_PRESCAN_MAX_MESSAGES)
+        self.assertEqual(limits["max_packages"], self.web_module.WEB_PRESCAN_MAX_PACKAGES)
+        self.assertEqual(limits["batch_size"], self.web_module.WEB_PRESCAN_MAX_BATCH_SIZE)
 
     def test_task_submission_rejects_invalid_link(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
