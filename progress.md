@@ -157,3 +157,31 @@ Changed files:
 
 Rollback:
 - `git revert <phase3a-preview-confirmation-commit>` after the implementation commit is created, then redeploy and restart `tg-downloader.service`.
+
+## 2026-07-09 - Task: Deploy Web preview confirmation to RackNerd
+
+### What was done
+
+- Pushed the Web preview confirmation commit to `origin/master`.
+- Fast-forwarded the RackNerd checkout at `/root/telegram_media_downloader`.
+- Restarted `tg-downloader.service` on the server.
+- Verified the public Cloudflare-proxied Web route and task dashboard API still reach the login flow.
+
+### Testing
+
+- `git push origin master`
+- Result: `master -> master`, latest pushed commit `d1c5336`.
+- `ssh rn 'cd /root/telegram_media_downloader && git pull --ff-only origin master && systemctl restart tg-downloader.service && sleep 3 && systemctl is-active tg-downloader.service && git log --oneline -1'`
+- Result: service `active`, latest server commit `d1c5336 feat: require web preview confirmation`.
+- `curl -I https://tgdn.wyichuan.cc/`
+- Result: `HTTP/2 302`, `location: /login?next=%2F`.
+- `curl -I https://tgdn.wyichuan.cc/api/task-dashboard`
+- Result: `HTTP/2 302`, `location: /login?next=%2Fapi%2Ftask-dashboard`.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the RackNerd deployment and verification evidence for Web preview confirmation.
+
+Rollback:
+- On the server, run `cd /root/telegram_media_downloader && git revert d1c5336 && systemctl restart tg-downloader.service`.
