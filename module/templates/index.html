@@ -56,6 +56,7 @@
             <span id="task_submit_status" class="task-submit-status"></span>
           </div>
           <table class="layui-hide" id="task_list" lay-filter="task_list"></table>
+          <div class="task-detail-error" id="task_detail_error" hidden></div>
           <table class="layui-hide" id="task_detail_list" lay-filter="task_detail_list"></table>
           <script type="text/html" id="task_actions" lay-filter="task_actions">
             {% raw %}
@@ -290,6 +291,9 @@
       var statusTimer = 0;
       var selectedTaskId = null;
       var selectedTaskType = null;
+      var lastTasksById = {};
+      var detailColsType = null;
+      var detailSignature = '';
 
       function escapeHtml(value) {
         return String(value == null ? '' : value)
@@ -299,6 +303,84 @@
           .replace(/"/g, '&quot;')
           .replace(/'/g, '&#39;');
       }
+
+      var STATUS_META = {
+        created: { cls: 'layui-bg-gray', label: 'created' },
+        scanning: { cls: 'layui-bg-blue', label: 'scanning' },
+        waiting_confirmation: { cls: 'layui-bg-cyan', label: 'waiting' },
+        queued: { cls: 'layui-bg-blue', label: 'queued' },
+        downloading: { cls: 'layui-bg-blue', label: 'downloading' },
+        uploading: { cls: 'layui-bg-blue', label: 'uploading' },
+        completed: { cls: 'layui-bg-green', label: 'completed' },
+        completed_with_errors: { cls: 'layui-bg-orange', label: 'completed · errors' },
+        failed: { cls: 'layui-bg-red', label: 'failed' },
+        cancelled: { cls: 'layui-bg-gray', label: 'cancelled' }
+      };
+
+      function badge(status, cls, label, titleText) {
+        var meta = STATUS_META[status] || { cls: cls || 'layui-bg-gray', label: label || status || '' };
+        var title = escapeHtml(titleText || status || '');
+        return '<span class="layui-badge ' + meta.cls + '" title="' + title + '">' + escapeHtml(meta.label) + '</span>';
+      }
+
+      function statusBadge(task) {
+        return badge(task.status, null, null, task.error || task.status);
+      }
+
+      function fileStatusBadge(d) {
+        return badge(d.status, null, null, d.error || d.status);
+      }
+
+      function progressClass(pct) {
+        if (pct >= 100) { return 'mp-green'; }
+        if (pct > 30) { return 'mp-blue'; }
+        return 'mp-red';
+      }
+
+      function progressBar(pct, text) {
+        pct = Math.max(0, Math.min(Math.round(pct), 100));
+        var html = '<div class="mini-progress"><div class="mini-progress-bar ' + progressClass(pct) + '" style="width:' + pct + '%"></div></div>';
+        if (text) { html += '<div class="mini-progress-text">' + escapeHtml(text) + '</div>'; }
+        return html;
+      }
+
+      function taskProgressCell(task) {
+        var total = Number(task.total_count || 0);
+        if (total <= 0) { return '<span class="task-action-empty">-</span>'; }
+        var done = Number(task.success_count || 0) + Number(task.failed_count || 0) + Number(task.skipped_count || 0);
+        return progressBar(done / total * 100, done + ' / ' + total);
+      }
+
+      function countCell(task) {
+        function seg(value, cls) {
+          var n = Number(value || 0);
+          var strong = (cls === 'cnt-fail' && n > 0) ? ' cnt-strong' : '';
+          return '<span class="' + cls + strong + '">' + n + '</span>';
+        }
+        return seg(task.success_count, 'cnt-ok') + ' / ' + seg(task.failed_count, 'cnt-fail')
+          + ' / ' + seg(task.skipped_count, 'cnt-skip') + ' / ' + seg(task.upload_success_count, 'cnt-up');
+      }
+
+      function fileProgressCell(d) {
+        var pct = Number(d.download_progress || 0);
+        var text = '';
+        if (pct > 0 && pct < 100) { text = pct + '% · ' + (d.download_speed || ''); }
+        return progressBar(pct, text);
+      }
+
+      function fileErrorCell(d) {
+        if (!d.error) { return ''; }
+        return '<span class="file-error">' + escapeHtml(d.error) + '</span>';
+      }
+
+      var FILE_DETAIL_COLS = [[
+        { field: 'message_id', title: 'message', width: 100 },
+        { field: 'status', title: 'status', width: 120, templet: fileStatusBadge },
+        { field: 'filename', title: 'file name', minWidth: 160 },
+        { field: 'total_size', title: 'size', width: 90 },
+        { field: 'download_progress', title: 'progress', width: 150, templet: fileProgressCell },
+        { field: 'error', title: 'error', minWidth: 140, templet: fileErrorCell }
+      ]];
 
       function listText(value) {
         return (value || []).join(', ');
@@ -538,15 +620,6 @@
         }
       });
 
-      function countText(task) {
-        return [
-          task.success_count || 0,
-          task.failed_count || 0,
-          task.skipped_count || 0,
-          task.upload_success_count || 0
-        ].join(' / ');
-      }
-
       function currentFileText(task) {
         if (!task.current_file) {
           return '';
@@ -622,18 +695,31 @@
         title: 'task_list',
         height: 'full-268',
         limit: 10000,
+        text: { none: 'No tasks yet — paste a Telegram link above to start a download.' },
         cols: [[
           { field: 'task_id', title: 'task', width: 92 },
           { field: 'source', title: 'source', width: 88 },
           { field: 'task_type', title: 'type', width: 104 },
-          { field: 'status', title: 'status', width: 150 },
+          { field: 'status', title: 'status', width: 130, templet: statusBadge },
           { field: 'title', title: 'title', minWidth: 180 },
-          { field: 'workflow', title: 'preview', minWidth: 220, templet: workflowText },
-          { field: 'counts', title: 'ok/fail/skip/up', width: 150, templet: countText },
-          { field: 'current_file', title: 'current file', minWidth: 220, templet: currentFileText },
+          { field: 'workflow', title: 'preview', minWidth: 200, templet: workflowText },
+          { field: 'progress', title: 'progress', width: 118, templet: taskProgressCell },
+          { field: 'counts', title: 'ok/fail/skip/up', width: 150, templet: countCell },
+          { field: 'current_file', title: 'current file', minWidth: 200, templet: currentFileText },
           { fixed: 'right', title: 'action', width: 132, toolbar: '#task_actions' }
         ]],
-        done: function () { element.render(); }
+        done: function () {
+          element.render();
+          if (selectedTaskId == null) { return; }
+          var rows = this.config.data || [];
+          for (var i = 0; i < rows.length; i++) {
+            if (String(rows[i].task_id) === String(selectedTaskId)) {
+              $(this.config.elem).next('.layui-table-view')
+                .find('.layui-table-body tr[data-index="' + i + '"]').addClass('layui-table-click');
+              break;
+            }
+          }
+        }
       });
 
       table.render({
@@ -643,14 +729,8 @@
         title: 'task_detail_list',
         height: 180,
         limit: 10000,
-        cols: [[
-          { field: 'message_id', title: 'message', width: 110 },
-          { field: 'status', title: 'status', width: 130 },
-          { field: 'filename', title: 'file name', minWidth: 180 },
-          { field: 'total_size', title: 'size', width: 110 },
-          { field: 'download_progress', title: 'progress', width: 110 },
-          { field: 'download_speed', title: 'speed', width: 130 }
-        ]],
+        text: { none: 'Select a task to see its files.' },
+        cols: FILE_DETAIL_COLS,
         done: function () { element.render(); }
       });
 
@@ -658,6 +738,8 @@
         selectedTaskId = obj.data.task_id;
         selectedTaskType = obj.data.task_type;
         obj.tr.addClass('layui-table-click').siblings().removeClass('layui-table-click');
+        detailColsType = null;
+        detailSignature = '';
         loadTaskDetail(selectedTaskId, selectedTaskType);
       });
 
@@ -727,6 +809,8 @@
             $('#summary_download_state').text(result.download_state || '');
             $('#summary_download_speed').text(result.download_speed || '0.00 B/s');
             $('#download_speed_title').html(result.download_speed || '0.00 B/s');
+            lastTasksById = {};
+            (result.tasks || []).forEach(function (task) { lastTasksById[task.task_id] = task; });
             table.reload('task_list_table', { data: result.tasks || [] });
             if (selectedTaskId) {
               loadTaskDetail(selectedTaskId, selectedTaskType);
@@ -735,16 +819,36 @@
         });
       }
 
+      function detailSig(items) {
+        return (items || []).map(function (row) {
+          return [row.message_id || row.package_id, row.status, row.download_progress, row.selected, row.error]
+            .join(':');
+        }).join('|');
+      }
+
+      function showDetailError(taskId) {
+        var task = lastTasksById[taskId];
+        var banner = $('#task_detail_error');
+        if (task && task.error) {
+          banner.text(task.error).removeAttr('hidden');
+        } else {
+          banner.attr('hidden', 'hidden').text('');
+        }
+      }
+
       function loadTaskDetail(taskId, taskType) {
+        showDetailError(taskId);
         if (taskType === 'prescan') {
           $.ajax({
             url: 'api/prescans/' + encodeURIComponent(taskId) + '/packages?page=1&page_size=50',
-            type: 'get',
-            dataType: 'json',
+            type: 'get', dataType: 'json',
             success: function (result) {
-              table.reload('task_detail_list_table', {
-                data: result.items || [],
-                cols: [[
+              var items = result.items || [];
+              var sig = 'prescan:' + detailSig(items);
+              if (detailColsType === 'prescan' && sig === detailSignature) { return; }
+              var reload = { data: items };
+              if (detailColsType !== 'prescan') {
+                reload.cols = [[
                   { field: 'package_id', title: 'package', width: 100 },
                   { field: 'selected', title: 'selected', width: 100, templet: packageSelectedText },
                   { field: 'start_message_id', title: 'start', width: 110 },
@@ -753,36 +857,36 @@
                   { field: 'known_total_size', title: 'known size', width: 120 },
                   { field: 'title', title: 'title', minWidth: 220 },
                   { fixed: 'right', title: 'action', width: 110, toolbar: '#prescan_package_actions' }
-                ]]
-              });
+                ]];
+              }
+              table.reload('task_detail_list_table', reload);
+              detailColsType = 'prescan';
+              detailSignature = sig;
             },
             error: function () {
               table.reload('task_detail_list_table', { data: [] });
+              detailColsType = 'prescan'; detailSignature = '';
             }
           });
           return;
         }
         $.ajax({
           url: 'api/tasks/' + encodeURIComponent(taskId) + '/files?page=1&page_size=50',
-          type: 'get',
-          dataType: 'json',
+          type: 'get', dataType: 'json',
           success: function (result) {
-            table.reload('task_detail_list_table', {
-              data: result.items || [],
-              cols: [[
-                { field: 'message_id', title: 'message', width: 110 },
-                { field: 'status', title: 'status', width: 130 },
-                { field: 'filename', title: 'file name', minWidth: 180 },
-                { field: 'total_size', title: 'size', width: 110 },
-                { field: 'download_progress', title: 'progress', width: 110 },
-                { field: 'download_speed', title: 'speed', width: 130 }
-              ]]
-            });
+            var items = result.items || [];
+            var sig = 'files:' + detailSig(items);
+            if (detailColsType === 'files' && sig === detailSignature) { return; }
+            var reload = { data: items };
+            if (detailColsType !== 'files') { reload.cols = FILE_DETAIL_COLS; }
+            table.reload('task_detail_list_table', reload);
+            detailColsType = 'files';
+            detailSignature = sig;
           },
           error: function () {
             table.reload('task_detail_list_table', { data: [] });
-            selectedTaskId = null;
-            selectedTaskType = null;
+            detailColsType = 'files'; detailSignature = '';
+            selectedTaskId = null; selectedTaskType = null;
           }
         });
       }

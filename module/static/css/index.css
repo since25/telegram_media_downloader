@@ -244,4 +244,22 @@ body {
   }
 }
 
+.mini-progress { height: 8px; border-radius: 20px; background: #e6e6e6; overflow: hidden; }
+.mini-progress-bar { height: 100%; background: #16baaa; transition: width .3s; }
+.mini-progress-bar.mp-blue { background: #1e9fff; }
+.mini-progress-bar.mp-green { background: #16b777; }
+.mini-progress-bar.mp-red { background: #ff5722; }
+.mini-progress-text { font-size: 12px; color: #969696; margin-top: 3px; }
+.cnt-ok { color: #16b777; }
+.cnt-fail { color: #ff5722; }
+.cnt-skip { color: #969696; }
+.cnt-up { color: #1e9fff; }
+.cnt-strong { font-weight: 700; }
+.file-error { color: #ff5722; }
+.task-detail-error {
+  margin: 8px 0; padding: 8px 12px; border-radius: 4px;
+  background: #ffe6e6; color: #c0341d; font-size: 13px;
+}
+.task-detail-error[hidden] { display: none; }
+
 /*# sourceMappingURL=index.css.map */
