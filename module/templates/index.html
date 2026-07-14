@@ -64,6 +64,8 @@
             {{# if (d.needs_confirmation) { }}
               <button type="button" class="layui-btn layui-btn-xs" lay-event="confirm">Start</button>
               <button type="button" class="layui-btn layui-btn-primary layui-btn-xs" lay-event="cancel">Cancel</button>
+            {{# } else if (d.status === 'scanning') { }}
+              <button type="button" class="layui-btn layui-btn-primary layui-btn-xs" lay-event="cancel">Cancel</button>
             {{# } else { }}
               <span class="task-action-empty">-</span>
             {{# } }}

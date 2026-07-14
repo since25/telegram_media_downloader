@@ -56,6 +56,7 @@ _current_app: Optional[Application] = None
 _web_task_counter = 0
 _pending_web_task_previews: dict[str, dict] = {}
 _pending_web_prescans: dict[str, dict] = {}
+_scanning_web_task_nodes: dict[str, TaskNode] = {}
 deAesCrypt = AesBase64("1234123412ABCDEF", "ABCDEF1234123412")
 WEB_AUTH_FILE_ENV = "TMD_WEB_AUTH_FILE"
 WEB_AUTH_FILE_NAME = ".web_auth.json"
@@ -517,6 +518,7 @@ def _create_web_task(
     node.task_source = "web"
     node.task_display_type = task_type
     node.is_running = True
+    _scanning_web_task_nodes[task_id] = node
     get_task_store().create_task(
         task_id=task_id,
         source="web",
@@ -531,6 +533,21 @@ def _create_web_task(
         ),
     )
     return node
+
+
+def _mark_web_task_cancelled(task_id: str, workflow_type: str) -> None:
+    """Keep a cancelled scan cancelled instead of resurrecting it."""
+
+    get_task_store().update_task(
+        task_id,
+        status=TaskStatus.CANCELLED,
+        needs_confirmation=False,
+        workflow=WorkflowSnapshot(
+            workflow_type=workflow_type,
+            status=TaskStatus.CANCELLED,
+            summary="Cancelled during scan",
+        ),
+    )
 
 
 def _package_summary(package, selected: bool = False) -> dict:
@@ -597,6 +614,7 @@ async def _run_web_prescan_task(
         )
         return
 
+    node = None
     try:
         entity = await client.get_chat(workflow_request.source_chat)
         channel = entity.username or entity.title or str(entity.id)
@@ -615,7 +633,11 @@ async def _run_web_prescan_task(
             progress_callback=lambda progress: _update_web_prescan_progress(
                 task_id, progress
             ),
+            should_stop=lambda: bool(node.is_stop_transmission),
         )
+        if node.is_stop_transmission:
+            _mark_web_task_cancelled(task_id, "prescan")
+            return
         plan = scan_result.prescan_plan
         packages = list(getattr(plan, "packages", []) or [])
         _pending_web_prescans[task_id] = {
@@ -647,18 +669,23 @@ async def _run_web_prescan_task(
             ),
         )
     except Exception as error:
-        logger.error("web prescan task failed: %s", error, exc_info=True)
-        get_task_store().update_task(
-            task_id,
-            status=TaskStatus.FAILED,
-            error=str(error),
-            workflow=WorkflowSnapshot(
-                workflow_type="prescan",
+        if node is not None and node.is_stop_transmission:
+            logger.info("web prescan task cancelled during scan: %s", error)
+            _mark_web_task_cancelled(task_id, "prescan")
+        else:
+            logger.error("web prescan task failed: %s", error, exc_info=True)
+            get_task_store().update_task(
+                task_id,
                 status=TaskStatus.FAILED,
                 error=str(error),
-            ),
-        )
+                workflow=WorkflowSnapshot(
+                    workflow_type="prescan",
+                    status=TaskStatus.FAILED,
+                    error=str(error),
+                ),
+            )
     finally:
+        _scanning_web_task_nodes.pop(task_id, None)
         _release_prescan_slot(task_id)
 
 
@@ -686,6 +713,9 @@ async def _run_web_package_task(app: Application, client, task_id: str, workflow
             entity.id,
             workflow_request.start_message_id,
         )
+        if node.is_stop_transmission:
+            _mark_web_task_cancelled(task_id, "message_package")
+            return
         package_plan = scan_result.package_plan
         package_items = list(getattr(package_plan, "items", []) or [])
         if not package_items:
@@ -741,17 +771,23 @@ async def _run_web_package_task(app: Application, client, task_id: str, workflow
             ),
         )
     except Exception as error:
-        logger.error("web package task failed: %s", error, exc_info=True)
-        get_task_store().update_task(
-            task_id,
-            status=TaskStatus.FAILED,
-            error=str(error),
-            workflow=WorkflowSnapshot(
-                workflow_type="message_package",
+        if node is not None and node.is_stop_transmission:
+            logger.info("web package task cancelled during scan: %s", error)
+            _mark_web_task_cancelled(task_id, "message_package")
+        else:
+            logger.error("web package task failed: %s", error, exc_info=True)
+            get_task_store().update_task(
+                task_id,
                 status=TaskStatus.FAILED,
                 error=str(error),
-            ),
-        )
+                workflow=WorkflowSnapshot(
+                    workflow_type="message_package",
+                    status=TaskStatus.FAILED,
+                    error=str(error),
+                ),
+            )
+    finally:
+        _scanning_web_task_nodes.pop(task_id, None)
 
 
 async def _run_web_comment_task(app: Application, client, task_id: str, workflow_request):
@@ -776,6 +812,9 @@ async def _run_web_comment_task(app: Application, client, task_id: str, workflow
             post_id=workflow_request.post_id,
             post_title=title,
         )
+        if node.is_stop_transmission:
+            _mark_web_task_cancelled(task_id, "comment")
+            return
         _pending_web_task_previews[task_id] = {
             "task_type": "comment",
             "node": node,
@@ -797,17 +836,23 @@ async def _run_web_comment_task(app: Application, client, task_id: str, workflow
             ),
         )
     except Exception as error:
-        logger.error("web comment task failed: %s", error, exc_info=True)
-        get_task_store().update_task(
-            task_id,
-            status=TaskStatus.FAILED,
-            error=str(error),
-            workflow=WorkflowSnapshot(
-                workflow_type="comment",
+        if node is not None and node.is_stop_transmission:
+            logger.info("web comment task cancelled during scan: %s", error)
+            _mark_web_task_cancelled(task_id, "comment")
+        else:
+            logger.error("web comment task failed: %s", error, exc_info=True)
+            get_task_store().update_task(
+                task_id,
                 status=TaskStatus.FAILED,
                 error=str(error),
-            ),
-        )
+                workflow=WorkflowSnapshot(
+                    workflow_type="comment",
+                    status=TaskStatus.FAILED,
+                    error=str(error),
+                ),
+            )
+    finally:
+        _scanning_web_task_nodes.pop(task_id, None)
 
 
 async def _run_confirmed_package_download(preview: dict):
@@ -1025,17 +1070,22 @@ def cancel_task(task_id: str):
     prescan = _pending_web_prescans.pop(task_id, None)
     node = (preview or prescan or {}).get("node")
     if not node:
+        node = _scanning_web_task_nodes.get(task_id)
+    if not node:
         node = get_active_task_nodes().get(task_id)
     if not node:
         return jsonify({"ok": False, "error": "task is not cancellable"}), 404
-    if node:
-        node.stop_transmission()
+    node.stop_transmission()
+    task = get_task_store().get_task(task_id)
+    workflow_type = ((preview or prescan) or {}).get("task_type") or (
+        task.task_type if task else "prescan"
+    )
     get_task_store().update_task(
         task_id,
         status=TaskStatus.CANCELLED,
         needs_confirmation=False,
         workflow=WorkflowSnapshot(
-            workflow_type=(preview or prescan).get("task_type", "prescan"),
+            workflow_type=workflow_type,
             status=TaskStatus.CANCELLED,
             summary="Cancelled before download",
         ),

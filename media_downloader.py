@@ -1774,6 +1774,7 @@ async def scan_prescan_packages(
     batch_delay_seconds: int = 1,
     sleep=asyncio.sleep,
     progress_callback=None,
+    should_stop=None,
 ) -> PrescanScanResult:
     """Slowly fetch ordinary messages and build a multi-package prescan plan."""
     from module.prescan_workflow import PrescanLimits, plan_prescan_packages
@@ -1865,6 +1866,12 @@ async def scan_prescan_packages(
                 track_missing_streak([message_id], set())
 
     for index in range(0, len(message_ids), batch_size):
+        if should_stop and should_stop():
+            logger.info(
+                "scan_prescan_packages: stop requested, ending scan early "
+                f"chat_id={chat_id} scanned={len(fetched_messages)}"
+            )
+            break
         batch_ids = message_ids[index : index + batch_size]
         try:
             await fetch_batch(batch_ids)

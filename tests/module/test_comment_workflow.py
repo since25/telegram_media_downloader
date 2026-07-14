@@ -1691,6 +1691,51 @@ class PrescanScannerTestCase(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(progress_events[-1]["latest_package"].start_message_id, 120)
         self.assertIsNone(progress_events[-1]["rate_limited_seconds"])
 
+    async def test_scan_prescan_packages_stops_early_when_should_stop(self):
+        from media_downloader import scan_prescan_packages
+
+        messages = [
+            MockMessage(
+                id=100,
+                media="video",
+                caption="课程 第01章",
+                video=MockVideo(file_name="01.mp4", mime_type="video/mp4"),
+            ),
+            MockMessage(
+                id=120,
+                media="video",
+                caption="课程 第02章",
+                video=MockVideo(file_name="02.mp4", mime_type="video/mp4"),
+            ),
+        ]
+        client = self.FakePrescanClient(messages)
+        sleep = FakeSleepRecorder()
+        stop_after_first_batch = {"stopped": False}
+
+        def should_stop():
+            return stop_after_first_batch["stopped"]
+
+        original_get_messages = client.get_messages
+
+        async def get_messages_then_stop(chat_id, message_ids):
+            stop_after_first_batch["stopped"] = True
+            return await original_get_messages(chat_id, message_ids)
+
+        client.get_messages = get_messages_then_stop
+
+        result = await scan_prescan_packages(
+            client=client,
+            chat_id=-1001,
+            start_message_id=100,
+            max_messages=60,
+            batch_size=20,
+            sleep=sleep,
+            should_stop=should_stop,
+        )
+
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual([message.id for message in result.messages], [100])
+
     async def test_scan_prescan_packages_sleeps_and_retries_after_floodwait(self):
         from media_downloader import scan_prescan_packages
 

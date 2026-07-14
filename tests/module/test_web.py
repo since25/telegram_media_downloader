@@ -49,6 +49,7 @@ class WebTestCase(unittest.TestCase):
         web_module._flask_app.config["TESTING"] = True
         web_module._pending_web_task_previews.clear()
         web_module._pending_web_prescans.clear()
+        web_module._scanning_web_task_nodes.clear()
         web_module._active_web_prescan_task_id = None
         web_module.get_download_result().clear()
         get_task_store().clear()
@@ -64,6 +65,7 @@ class WebTestCase(unittest.TestCase):
 
         self.web_module._pending_web_task_previews.clear()
         self.web_module._pending_web_prescans.clear()
+        self.web_module._scanning_web_task_nodes.clear()
         self.web_module._active_web_prescan_task_id = None
         self.web_module.get_download_result().clear()
         get_task_store().clear()
@@ -528,6 +530,159 @@ class WebTestCase(unittest.TestCase):
             payload = response.get_json()
             self.assertFalse(payload["ok"])
             self.assertIn("telegram client", payload["error"])
+
+    def test_cancel_running_prescan_scan_sets_stop_flag(self):
+        from module.app import TaskNode
+        from module.task_state import TaskStatus, get_task_store
+
+        node = TaskNode(chat_id=-1001, from_user_id="web", task_id="web-scan-9")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            self.web_module._scanning_web_task_nodes["web-scan-9"] = node
+            get_task_store().create_task(
+                "web-scan-9",
+                source="web",
+                task_type="prescan",
+                status=TaskStatus.SCANNING,
+            )
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.post("/api/tasks/web-scan-9/cancel")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(node.is_stop_transmission)
+            task = get_task_store().get_task("web-scan-9")
+            self.assertEqual(task.status, TaskStatus.CANCELLED)
+            self.web_module._scanning_web_task_nodes.clear()
+
+    def test_cancel_active_download_node_does_not_crash(self):
+        from module.app import TaskNode
+        from module.task_state import TaskStatus, get_task_store
+
+        node = TaskNode(chat_id=-1001, from_user_id="web", task_id="web-dl-9")
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            get_task_store().create_task(
+                "web-dl-9",
+                source="web",
+                task_type="package",
+                status=TaskStatus.DOWNLOADING,
+            )
+            client = self.web_module.get_flask_app().test_client()
+
+            with patch.object(
+                self.web_module,
+                "get_active_task_nodes",
+                return_value={"web-dl-9": node},
+            ):
+                response = client.post("/api/tasks/web-dl-9/cancel")
+
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(node.is_stop_transmission)
+            task = get_task_store().get_task("web-dl-9")
+            self.assertEqual(task.status, TaskStatus.CANCELLED)
+
+    def test_web_prescan_stays_cancelled_after_scan_completes(self):
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.task_state import TaskStatus, get_task_store
+
+        class FakeClient:
+            async def get_chat(self, chat_id):
+                return SimpleNamespace(id=-10012345, username="demo", title="Demo")
+
+        scan_result = SimpleNamespace(
+            prescan_plan=SimpleNamespace(
+                start_message_id=99,
+                scanned_count=1,
+                packages=[],
+                warning=None,
+            ),
+            messages=[],
+            failed_message_ids=[],
+        )
+        web_module = self.web_module
+
+        async def fake_scan(*_args, **_kwargs):
+            node = web_module._scanning_web_task_nodes.get("web-prescan-9")
+            assert node is not None, "scanning node must be registered during scan"
+            node.stop_transmission()
+            get_task_store().update_task(
+                "web-prescan-9", status=TaskStatus.CANCELLED
+            )
+            return scan_result
+
+        request = build_message_package_workflow_request("https://t.me/c/12345/99")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            with patch("media_downloader.scan_prescan_packages", fake_scan):
+                asyncio.run(
+                    self.web_module._run_web_prescan_task(
+                        app,
+                        FakeClient(),
+                        "web-prescan-9",
+                        request,
+                        self.web_module._prescan_limits_from_payload({}),
+                    )
+                )
+
+            task = get_task_store().get_task("web-prescan-9")
+            self.assertEqual(task.status, TaskStatus.CANCELLED)
+            self.assertFalse(task.needs_confirmation)
+            self.assertNotIn("web-prescan-9", self.web_module._pending_web_prescans)
+            self.assertNotIn("web-prescan-9", self.web_module._scanning_web_task_nodes)
+
+    def test_web_package_scan_stays_cancelled_after_scan_completes(self):
+        from module.comment_workflow import build_message_package_workflow_request
+        from module.task_state import TaskStatus, get_task_store
+
+        class FakeClient:
+            async def get_chat(self, chat_id):
+                return SimpleNamespace(id=-10012345, username="demo", title="Demo")
+
+        message = SimpleNamespace(id=99)
+        scan_result = SimpleNamespace(
+            messages=[message],
+            failed_message_ids=[],
+            package_plan=SimpleNamespace(
+                package_title="Demo package",
+                summary=SimpleNamespace(scanned_count=5, media_count=1),
+                items=[SimpleNamespace(message=message)],
+            ),
+        )
+        web_module = self.web_module
+
+        async def fake_scan(*_args, **_kwargs):
+            node = web_module._scanning_web_task_nodes.get("web-preview-9")
+            assert node is not None, "scanning node must be registered during scan"
+            node.stop_transmission()
+            get_task_store().update_task(
+                "web-preview-9", status=TaskStatus.CANCELLED
+            )
+            return scan_result
+
+        request = build_message_package_workflow_request("https://t.me/c/12345/99")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            with patch("media_downloader.scan_message_package", fake_scan):
+                asyncio.run(
+                    self.web_module._run_web_package_task(
+                        app, FakeClient(), "web-preview-9", request
+                    )
+                )
+
+            task = get_task_store().get_task("web-preview-9")
+            self.assertEqual(task.status, TaskStatus.CANCELLED)
+            self.assertFalse(task.needs_confirmation)
+            self.assertNotIn(
+                "web-preview-9", self.web_module._pending_web_task_previews
+            )
+            self.assertNotIn("web-preview-9", self.web_module._scanning_web_task_nodes)
 
     def test_task_submission_schedules_valid_package_link(self):
         class FakeLoop:
