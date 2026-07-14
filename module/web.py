@@ -1157,33 +1157,45 @@ def confirm_task(task_id: str):
 @_flask_app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
 @login_required
 def cancel_task(task_id: str):
-    """Cancel a Web task that is waiting for confirmation."""
+    """Cancel a Web task.
+
+    Actively running tasks (downloading/uploading/scanning) are stopped and
+    kept visible with a cancelled status. Everything else — waiting for
+    confirmation, queued, just created, or orphaned by a service restart
+    (the in-memory preview/prescan dicts are wiped on restart, so a task
+    from before a restart has no node) — is discarded entirely so it does
+    not get stuck unclearable.
+    """
 
     preview = _pending_web_task_previews.pop(task_id, None)
     prescan = _pending_web_prescans.pop(task_id, None)
-    node = (preview or prescan or {}).get("node")
-    if not node:
-        node = _scanning_web_task_nodes.get(task_id)
-    if not node:
-        node = get_active_task_nodes().get(task_id)
-    if not node:
-        return jsonify({"ok": False, "error": "task is not cancellable"}), 404
-    node.stop_transmission()
+    node = (preview or prescan or {}).get("node") or _scanning_web_task_nodes.get(
+        task_id
+    ) or get_active_task_nodes().get(task_id)
     task = get_task_store().get_task(task_id)
-    workflow_type = ((preview or prescan) or {}).get("task_type") or (
-        task.task_type if task else "prescan"
-    )
-    get_task_store().update_task(
-        task_id,
-        status=TaskStatus.CANCELLED,
-        needs_confirmation=False,
-        workflow=WorkflowSnapshot(
-            workflow_type=workflow_type,
+    if node:
+        node.stop_transmission()
+    _scanning_web_task_nodes.pop(task_id, None)
+    if not node and not task:
+        return jsonify({"ok": False, "error": "task not found"}), 404
+    status = task.status if task else None
+    if status in {TaskStatus.DOWNLOADING, TaskStatus.UPLOADING, TaskStatus.SCANNING}:
+        workflow_type = ((preview or prescan) or {}).get("task_type") or (
+            task.task_type if task else "prescan"
+        )
+        get_task_store().update_task(
+            task_id,
             status=TaskStatus.CANCELLED,
-            summary="Cancelled before download",
-        ),
-    )
-    return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
+            needs_confirmation=False,
+            workflow=WorkflowSnapshot(
+                workflow_type=workflow_type,
+                status=TaskStatus.CANCELLED,
+                summary="Cancelled",
+            ),
+        )
+        return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
+    get_task_store().remove_task(task_id)
+    return jsonify({"ok": True, "task_id": task_id, "removed": True})
 
 
 @_flask_app.route("/api/tasks/<task_id>/clear", methods=["POST"])

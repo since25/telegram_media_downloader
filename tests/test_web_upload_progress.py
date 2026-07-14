@@ -26,9 +26,13 @@ def test_task_dashboard_row_has_upload_progress():
     assert d["upload_progress"] == 50.0
 
 
-def test_snapshot_node_maps_cloud_upload_state():
-    """snapshot_node reads node.cloud_drive_upload_stat_dict (rclone), not
-    the Telegram re-upload node.upload_status/upload_stat_dict path."""
+def test_snapshot_node_does_not_touch_cloud_upload_state():
+    """snapshot_node no longer mirrors node.cloud_drive_upload_stat_dict into
+    file status - that responsibility belongs to media_downloader.py, which
+    calls upsert_file(..., status=FileStatus.UPLOADING/UPLOADED/UPLOAD_FAILED)
+    directly around the actual upload. The cloud_drive_upload_stat_dict is
+    still read live by get_upload_list/get_total_upload_speed (see below),
+    just not mirrored into the task store by snapshot_node anymore."""
     from module.app import CloudDriveUploadStat
     from module.task_state import get_task_store, snapshot_node
 
@@ -51,12 +55,66 @@ def test_snapshot_node_maps_cloud_upload_state():
     }
     node.upload_success_count = 0
     snapshot_node(node)
-    f = get_task_store().get_task("up-1").files["7"]
-    assert f.status == FileStatus.UPLOADING
-    # Documented approximation (module/task_state.py:snapshot_node): FileSnapshot
-    # has no settable progress field, so uploaded_size holds the parsed
-    # percentage (0-100) rather than a byte count.
-    assert f.uploaded_size == 60
+    task = get_task_store().get_task("up-1")
+    # No file entry was created from cloud_drive_upload_stat_dict.
+    assert "7" not in task.files
+
+
+def test_snapshot_node_preserves_existing_task_identity():
+    """A Web-submitted prescan task (source=web, task_type=prescan) must keep
+    that identity even when re-snapshotted from a node context that lacks
+    task_source/task_display_type - the weak "bot"/"unknown" defaults must
+    not downgrade an already-known identity (see snapshot_node's resolved_source/
+    resolved_type fallback chain in module/task_state.py)."""
+    from module.task_state import TaskStatus, get_task_store, snapshot_node
+
+    store = get_task_store()
+    store.create_task(
+        task_id="web-1",
+        source="web",
+        task_type="prescan",
+        chat_id=-200,
+        title="prescan task",
+        status=TaskStatus.SCANNING,
+    )
+
+    class _Node:
+        pass
+
+    node = _Node()
+    node.task_id = "web-1"
+    node.chat_id = -200
+    node.download_status = {}
+    # Deliberately no task_source / task_display_type on this node.
+
+    snapshot_node(node)
+
+    task = store.get_task("web-1")
+    assert task.source == "web"
+    assert task.task_type == "prescan"
+
+
+def test_snapshot_node_defaults_new_task_to_bot_unknown():
+    """Regression guard: a brand-new task (no existing store entry) with a
+    bare node still falls back to source=bot/type=unknown as before."""
+    from module.task_state import get_task_store, snapshot_node
+
+    store = get_task_store()
+    assert store.get_task("bot-1") is None
+
+    class _Node:
+        pass
+
+    node = _Node()
+    node.task_id = "bot-1"
+    node.chat_id = -300
+    node.download_status = {}
+
+    snapshot_node(node)
+
+    task = store.get_task("bot-1")
+    assert task.source == "bot"
+    assert task.task_type == "unknown"
 
 
 def _build_cloud_upload_node():

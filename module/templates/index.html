@@ -131,7 +131,7 @@
           <div class="table-scroll">
             <table class="table" style="font-size:13px">
               <thead><tr>
-                <th style="padding-left:16px">任务 ID</th><th>来源</th><th>类型</th><th>状态</th><th>标题</th><th>进度</th><th>成 / 败 / 跳</th><th>当前文件</th><th style="padding-right:16px;text-align:right">操作</th>
+                <th style="padding-left:16px">任务 ID</th><th>来源</th><th>类型</th><th>状态</th><th>标题</th><th>进度</th><th>成 / 败 / 跳</th><th style="padding-right:16px;text-align:right">操作</th>
               </tr></thead>
               <tbody id="task_rows"></tbody>
             </table>
@@ -146,6 +146,7 @@
             <span id="detail_title" style="font-family:var(--font-heading);font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px"></span>
             <span id="detail_meta" class="text-muted" style="font-size:12px;margin-left:2px"></span>
           </div>
+          <div id="detail_current_file" style="padding:10px 16px;border-bottom:1px solid var(--color-divider);font-size:13px" hidden></div>
           <div id="prescan_controls" style="align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap" hidden></div>
           <div id="detail_body"></div>
         </div>
@@ -326,6 +327,14 @@
     // Escape Telegram/user-sourced strings before interpolating into innerHTML templates
     // (task titles, filenames, etc. are attacker-controllable). Reused by later task screens.
     function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    // web task ids are `web-<ms>-<counter>` (long) — show a short form in the table,
+    // keep the full id in data-id attributes / title for actions and hover.
+    function shortId(id){
+      const s = String(id == null ? '' : id);
+      const m = s.match(/^web-\d+-(\d+)$/);
+      if (m) return '#' + m[1];
+      return s.length > 6 ? '…' + s.slice(-6) : s;
+    }
     const state = { selectedTaskId:null, selectedTaskType:null, lastTasksById:{},
       prescanRows:{}, prescanSelected:new Set(), sys:null, timers:{} };
     let taskFilter = 'all';
@@ -367,11 +376,10 @@
       if (task.needs_confirmation || s === 'waiting_confirmation')
         return `<button class="btn btn-primary" data-act="confirm" data-id="${task.task_id}">开始</button>`
              + `<button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}">取消</button>`;
-      if (s === 'scanning')
-        return `<button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}">取消</button>`;
       if (s === 'completed' || s === 'completed_with_errors' || s === 'cancelled' || s === 'failed')
         return `<button class="btn btn-ghost" data-act="clear" data-id="${task.task_id}">清除</button>`;
-      return '—';  // downloading / uploading / queued
+      // scanning / downloading / uploading / queued / created — all cancellable
+      return `<button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}">取消</button>`;
     }
 
     // terminal statuses (used for the 已完成 filter and the 进行中 filter's complement)
@@ -405,11 +413,10 @@
         const fail = t.failed_count > 0 ? `<b>${t.failed_count}</b>` : '0';
         const sel = t.task_id === state.selectedTaskId ? ' style="background:color-mix(in srgb,var(--color-accent) 8%,transparent)"' : '';
         return `<tr data-id="${t.task_id}" data-type="${t.task_type}"${sel}>
-          <td class="nums" style="padding-left:16px">${t.task_id}</td><td class="text-muted">${t.source||''}</td><td>${t.task_type||''}</td>
+          <td class="nums" style="padding-left:16px" title="${escapeHtml(t.task_id)}">${escapeHtml(shortId(t.task_id))}</td><td class="text-muted">${t.source||''}</td><td>${t.task_type||''}</td>
           <td>${statusTag(t.status)}</td><td>${escapeHtml(t.title||'')}</td>
           <td><div style="display:flex;flex-direction:column;gap:3px;min-width:118px">${progressCell(t)}</div></td>
           <td class="nums" style="font-size:12px"><b style="color:var(--color-accent-700)">${t.success_count}</b> · ${fail} · <span style="color:var(--color-neutral-500)">${t.skipped_count}</span></td>
-          <td class="text-muted" style="font-size:12px">${currentFileCell(t)}</td>
           <td style="padding-right:16px;text-align:right"><div style="display:inline-flex;gap:6px">${taskActions(t)}</div></td></tr>`;
       }).join('');
     }
@@ -445,6 +452,11 @@
       $('#sum_speed').textContent = dash.download_speed;
       $('#foot_speed').textContent = '⬇ ' + dash.download_speed;
       setStateChip(dash.download_state);
+      if (state.selectedTaskId && !state.lastTasksById[state.selectedTaskId]){
+        // selected task is gone (e.g. cancel discarded it) — don't keep showing stale detail
+        state.selectedTaskId = null;
+        $('#task_detail').hidden = true;
+      }
       if (state.selectedTaskId && state.lastTasksById[state.selectedTaskId]) renderDetail(state.lastTasksById[state.selectedTaskId]); // T6
       const sys = await getJSON('/api/system'); renderSystem(sys);
     }
@@ -452,6 +464,14 @@
     function renderDetail(task){
       const box = $('#task_detail'); box.hidden = false;
       $('#detail_title').innerHTML = escapeHtml(task.title||'任务') + ' ' + statusTag(task.status);
+      const cfBox = $('#detail_current_file');
+      if ((task.status === 'downloading' || task.status === 'uploading') && task.current_file && task.current_file.filename){
+        cfBox.hidden = false;
+        cfBox.innerHTML = `<span class="text-muted">当前文件</span> <b>${currentFileCell(task)}</b>`;
+      } else {
+        cfBox.hidden = true;
+        cfBox.innerHTML = '';
+      }
       if (task.task_type === 'prescan'){
         if (task.status === 'waiting_confirmation') renderPrescanPackages(task);
         else renderPrescanDownloading(task);
