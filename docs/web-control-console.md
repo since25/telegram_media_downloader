@@ -47,5 +47,6 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 - `POST /api/tasks/<task_id>/clear`: clear one terminal task from Web history.
 - `POST /api/tasks/clear-completed`: clear completed task history.
 - `POST /api/tasks/<task_id>/retry`: currently returns `409` until original command metadata is persisted for safe retry.
+- `GET /api/system`: CPU / memory / disk(save_path 卷)/ throughput 快照。
 
 All APIs require the existing Web login session.

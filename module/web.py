@@ -6,11 +6,13 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
+import psutil
 from flask import Flask, jsonify, render_template, request
 from flask_login import LoginManager, UserMixin, login_required, login_user, logout_user
 
@@ -30,6 +32,7 @@ from module.download_stat import (
     get_download_result,
     get_download_state,
     get_total_download_speed,
+    get_total_upload_speed,
     set_download_state,
 )
 from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
@@ -281,6 +284,31 @@ def get_download_speed():
         {
             "download_speed": format_byte(get_total_download_speed()) + "/s",
             "upload_speed": "0.00 B/s",
+        }
+    )
+
+
+@_flask_app.route("/api/system")
+@login_required
+def system_metrics():
+    """Return CPU / memory / disk / throughput for the monitor card."""
+    app = _active_app()
+    save_path = getattr(app, "save_path", None) or "/"
+    try:
+        usage = shutil.disk_usage(save_path)
+    except OSError:
+        usage = shutil.disk_usage("/")
+    vmem = psutil.virtual_memory()
+    return jsonify(
+        {
+            "cpu_percent": round(psutil.cpu_percent(interval=None), 1),
+            "mem_used": int(vmem.total - vmem.available),
+            "mem_total": int(vmem.total),
+            "disk_used": int(usage.used),
+            "disk_total": int(usage.total),
+            "disk_free": int(usage.free),
+            "download_speed": format_byte(get_total_download_speed()) + "/s",
+            "upload_speed": format_byte(get_total_upload_speed()) + "/s",
         }
     )
 
