@@ -485,7 +485,7 @@
       $('#done_rows').innerHTML = done.map(r=>`<tr><td style="padding-left:16px">${escapeHtml(r.chat)}</td><td class="nums">${escapeHtml(r.id)}</td><td>${escapeHtml(r.filename)}</td>
         <td class="nums">${escapeHtml(r.total_size)}</td><td class="text-muted" style="padding-right:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">${escapeHtml(r.save_path)}</td></tr>`).join('');
     }
-    $('#clear_done_btn').addEventListener('click', async () => { await postJSON('/api/tasks/clear-completed'); pollFiles(); });
+    $('#clear_done_btn').addEventListener('click', async () => { await postJSON('/clear_download_list'); pollFiles(); });
     function loadConfig(){ /* T8 */ }
     function setStateChip(dstate){
       const chip = $('#download_state'), on = dstate === 'Downloading';

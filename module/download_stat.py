@@ -32,6 +32,23 @@ def get_download_result() -> dict:
     return _download_result
 
 
+def clear_completed_download_result() -> int:
+    """Drop fully-downloaded entries from the display cache; keep in-progress ones."""
+    removed = 0
+    for chat_id in list(_download_result):
+        messages = _download_result[chat_id]
+        for msg_id in list(messages):
+            value = messages[msg_id]
+            if value.get("down_byte", 0) == value.get("total_size", 0) and value.get(
+                "total_size", 0
+            ) > 0:
+                del messages[msg_id]
+                removed += 1
+        if not messages:
+            del _download_result[chat_id]
+    return removed
+
+
 def add_active_task_node(
     node,
     source: str = None,

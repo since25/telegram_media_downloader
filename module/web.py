@@ -28,6 +28,7 @@ from module.comment_workflow import (
 from module.download_stat import (
     DownloadState,
     add_active_task_node,
+    clear_completed_download_result,
     get_active_task_nodes,
     get_download_result,
     get_download_state,
@@ -372,6 +373,14 @@ def get_download_list():
             )
 
     return jsonify(result)
+
+
+@_flask_app.route("/clear_download_list", methods=["POST"])
+@login_required
+def clear_download_list():
+    """Remove completed entries from the Files page download cache."""
+    cleared = clear_completed_download_result()
+    return jsonify({"ok": True, "cleared": cleared})
 
 
 @_flask_app.route("/get_upload_list")
