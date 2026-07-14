@@ -138,6 +138,18 @@
           </div>
         </div>
 
+        <!-- task detail: type-aware (T6) — ordinary file table / prescan package list / prescan downloading -->
+        <div class="card blueprint" id="task_detail" style="padding:0;gap:0" hidden>
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;gap:9px;padding:12px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap">
+            <span class="card-kicker" style="color:var(--color-neutral-600)">任务详情</span>
+            <span id="detail_title" style="font-family:var(--font-heading);font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px"></span>
+            <span id="detail_meta" class="text-muted" style="font-size:12px;margin-left:2px"></span>
+          </div>
+          <div id="prescan_controls" style="align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap" hidden></div>
+          <div id="detail_body"></div>
+        </div>
+
       </div>
       <div class="tab-panel" id="tab_files"><!-- T7 --></div>
       <div class="tab-panel" id="tab_config"><!-- T8 --></div>
@@ -260,7 +272,7 @@
     }
 
     async function getJSON(url){ const r = await fetch(url); return r.json(); }
-    async function postJSON(url){ const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'}}); return r.json(); }
+    async function postJSON(url, body){ const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.json(); }
 
     async function pollTasks() {
       const dash = await getJSON('/api/task-dashboard');
@@ -275,7 +287,105 @@
       if (state.selectedTaskId && state.lastTasksById[state.selectedTaskId]) renderDetail(state.lastTasksById[state.selectedTaskId]); // T6
       const sys = await getJSON('/api/system'); renderSystem(sys);
     }
-    function renderDetail(){ /* T6 */ }
+    // ── task detail (T6): dispatches on task_type/status into one of three renderers ──
+    function renderDetail(task){
+      const box = $('#task_detail'); box.hidden = false;
+      $('#detail_title').innerHTML = escapeHtml(task.title||'任务') + ' ' + statusTag(task.status);
+      if (task.task_type === 'prescan'){
+        if (task.status === 'waiting_confirmation') renderPrescanPackages(task);
+        else renderPrescanDownloading(task);
+      } else {
+        const ctrl = $('#prescan_controls'); ctrl.hidden = true; ctrl.style.display = '';
+        getJSON(`/api/tasks/${task.task_id}`).then(full => renderFileTable(full.files||[]));
+      }
+    }
+    function fileStatusLabel(s){ return ({queued:'待下载',downloading:'下载中',downloaded:'已下载',
+      uploading:'上传中',uploaded:'已上传',upload_failed:'上传失败',skipped:'跳过',failed:'失败'})[s]||s; }
+
+    // ordinary task → flat file table
+    function renderFileTable(files){
+      $('#detail_meta').textContent = `${files.length} 个文件`;
+      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
+        <thead><tr><th style="padding-left:16px">消息 ID</th><th>状态</th><th>文件名</th><th>大小</th><th>进度</th><th style="padding-right:16px">备注</th></tr></thead>
+        <tbody>${files.map(f=>`<tr><td class="nums" style="padding-left:16px">${f.message_id}</td><td>${fileStatusLabel(f.status)}</td>
+          <td>${escapeHtml(f.filename||'')}</td><td class="nums">${f.total_size}</td>
+          <td><div class="track" style="width:90px"><i style="width:${f.download_progress}%"></i></div></td>
+          <td class="text-muted" style="font-size:12px;padding-right:16px">${escapeHtml(f.error||f.download_speed||'')}</td></tr>`).join('')}</tbody></table></div>`;
+    }
+
+    // prescan + waiting_confirmation → package list with selection controls + expandable files
+    async function renderPrescanPackages(task){
+      const data = await getJSON(`/api/prescans/${task.task_id}/packages?page=1&page_size=200`);
+      state.prescanRows[task.task_id] = data.items;
+      $('#detail_meta').textContent = `${data.total} 个包同属此任务 · 点击包名展开其文件`;
+      const ctrl = $('#prescan_controls'); ctrl.hidden = false; ctrl.style.display = 'flex';
+      const selCount = data.items.filter(p=>p.selected).length;
+      const selMedia = data.items.filter(p=>p.selected).reduce((a,p)=>a+p.media_count,0);
+      ctrl.innerHTML = `<button class="btn btn-secondary" data-pact="all">全选</button>
+        <button class="btn btn-ghost" data-pact="none">清空</button>
+        <span class="text-muted nums" style="font-size:12px">已选 ${selCount} / ${data.total} 包 · ${selMedia} 媒体</span>
+        <button class="btn btn-primary" data-pact="confirm" style="margin-left:auto">下载所选</button>`;
+      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
+        <thead><tr><th style="padding-left:16px"></th><th>包</th><th>选择</th><th>消息区间</th><th>媒体</th><th>已知大小</th><th>标题</th><th style="padding-right:16px;text-align:right">操作</th></tr></thead>
+        <tbody>${data.items.map(p=>`<tr data-pkg="${p.package_id}">
+          <td style="padding-left:16px"><button class="btn btn-ghost" data-expand="${p.package_id}" style="padding:2px">${icon('chevron',12)}</button></td>
+          <td class="nums">#${p.package_id}</td>
+          <td>${p.selected?'<span class="tag tag-accent">已选</span>':'—'}</td>
+          <td class="nums text-muted">${p.start_message_id}–${p.end_message_id}</td>
+          <td class="nums">${p.media_count}</td><td class="nums">${p.known_total_size}</td><td>${escapeHtml(p.title)}</td>
+          <td style="padding-right:16px;text-align:right"><button class="btn btn-secondary" data-toggle="${p.package_id}" data-sel="${p.selected?0:1}">${p.selected?'排除':'加入'}</button></td>
+        </tr>`).join('')}</tbody></table></div>`;
+    }
+    // controls (全选/清空/下载所选) + per-row toggle + expand — delegated on the detail card
+    $('#task_detail').addEventListener('click', async e => {
+      const id = state.selectedTaskId;
+      const cancelBtn = e.target.closest('[data-act="cancel"]');
+      if (cancelBtn){ await postJSON(`/api/tasks/${cancelBtn.dataset.id}/cancel`); return pollTasks(); }
+      const c = e.target.closest('[data-pact]');
+      if (c){ const a=c.dataset.pact;
+        if (a==='all') await postJSON(`/api/prescans/${id}/packages/select-all`, {selected:true});
+        if (a==='none') await postJSON(`/api/prescans/${id}/packages/select-all`, {selected:false});
+        if (a==='confirm'){ const r=await postJSON(`/api/tasks/${id}/confirm`); if(r.error) alert(r.error); }
+        return renderDetail(state.lastTasksById[id]); }
+      const t = e.target.closest('[data-toggle]');
+      if (t){ await postJSON(`/api/prescans/${id}/packages/${t.dataset.toggle}/select`, {selected:t.dataset.sel==='1'});
+        return renderDetail(state.lastTasksById[id]); }
+      const x = e.target.closest('[data-expand]');
+      if (x) return togglePackageFiles(id, x.dataset.expand);
+    });
+    // NOTE (known limitation, per plan spec §6.1): FileSnapshot carries no package_id, so
+    // /api/tasks/<id> returns a flat file list with no per-package association. Expanding a
+    // package therefore shows the task's whole file list rather than files scoped to that
+    // package — there is no backend mapping to filter by. Revisit if/when the backend adds one.
+    async function togglePackageFiles(taskId, pkgId){
+      const row = $(`#task_detail tr[data-pkg="${pkgId}"]`);
+      const next = row.nextElementSibling;
+      if (next && next.dataset.filesFor===pkgId){ next.remove(); return; }
+      const full = await getJSON(`/api/tasks/${taskId}`);
+      const files = full.files||[];
+      const tr = document.createElement('tr'); tr.dataset.filesFor = pkgId;
+      tr.innerHTML = `<td></td><td colspan="7" style="padding-left:24px"><table class="table" style="font-size:12px">
+        ${files.map(f=>`<tr><td class="nums">${f.message_id}</td><td>${escapeHtml(f.filename||'')}</td><td class="nums">${f.total_size}</td><td>${fileStatusLabel(f.status)}</td></tr>`).join('')}</table></td>`;
+      row.after(tr);
+    }
+
+    // prescan + downloading (confirmed) → per-package progress, only selected packages
+    async function renderPrescanDownloading(task){
+      const ctrl0 = $('#prescan_controls'); ctrl0.hidden = true; ctrl0.style.display = '';
+      const data = await getJSON(`/api/prescans/${task.task_id}/packages?page=1&page_size=200`);
+      const selected = data.items.filter(p=>p.selected);  // 仅选中的包参与下载
+      const prog = task.total_count ? Math.round((task.success_count+task.skipped_count)/task.total_count*100) : 0;
+      $('#detail_meta').innerHTML = `<div class="track" style="width:260px;display:inline-block;vertical-align:middle"><i style="width:${prog}%"></i></div>
+        <span class="nums text-muted" style="font-size:11.5px;margin-left:8px">整体 ${task.success_count} / ${task.total_count} 媒体</span>
+        <button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}" style="margin-left:10px">暂停</button>`;
+      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
+        <thead><tr><th style="padding-left:16px"></th><th>包</th><th>状态</th><th>进度</th><th>媒体</th><th>大小</th><th style="padding-right:16px">标题</th></tr></thead>
+        <tbody>${selected.map(p=>`<tr data-pkg="${p.package_id}">
+          <td style="padding-left:16px"><button class="btn btn-ghost" data-expand="${p.package_id}" style="padding:2px">${icon('chevron',12)}</button></td>
+          <td class="nums">#${p.package_id}</td><td>${statusTag(task.status)}</td>
+          <td><div class="track" style="width:100px"><i style="width:0%"></i></div></td>
+          <td class="nums">${p.media_count}</td><td class="nums">${p.known_total_size}</td><td style="padding-right:16px">${escapeHtml(p.title)}</td></tr>`).join('')}</tbody></table></div>`;
+    }
     function pollFiles(){ /* T7 */ }
     function loadConfig(){ /* T8 */ }
     function setStateChip(dstate){
