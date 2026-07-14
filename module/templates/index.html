@@ -373,17 +373,34 @@
     async function renderPrescanDownloading(task){
       const ctrl0 = $('#prescan_controls'); ctrl0.hidden = true; ctrl0.style.display = '';
       const data = await getJSON(`/api/prescans/${task.task_id}/packages?page=1&page_size=200`);
-      const selected = data.items.filter(p=>p.selected);  // 仅选中的包参与下载
+      // GET .../packages 404s ({"error":"prescan not found"}) whenever the prescan isn't currently
+      // retained — most commonly while status is still `scanning` (packages don't exist until the
+      // scan finishes), or after a pre-confirmation cancel/fail. Guard against data.items being
+      // undefined instead of crashing on every poll.
+      const items = (data && data.items) || [];
       const prog = task.total_count ? Math.round((task.success_count+task.skipped_count)/task.total_count*100) : 0;
+      if ((data && data.error) || !items.length){
+        $('#detail_meta').innerHTML = `<div class="track" style="width:260px;display:inline-block;vertical-align:middle"><i style="width:${prog}%"></i></div>
+          <span class="nums text-muted" style="font-size:11.5px;margin-left:8px">整体 ${task.success_count} / ${task.total_count} 媒体</span>
+          <button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}" style="margin-left:10px">暂停</button>`;
+        const scanning = task.status === 'scanning' || task.status === 'created';
+        const msg = scanning ? '扫描中…（等待生成包）' : '暂无包';
+        $('#detail_body').innerHTML = `<div class="text-muted" style="padding:24px;text-align:center;font-size:13px">${escapeHtml(msg)}</div>`;
+        return;
+      }
+      const selected = items.filter(p=>p.selected);  // 仅选中的包参与下载
       $('#detail_meta').innerHTML = `<div class="track" style="width:260px;display:inline-block;vertical-align:middle"><i style="width:${prog}%"></i></div>
         <span class="nums text-muted" style="font-size:11.5px;margin-left:8px">整体 ${task.success_count} / ${task.total_count} 媒体</span>
         <button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}" style="margin-left:10px">暂停</button>`;
+      // NOTE (known limitation): the backend exposes no per-package progress (FileSnapshot has no
+      // package_id), so every row's track reuses the task-level `prog` as an approximation across
+      // all selected packages rather than each package's own completion.
       $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
         <thead><tr><th style="padding-left:16px"></th><th>包</th><th>状态</th><th>进度</th><th>媒体</th><th>大小</th><th style="padding-right:16px">标题</th></tr></thead>
         <tbody>${selected.map(p=>`<tr data-pkg="${p.package_id}">
           <td style="padding-left:16px"><button class="btn btn-ghost" data-expand="${p.package_id}" style="padding:2px">${icon('chevron',12)}</button></td>
           <td class="nums">#${p.package_id}</td><td>${statusTag(task.status)}</td>
-          <td><div class="track" style="width:100px"><i style="width:0%"></i></div></td>
+          <td><div class="track" style="width:100px"><i style="width:${prog}%"></i></div></td>
           <td class="nums">${p.media_count}</td><td class="nums">${p.known_total_size}</td><td style="padding-right:16px">${escapeHtml(p.title)}</td></tr>`).join('')}</tbody></table></div>`;
     }
     function pollFiles(){ /* T7 */ }
