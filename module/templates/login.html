@@ -1,67 +1,98 @@
 <!DOCTYPE html>
-<html lang="en">
-
+<html lang="zh-CN">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>login</title>
-  <link href="{{ url_for('static', filename='login/css/index.css') }}" rel="stylesheet">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>登录 - Telegram Media Downloader</title>
+  <link href="static/css/index.css" rel="stylesheet">
 </head>
-
-<body>
-  <div class="main">
-    <div class="content">
-      <div class="logo">
-        <img src="{{ url_for('static', filename='login/images/login.svg') }}" alt="">
-        <h1 class="title">Telegram Media Downloader</h1>
-        <div class="tips">enter your password.</div>
+<body style="min-height:100vh;display:grid;place-items:center">
+  <div class="card blueprint" style="flex-direction:row;width:820px;padding:0;gap:0;align-items:stretch">
+    <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+    <div style="width:320px;background:var(--color-accent-900);color:var(--color-bg);padding:34px 30px;display:flex;flex-direction:column;justify-content:space-between;gap:20px">
+      <div style="display:flex;align-items:center;gap:11px;font-family:var(--font-heading);font-weight:600;font-size:20px">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+        TG 媒体下载器
       </div>
-      <div class="password-input">
-        <input type="password" class="input-p" placeholder="please enter your password" id="password">
-        <div class="tip">Your password</div>
+      <div>
+        <div style="font-family:var(--font-heading);font-weight:600;font-size:27px;line-height:1.12">私有部署<br>下载控制台</div>
+        <p style="font-size:13px;opacity:.72;margin:12px 0 0;max-width:30ch">任务队列、预扫描批量下载与上传，全部在你自己的机器上运行。</p>
       </div>
-      <button class="confirm-btn" onclick="login()">confirm</button>
+      <div style="font-size:11px;opacity:.6;letter-spacing:.04em" class="nums">v2.2.0 · localhost:5000</div>
+    </div>
+    <div style="flex:1;padding:38px 40px;display:flex;flex-direction:column;justify-content:center;gap:16px">
+      <div>
+        <div class="card-kicker">欢迎回来</div>
+        <div style="font-family:var(--font-heading);font-weight:600;font-size:24px;margin-top:2px">登录</div>
+      </div>
+      <div class="field">
+        <label>密码</label>
+        <input class="input" type="password" id="password" style="min-height:40px" placeholder="请输入密码">
+      </div>
+      <button type="button" class="btn btn-primary btn-block blueprint" id="login_btn" style="margin-top:2px;height:42px;font-size:14px">
+        <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>确认登录
+      </button>
+      <div id="login_error" class="tag tag-outline" style="display:none;gap:6px">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+        <span id="login_error_text">密码错误</span>
+      </div>
+      <p class="text-muted" style="font-size:12px;margin:2px 0 0">密码在服务端 config.yaml 中设置 · 提交时经 AES 加密</p>
     </div>
   </div>
 
-  <script src="../static/layui/layui.js"></script>
-  <script src="../static/aes/crypto-js-master/crypto-js.js"></script>
-  <script src="../static/request/index.js"></script>
+  <script src="static/aes/crypto-js-master/crypto-js.js"></script>
   <script>
-    const $ = layui.$
-    const layer = layui.layer
-
-    //加密方法
+    // 加密方法（与原 login.html 保持一致，未改动）
     const encrypt = (word) => {
       const key = CryptoJS.enc.Utf8.parse("1234123412ABCDEF");
       const iv = CryptoJS.enc.Utf8.parse('ABCDEF1234123412');
       let srcs = CryptoJS.enc.Utf8.parse(word);
       let encrypted = CryptoJS.AES.encrypt(srcs, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
       let hexStr = encrypted.ciphertext.toString();
-      let base64Str = CryptoJS.enc.Base64.stringify(CryptoJS.enc.Hex.parse(hexStr));
-      return base64Str;
-    }
+      return CryptoJS.enc.Base64.stringify(CryptoJS.enc.Hex.parse(hexStr));
+    };
 
-    const login = () => {
-      const pValue = $('#password').val()
+    const $password = document.getElementById('password');
+    const $loginBtn = document.getElementById('login_btn');
+    const $loginError = document.getElementById('login_error');
+    const $loginErrorText = document.getElementById('login_error_text');
 
+    const showError = (msg) => {
+      $loginErrorText.textContent = msg;
+      $loginError.style.display = 'inline-flex';
+    };
+    const hideError = () => { $loginError.style.display = 'none'; };
+
+    const login = async () => {
+      const pValue = $password.value;
+      hideError();
       if (!pValue) {
-        layer.msg('please enter your password!')
-        return
-      } else {
-        const encryptData = encrypt(pValue)
-        request('login', 'post', { password: encryptData }).then((res) => {
-          const { code } = res
-          if (code === '1') {
-            window.location.href = window.location.origin + '/'
-          } else {
-            layer.msg('password error!')
-          }
-          $('#password').val('')
-        })
+        showError('请输入密码');
+        return;
       }
-    }
+      const encryptData = encrypt(pValue);
+      try {
+        const res = await fetch('login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: 'password=' + encodeURIComponent(encryptData)
+        });
+        const { code } = await res.json();
+        if (code === '1') {
+          window.location.href = window.location.origin + '/';
+        } else {
+          showError('密码错误');
+          $password.value = '';
+        }
+      } catch (e) {
+        showError('登录请求失败，请重试');
+      }
+    };
+
+    $loginBtn.addEventListener('click', login);
+    $password.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') login();
+    });
   </script>
 </body>
-
 </html>
