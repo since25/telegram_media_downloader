@@ -99,6 +99,34 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertEqual(request.start_message_id, 126711)
         self.assertEqual(request.url, "https://t.me/c/1298283297/126711")
 
+    def test_build_message_package_workflow_request_accepts_telegram_me_host(self):
+        from module.comment_workflow import build_message_package_workflow_request
+
+        request = build_message_package_workflow_request(
+            "https://telegram.me/c/1446289027/158156"
+        )
+
+        self.assertEqual(request.source_chat, -1001446289027)
+        self.assertEqual(request.start_message_id, 158156)
+
+    def test_build_comment_workflow_request_accepts_telegram_me_host(self):
+        request = build_comment_workflow_request(
+            "https://telegram.me/zhyseseb/422?comment=4978"
+        )
+
+        self.assertEqual(request.source_chat, "zhyseseb")
+        self.assertEqual(request.start_comment_id, 4978)
+
+    def test_link_builders_reject_lookalike_telegram_hosts(self):
+        from module.comment_workflow import build_message_package_workflow_request
+
+        self.assertIsNone(
+            build_message_package_workflow_request("https://t.mexample.com/c/123/456")
+        )
+        self.assertIsNone(
+            build_comment_workflow_request("https://evil-telegram.me/x/422?comment=1")
+        )
+
     def test_build_message_package_workflow_request_rejects_comment_link(self):
         from module.comment_workflow import build_message_package_workflow_request
 

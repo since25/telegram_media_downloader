@@ -167,6 +167,19 @@ class MessagePackageSequencePlan:
         return [self.primary, *self.following]
 
 
+_TELEGRAM_LINK_HOSTS = {"t.me", "telegram.me", "telegram.dog"}
+
+
+def _is_telegram_link_url(url: str) -> bool:
+    """Return whether url is an https link on an official Telegram host."""
+
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and (parsed.hostname or "") in _TELEGRAM_LINK_HOSTS
+
+
 def build_comment_workflow_request(text: str) -> Optional[CommentWorkflowRequest]:
     """Return a workflow request when text is a t.me post comment link."""
 
@@ -174,7 +187,7 @@ def build_comment_workflow_request(text: str) -> Optional[CommentWorkflowRequest
         return None
 
     url = text.strip()
-    if not url.startswith("https://t.me"):
+    if not _is_telegram_link_url(url):
         return None
 
     try:
@@ -201,7 +214,7 @@ def build_message_package_workflow_request(
         return None
 
     url = text.strip()
-    if not url.startswith("https://t.me"):
+    if not _is_telegram_link_url(url):
         return None
 
     query = parse_qs(urlparse(url).query, keep_blank_values=True)
@@ -229,7 +242,7 @@ def looks_like_private_message_link(text: str) -> bool:
     if not text:
         return False
     url = text.strip()
-    if not url.startswith("https://t.me"):
+    if not _is_telegram_link_url(url):
         return False
     path_parts = [part for part in urlparse(url).path.split("/") if part]
     return len(path_parts) >= 1 and path_parts[0] == "c"
