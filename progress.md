@@ -476,3 +476,39 @@ Changed files:
 
 Rollback:
 - `git revert <Task 1 commit>` to restore the prior layui dashboard shell and CSS.
+
+## 2026-07-14 - Task: Web 控制台 Industry 蓝图风格前端重构（四屏 + 新监控）
+
+### What was done
+
+- 把 layui/jQuery 的 Web 控制台重构为统一 Industry 蓝图风格（钢蓝/方角/十字角标/Barlow），覆盖任务/文件/高级配置/登录四屏，全中文桌面优先。
+- 新增系统资源监控卡（CPU/内存/磁盘，磁盘>80% 描边告警）与上传进度监控（按部署实际的 rclone/网盘上传接线）。
+- 后端新增 `GET /api/system`、`GET /get_upload_list`（rclone）、`POST /clear_download_list`；修复预扫描确认后包状态丢失（含内存泄漏防护）。
+- 去除 layui 依赖引用；登录页分栏重构，AES 加密逻辑保持不变。
+- 执行中发现并修复：snapshot_node 上传接线缺失、`/get_upload_list` 文件名脱敏泄漏、预扫描保留引入的内存泄漏、任务标题/文件名存储型 XSS、文件页「清空已完成」打错接口、上传监控接错子系统（Telegram 转发→rclone 重接）。
+
+### Testing
+
+- 后端 `pytest tests/ -q` → 222 passed, 1 skipped（新增 4 个测试文件：system/upload/prescan-retention/clear-download-list）。
+- 前端：scratchpad 浏览器 harness + mock 数据逐屏保真核对；四屏零红色、方角、角标、Barlow 均程序化验证；XSS 探针全部转义为惰性文本。
+- 全分支终审（whole-branch review）通过；四屏视觉终审通过。
+- 部署验证：`https://tgdn.wyichuan.cc/` 返回 302→/login；GET /login 200 且为新 Industry 版式、无 layui；static/css/index.css 与 crypto-js 资源在真实域名下 200；服务 active、下载 worker 正常、psutil 7.2.2 已装入 .venv。
+
+### Notes
+
+Changed files（相对 master 26dc3ee，19 commits）:
+- `module/templates/index.html`: 三屏外壳 + 命令栏/汇总/系统监控/任务表/详情/文件页/配置页全部内联渲染（去 layui）。
+- `module/templates/login.html`: 分栏登录，沿用 AES，改 form-encoded 直连（去 request()/layui 依赖）。
+- `module/static/css/index.css`: 重写为 Industry 设计系统样式表。
+- `module/static/request/index.js`: 置为 no-op（渲染逻辑内联到 index.html）。
+- `module/web.py`: /api/system、/get_upload_list（rclone）、/clear_download_list、预扫描保留与孤儿清理。
+- `module/task_state.py`: FileSnapshot/TaskSnapshot 上传字段 + snapshot_node 上传接线（rclone）。
+- `module/download_stat.py`: get_total_upload_speed + _parse_rclone_speed + clear_completed_download_result。
+- `module/cloud_drive.py`: rclone 上传成功时清理显示缓存条目。
+- `requirements.txt`: 新增 psutil。
+- `tests/`: 4 个新测试文件。
+- `docs/superpowers/{specs,plans}/2026-07-14-web-industry-redesign-*.md`: spec 与实施计划。
+
+Rollback:
+- 代码回滚：`git revert -m 1 7eb71e8`（合并提交）后推送并在服务器 `git pull --ff-only && systemctl restart tg-downloader.service`；psutil 可保留无害。
+- 或服务器直接 `git reset --hard 26dc3ee` 回到重构前并重启（丢弃本次全部改动）。
