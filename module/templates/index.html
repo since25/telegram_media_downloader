@@ -43,7 +43,7 @@
           </div>
           <div class="field" id="web_task_count_field" style="flex:none;width:96px;display:none">
             <label>消息数</label>
-            <input class="input nums" id="web_task_count" value="2000">
+            <input class="input nums" id="web_task_count" type="number" min="1" max="10000" value="2000">
           </div>
           <button type="button" class="btn btn-primary blueprint" id="submit_task_btn" style="height:36px;padding-inline:16px">
             <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
@@ -95,7 +95,7 @@
             </div>
             <div style="flex:1.9;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:7px">
               <div style="display:flex;align-items:center;justify-content:space-between">
-                <span class="card-kicker" style="color:var(--color-neutral-600)">磁盘</span>
+                <span class="card-kicker" style="color:var(--color-neutral-600)">磁盘 · /downloads</span>
                 <span class="tag tag-outline" id="sys_disk_warn" hidden style="gap:4px;padding:1px 7px"></span>
               </div>
               <div class="track" id="sys_disk_track" style="height:8px"><i style="width:0%"></i></div>
@@ -150,6 +150,9 @@
   <script src="static/request/index.js"></script>
   <script>
     const $ = (sel, root=document) => root.querySelector(sel);
+    // Escape Telegram/user-sourced strings before interpolating into innerHTML templates
+    // (task titles, filenames, etc. are attacker-controllable). Reused by later task screens.
+    function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
     const state = { selectedTaskId:null, selectedTaskType:null, lastTasksById:{},
       prescanRows:{}, prescanSelected:new Set(), sys:null, timers:{} };
     let taskFilter = 'all';
@@ -204,9 +207,9 @@
     function currentFileCell(t) {
       const cf = t.current_file;
       if (!cf || !cf.filename) return '—';
-      if (t.status === 'uploading') return `↑ ${cf.filename} · ${cf.upload_progress}%`;
-      if (t.status === 'downloading') return `${cf.filename} · ${cf.download_progress}%`;
-      return cf.filename;
+      if (t.status === 'uploading') return `↑ ${escapeHtml(cf.filename)} · ${cf.upload_progress}%`;
+      if (t.status === 'downloading') return `${escapeHtml(cf.filename)} · ${cf.download_progress}%`;
+      return escapeHtml(cf.filename);
     }
 
     function progressCell(t) {
@@ -230,7 +233,7 @@
         const sel = t.task_id === state.selectedTaskId ? ' style="background:color-mix(in srgb,var(--color-accent) 8%,transparent)"' : '';
         return `<tr data-id="${t.task_id}" data-type="${t.task_type}"${sel}>
           <td class="nums" style="padding-left:16px">${t.task_id}</td><td class="text-muted">${t.source||''}</td><td>${t.task_type||''}</td>
-          <td>${statusTag(t.status)}</td><td>${t.title||''}</td>
+          <td>${statusTag(t.status)}</td><td>${escapeHtml(t.title||'')}</td>
           <td><div style="display:flex;flex-direction:column;gap:3px;min-width:118px">${progressCell(t)}</div></td>
           <td class="nums" style="font-size:12px"><b style="color:var(--color-accent-700)">${t.success_count}</b> · ${fail} · <span style="color:var(--color-neutral-500)">${t.skipped_count}</span></td>
           <td class="text-muted" style="font-size:12px">${currentFileCell(t)}</td>
