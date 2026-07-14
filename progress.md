@@ -373,3 +373,28 @@ Changed files:
 
 Rollback:
 - On the server: `cd /root/telegram_media_downloader && git reset --hard 97aa52f && systemctl restart tg-downloader.service` (or revert the six feature commits and redeploy).
+
+## 2026-07-14 - Task: Mask Discord webhook URL in monitor config startup log
+
+### What was done
+
+- Fixed the production log leak flagged in the 2026-07-14 design doc: the startup `[MONITOR][CFG]` line no longer prints the full Discord webhook URL; it now logs a sanitized config copy with `webhook_url` reduced to scheme+host (`https://discord.com/***`), fail-closed to `***` when the value cannot be parsed.
+- Added `_sanitize_monitor_cfg` with TDD regression tests (mask well-formed URL, fail-closed on unparseable value, pass-through when `webhook_url` absent/None; original dict not mutated).
+- Fast-forwarded master, pushed, deployed to RackNerd, restarted `tg-downloader.service`, and verified the fresh log line is masked.
+
+### Testing
+
+- TDD: watched the new tests fail (ImportError, function missing) before implementing; `.venv/bin/python -m pytest tests/ -q` — 196 passed, 1 skipped.
+- Pylint (errors-only) clean on changed lines; mypy blocked by a pre-existing markupsafe stub issue unrelated to this change.
+- Deploy: server at `ea3aeaf`, `systemctl is-active` = active; newest `[MONITOR][CFG]` line in `log/tdl.log` shows `'webhook_url': 'https://discord.com/***'` with no `api/webhooks` fragment; `https://tgdn.wyichuan.cc/` returns 302 to login.
+- Residual: 10 historical lines in `log/tdl.log` still contain the raw webhook URL — the exposed webhook must be rotated (user action), and old log lines can optionally be scrubbed.
+
+### Notes
+
+Changed files:
+- `media_downloader.py`: Added `_sanitize_monitor_cfg`; `[MONITOR][CFG]` now logs the sanitized copy.
+- `tests/test_media_downloader.py`: Two regression tests for the sanitizer.
+- `progress.md`: This entry.
+
+Rollback:
+- `git revert ea3aeaf`, redeploy and restart `tg-downloader.service` (restores the plaintext logging — not recommended).
