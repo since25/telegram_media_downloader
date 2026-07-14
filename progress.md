@@ -298,3 +298,53 @@ Changed files:
 
 Rollback:
 - `git revert <prescan-progress-fix-commit>` after the implementation commit is created, then redeploy and restart `tg-downloader.service`.
+
+## 2026-07-14 - Task: Implement Web task dashboard UX enhancement
+
+### What was done
+
+- Rendered task/file statuses as colored badges (blue active, green completed, orange completed-with-errors, red failed, cyan waiting, gray cancelled; file-level downloaded/uploaded green and upload_failed red).
+- Surfaced task and file errors in the Web UI: badge hover titles, a red detail banner, and a file error column.
+- Replaced raw progress numbers with progress bars (per-file, plus a task-level done/total bar).
+- Made the ok/fail/skip/up counts color-coded with failures emphasized, added friendly empty states, and stabilized the 1s polling (selected-row highlight re-applied after reload, detail columns set once per type, unchanged data skips reload).
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/module/test_web.py tests/module/test_task_state.py -q` — passed (frontend-only change; no backend regression).
+- Browser harness with mock dashboard payloads verified badges, progress bars, error display, counts, empty states; a layui `done`-callback binding bug found in review was fixed and proven with a Node call-shape repro.
+- Full suite at final review: 194 passed, 1 skipped.
+
+### Notes
+
+Changed files:
+- `module/templates/index.html`: New render helpers, wired columns, error banner, polling stability.
+- `module/static/css/index.css`: Badge, count, mini progress bar, error, and empty-state styles.
+
+Rollback:
+- `git revert 226a017 075ac21 a69c0c1 a0feb34 b5e2a33 b11412a` reverts both web features together (they share files), then redeploy and restart `tg-downloader.service`.
+
+## 2026-07-14 - Task: Implement Web ranged batch prescan selection
+
+### What was done
+
+- Added a per-submission scan window to Web prescan: a message-count input sent as `max_messages` (default 2000, hard cap 10000; package cap raised to 100) for scanning many consecutive packages from a start link.
+- Added bulk package selection: `POST /api/prescans/<task_id>/packages/select-all`, Select all / Clear all buttons, a live summary (selected packages · media · estimated size), and a "Download selected" button reusing the existing confirm + serial download path.
+- Updated `docs/web-control-console.md` to the new limits and APIs.
+
+### Testing
+
+- TDD for the new endpoint: `test_prescan_select_all_and_clear` failed with 404 before implementation, passed after; select/clear/missing-prescan cases covered.
+- `.venv/bin/python -m pytest tests/module/test_web.py tests/module/test_task_state.py -q` — 30 passed.
+- Full suite at final review: 194 passed, 1 skipped. Browser harness verified count-input mode toggle, summary math, bulk selection flows, and submit-row layout at desktop/mobile widths.
+
+### Notes
+
+Changed files:
+- `module/web.py`: Raised prescan limit constants; added the select-all endpoint (atomic set reassignment).
+- `module/templates/index.html`: Count input, prescan controls bar, summary, bulk-select wiring.
+- `module/static/css/index.css`: Controls/summary styles and 5-track submit grid.
+- `tests/module/test_web.py`: select-all endpoint coverage.
+- `docs/web-control-console.md`: New limits, `max_messages`, select-all API.
+
+Rollback:
+- Same combined revert as the dashboard UX entry above (shared files), then redeploy and restart `tg-downloader.service`.
