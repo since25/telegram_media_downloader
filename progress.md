@@ -512,3 +512,29 @@ Changed files（相对 master 26dc3ee，19 commits）:
 Rollback:
 - 代码回滚：`git revert -m 1 7eb71e8`（合并提交）后推送并在服务器 `git pull --ff-only && systemctl restart tg-downloader.service`；psutil 可保留无害。
 - 或服务器直接 `git reset --hard 26dc3ee` 回到重构前并重启（丢弃本次全部改动）。
+
+## 2026-07-14 - Task: Web 控制台 post-deploy 修复（取消/ID/抖动/身份/上传接线）
+
+### What was done
+
+- 修复取消逻辑：cancel_task 不再对重启产生的孤儿待确认任务返回 404；运行中任务停止并标记已取消，未开始/孤儿任务直接删除；下载中/上传中行新增取消按钮。
+- 任务表：任务 ID 缩短显示（悬停看完整）；移除会抖动的「当前文件」列，改在任务详情中显示。
+- 修复任务身份被覆盖：snapshot_node 回写时保留任务已有的 web/prescan 身份，不再被弱缺省值降级为 bot/unknown（此前导致预扫描任务下载中详情从包列表掉到文件列表）。
+- 上传接线去重：删除 snapshot_node 中多余的 rclone 上传镜像循环，交回 media_downloader 既有的每文件上传状态逻辑；/get_upload_list 与 /api/system 继续读 rclone 实时进度/速度。
+- 确认既有「退出热覆盖 config.yaml」设计（KillSignal=SIGINT → finally → update_config，ruamel 保留注释）对本次改动无影响；本分支未触碰 config 结构/update_config。
+
+### Testing
+
+- 全量 pytest 227 passed / 1 skipped；新增 tests/test_web_cancel_task.py（孤儿删除/活动取消/未知404）+ 身份保留测试。
+- 部署验证：RackNerd 拉取至 339efc1、服务 active、无 error 日志、https://tgdn.wyichuan.cc/ 返回 302→/login。
+
+### Notes
+
+Changed files:
+- `module/web.py`: cancel_task 重写（孤儿/运行中/未开始分流）。
+- `module/task_state.py`: snapshot_node 身份保留 + 移除多余上传循环。
+- `module/templates/index.html`: 取消按钮扩展、shortId、当前文件移入详情、详情随取消收起。
+- `tests/test_web_cancel_task.py`(新)、`tests/test_web_upload_progress.py`(调整)。
+
+Rollback:
+- `git revert -m 1 339efc1` 后 push，服务器 `git pull --ff-only && systemctl restart tg-downloader.service`。
