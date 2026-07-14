@@ -737,12 +737,23 @@ def snapshot_node(
     title: Optional[str] = None,
 ) -> TaskSnapshot:
     task_id = getattr(node, "task_id", None) or f"{getattr(node, 'chat_id', 'unknown')}"
+    existing = get_task_store().get_task(task_id)
+    resolved_source = (
+        source
+        or getattr(node, "task_source", None)
+        or (existing.source if existing else None)
+        or "bot"
+    )
+    resolved_type = (
+        task_type
+        or getattr(node, "task_display_type", None)
+        or (existing.task_type if existing else None)
+        or "unknown"
+    )
     task = get_task_store().create_task(
         task_id=task_id,
-        source=source or getattr(node, "task_source", "bot"),
-        task_type=task_type
-        or getattr(node, "task_display_type", None)
-        or getattr(node, "task_type", "unknown"),
+        source=resolved_source,
+        task_type=resolved_type,
         chat_id=getattr(node, "chat_id", None),
         title=title
         or getattr(node, "replay_message", "")
@@ -763,38 +774,6 @@ def snapshot_node(
             task.task_id,
             message_id,
             status=_file_status_from_download_status(status),
-        )
-    # Cloud-drive (rclone) uploads: this deployment uploads via rclone, which
-    # populates node.cloud_drive_upload_stat_dict, not the Telegram
-    # re-upload node.upload_status/upload_stat_dict path. An entry only
-    # exists here while a message is actively uploading -
-    # module/cloud_drive.py pops it once rclone reports 100% success, and
-    # media_downloader.py sets the terminal FileStatus.UPLOADED/
-    # UPLOAD_FAILED directly at that point - so this loop only needs to
-    # reflect the UPLOADING state.
-    for message_id, stat in (
-        getattr(node, "cloud_drive_upload_stat_dict", {}) or {}
-    ).items():
-        try:
-            percentage = float(
-                str(getattr(stat, "percentage", "")).strip().rstrip("%") or 0
-            )
-        except ValueError:
-            percentage = 0.0
-        # Approximation: FileSnapshot only exposes upload_progress as
-        # uploaded_size / total_size (both byte-based); there is no
-        # settable progress field. We stash the parsed rclone percentage
-        # (0-100) into uploaded_size and leave total_size untouched (it
-        # was already populated with the real byte count by the earlier
-        # download step), so this file's own upload_progress ratio will
-        # not read as a true percentage. What matters for the dashboard is
-        # the UPLOADING status itself, which drives TaskSnapshot.
-        # _upload_progress()'s file-count aggregation.
-        get_task_store().upsert_file(
-            task.task_id,
-            message_id,
-            status=FileStatus.UPLOADING,
-            uploaded_size=int(percentage),
         )
     if task.status in TERMINAL_TASK_STATUSES:
         get_task_store().complete_task(task.task_id)
