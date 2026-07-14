@@ -1,1041 +1,732 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Telegram Media Downloader</title>
-  <link href="static/layui/css/layui.css" rel="stylesheet">
   <link href="static/css/index.css" rel="stylesheet">
 </head>
-
 <body>
-  <div class="app-shell">
-    <div class="layui-tab" lay-filter="telegram_media_downloader">
-      <div class="header-title layui-tab-brief">
-        <ul class="layui-tab-title">
-          <li class="layui-this">Tasks</li>
-          <li>Files</li>
-          <li>Advanced Config</li>
-        </ul>
-        <div class="header-actions">
-          <button type="button" class="layui-btn layui-btn-primary layui-btn-sm" id="logout_btn">Logout</button>
-          <div class="stop-btn" id="download_state" data-value="{{ download_state }}" onclick="download_state_change(this)">
-            {{ download_state }}
-          </div>
-        </div>
+  <div class="app">
+    <nav class="app-nav">
+      <div class="brand">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg>
+        TG 媒体下载器
       </div>
+      <a data-tab="tasks" aria-current="page">任务</a>
+      <a data-tab="files">文件</a>
+      <a data-tab="config">高级配置</a>
+      <span class="nums text-muted" id="nav_total_speed" style="margin-left:auto;font-size:13px;display:none"></span>
+      <button type="button" class="state-chip" id="download_state" data-value="{{ download_state }}">
+        <span class="live-dot"></span><span id="download_state_text">运行中</span>
+      </button>
+      <button type="button" class="btn btn-ghost" id="logout_btn" style="gap:6px">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>退出
+      </button>
+    </nav>
+    <div class="app-body">
+      <div class="tab-panel active" id="tab_tasks">
 
-      <div class="layui-tab-content">
-        <div class="layui-tab-item layui-show">
-          <div class="task-summary" id="task_dashboard_summary">
-            <div class="task-summary-item">
-              <span class="summary-label">Active</span>
-              <strong id="summary_active_tasks">0</strong>
-            </div>
-            <div class="task-summary-item">
-              <span class="summary-label">Completed</span>
-              <strong id="summary_completed_tasks">0</strong>
-            </div>
-            <div class="task-summary-item">
-              <span class="summary-label">State</span>
-              <strong id="summary_download_state">{{ download_state }}</strong>
-            </div>
-            <div class="task-summary-item">
-              <span class="summary-label">Speed</span>
-              <strong id="summary_download_speed">0.00 B/s</strong>
+        <!-- command / submit bar -->
+        <div class="card blueprint" style="flex-direction:row;align-items:flex-end;gap:16px;padding:18px 20px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="field" style="flex:1">
+            <label>粘贴 Telegram 链接</label>
+            <input class="input nums" id="web_task_link" style="font-family:ui-monospace,Menlo,monospace;font-size:13px" placeholder="https://t.me/c/xxxxxxx/xxx">
+          </div>
+          <div class="field" style="flex:none">
+            <label>模式</label>
+            <div class="seg">
+              <label class="seg-opt"><input type="radio" name="web_task_mode" value="preview" checked>预览</label>
+              <label class="seg-opt"><input type="radio" name="web_task_mode" value="prescan">预扫描</label>
             </div>
           </div>
-          <div class="task-submit">
-            <input type="text" id="web_task_link" autocomplete="off" class="layui-input" placeholder="https://t.me/c/...">
-            <select id="web_task_mode">
-              <option value="auto">Preview</option>
-              <option value="prescan">Prescan</option>
-            </select>
-            <input type="number" id="web_task_count" class="layui-input task-count-input" min="1" max="10000" value="2000" placeholder="messages" style="display:none;">
-            <button type="button" class="layui-btn" id="submit_task_btn">Submit</button>
-            <span id="task_submit_status" class="task-submit-status"></span>
+          <div class="field" id="web_task_count_field" style="flex:none;width:96px;display:none">
+            <label>消息数</label>
+            <input class="input nums" id="web_task_count" type="number" min="1" max="10000" value="2000">
           </div>
-          <table class="layui-hide" id="task_list" lay-filter="task_list"></table>
-          <div class="task-detail-error" id="task_detail_error" hidden></div>
-          <table class="layui-hide" id="task_detail_list" lay-filter="task_detail_list"></table>
-          <script type="text/html" id="task_actions" lay-filter="task_actions">
-            {% raw %}
-            {{# if (d.needs_confirmation) { }}
-              <button type="button" class="layui-btn layui-btn-xs" lay-event="confirm">Start</button>
-              <button type="button" class="layui-btn layui-btn-primary layui-btn-xs" lay-event="cancel">Cancel</button>
-            {{# } else if (d.status === 'scanning') { }}
-              <button type="button" class="layui-btn layui-btn-primary layui-btn-xs" lay-event="cancel">Cancel</button>
-            {{# } else { }}
-              <span class="task-action-empty">-</span>
-            {{# } }}
-            {% endraw %}
-          </script>
-          <script type="text/html" id="prescan_package_actions" lay-filter="prescan_package_actions">
-            {% raw %}
-            {{# if (d.selected) { }}
-              <button type="button" class="layui-btn layui-btn-primary layui-btn-xs" lay-event="deselect">Exclude</button>
-            {{# } else { }}
-              <button type="button" class="layui-btn layui-btn-xs" lay-event="select">Include</button>
-            {{# } }}
-            {% endraw %}
-          </script>
-          <div class="prescan-controls" id="prescan_controls" hidden>
-            <button type="button" class="layui-btn layui-btn-sm" id="prescan_select_all">Select all</button>
-            <button type="button" class="layui-btn layui-btn-sm layui-btn-primary" id="prescan_clear_all">Clear all</button>
-            <span class="prescan-summary" id="prescan_summary">0 packages selected</span>
-            <button type="button" class="layui-btn layui-btn-sm" id="prescan_download">Download selected</button>
+          <button type="button" class="btn btn-primary blueprint" id="submit_task_btn" style="height:36px;padding-inline:16px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>提交任务
+          </button>
+          <span class="text-muted nums" id="task_submit_status" style="font-size:12px;white-space:nowrap"></span>
+        </div>
+
+        <!-- stat strip -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">
+          <div class="card blueprint" style="gap:4px;padding:12px 14px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="card-kicker">进行中</div>
+            <div style="font-family:var(--font-heading);font-size:26px;line-height:1" class="nums" id="sum_active">0</div>
+          </div>
+          <div class="card blueprint" style="gap:4px;padding:12px 14px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="card-kicker">已完成</div>
+            <div style="font-family:var(--font-heading);font-size:26px;line-height:1" class="nums" id="sum_completed">0</div>
+          </div>
+          <div class="card blueprint" style="gap:4px;padding:12px 14px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="card-kicker">状态</div>
+            <div style="font-family:var(--font-heading);font-size:26px;line-height:1;display:flex;align-items:center;gap:8px" id="sum_state"><span class="live-dot"></span><span id="sum_state_text">—</span></div>
+          </div>
+          <div class="card blueprint" style="gap:4px;padding:12px 14px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="card-kicker">当前速度</div>
+            <div style="font-family:var(--font-heading);font-size:26px;line-height:1" class="nums" id="sum_speed">0.00B/s</div>
           </div>
         </div>
-        <div class="layui-tab-item">
-          <table class="layui-hide" id="download_list" lay-filter="download_list"></table>
-          <table class="layui-hide" id="already_download_list" lay-filter="already_download_list"></table>
-        </div>
-        <div class="layui-tab-item">
-        <form class="layui-form config-form" action="" lay-filter="advanced_config_form">
-          <fieldset class="layui-elem-field">
-            <legend>Storage</legend>
-            <div class="layui-field-box">
-              <div class="layui-row layui-col-space16">
-                <div class="layui-col-md6">
-                  <label class="layui-form-label">Save path</label>
-                  <div class="layui-input-block">
-                    <input type="text" id="save_path" autocomplete="off" class="layui-input">
-                  </div>
-                </div>
-                <div class="layui-col-md3">
-                  <label class="layui-form-label">Date format</label>
-                  <div class="layui-input-block">
-                    <input type="text" id="date_format" autocomplete="off" class="layui-input">
-                  </div>
-                </div>
-                <div class="layui-col-md3">
-                  <label class="layui-form-label">Start timeout</label>
-                  <div class="layui-input-block">
-                    <input type="number" id="start_timeout" min="1" class="layui-input">
-                  </div>
-                </div>
-              </div>
-            </div>
-          </fieldset>
 
-          <fieldset class="layui-elem-field">
-            <legend>Concurrency</legend>
-            <div class="layui-field-box">
-              <div class="layui-row layui-col-space16">
-                <div class="layui-col-md3">
-                  <label class="layui-form-label">Workers</label>
-                  <div class="layui-input-block">
-                    <input type="number" id="max_download_task" min="1" max="32" class="layui-input">
-                  </div>
-                </div>
-                <div class="layui-col-md3">
-                  <label class="layui-form-label">TG streams</label>
-                  <div class="layui-input-block">
-                    <input type="number" id="max_concurrent_transmissions" min="1" max="200" class="layui-input">
-                  </div>
-                </div>
-                <div class="layui-col-md6 toggle-row">
-                  <input type="checkbox" id="drop_no_audio_video" lay-skin="switch" lay-text="Drop muted video|Keep muted video">
-                  <input type="checkbox" id="enable_download_txt" lay-skin="switch" lay-text="Text on|Text off">
-                  <input type="checkbox" id="hide_file_name" lay-skin="switch" lay-text="Hide name|Show name">
-                </div>
-              </div>
-            </div>
-          </fieldset>
-
-          <fieldset class="layui-elem-field">
-            <legend>Media</legend>
-            <div class="layui-field-box">
-              <div class="config-checks" id="media_type_checks"></div>
-              <div class="layui-row layui-col-space16 format-row">
-                <div class="layui-col-md4">
-                  <label class="layui-form-label">Audio formats</label>
-                  <div class="layui-input-block">
-                    <input type="text" id="format_audio" autocomplete="off" class="layui-input">
-                  </div>
-                </div>
-                <div class="layui-col-md4">
-                  <label class="layui-form-label">Document formats</label>
-                  <div class="layui-input-block">
-                    <input type="text" id="format_document" autocomplete="off" class="layui-input">
-                  </div>
-                </div>
-                <div class="layui-col-md4">
-                  <label class="layui-form-label">Video formats</label>
-                  <div class="layui-input-block">
-                    <input type="text" id="format_video" autocomplete="off" class="layui-input">
-                  </div>
-                </div>
-              </div>
-            </div>
-          </fieldset>
-
-          <fieldset class="layui-elem-field">
-            <legend>Naming</legend>
-            <div class="layui-field-box">
-              <div class="layui-row layui-col-space16">
-                <div class="layui-col-md5">
-                  <div class="config-checks" id="file_path_prefix_checks"></div>
-                </div>
-                <div class="layui-col-md5">
-                  <div class="config-checks" id="file_name_prefix_checks"></div>
-                </div>
-                <div class="layui-col-md2">
-                  <label class="layui-form-label">Separator</label>
-                  <div class="layui-input-block">
-                    <input type="text" id="file_name_prefix_split" autocomplete="off" class="layui-input">
-                  </div>
-                </div>
-              </div>
-            </div>
-          </fieldset>
-
-          <fieldset class="layui-elem-field">
-            <legend>Upload</legend>
-            <div class="layui-field-box">
-              <div class="layui-row layui-col-space16">
-                <div class="layui-col-md3">
-                  <label class="layui-form-label">Adapter</label>
-                  <div class="layui-input-block">
-                    <select id="upload_adapter">
-                      <option value="rclone">rclone</option>
-                      <option value="aligo">aligo</option>
-                    </select>
-                  </div>
-                </div>
-                <div class="layui-col-md5">
-                  <label class="layui-form-label">Remote dir</label>
-                  <div class="layui-input-block">
-                    <input type="text" id="remote_dir" autocomplete="off" class="layui-input">
-                  </div>
-                </div>
-                <div class="layui-col-md4">
-                  <label class="layui-form-label">Rclone path</label>
-                  <div class="layui-input-block">
-                    <input type="text" id="rclone_path" autocomplete="off" class="layui-input">
-                  </div>
-                </div>
-              </div>
-              <div class="layui-row layui-col-space16 upload-switch-row">
-                <div class="layui-col-md12 toggle-row">
-                  <input type="checkbox" id="enable_upload_file" lay-skin="switch" lay-text="Upload on|Upload off">
-                  <input type="checkbox" id="before_upload_file_zip" lay-skin="switch" lay-text="Zip on|Zip off">
-                  <input type="checkbox" id="after_upload_file_delete" lay-skin="switch" lay-text="Delete local|Keep local">
-                  <input type="checkbox" id="after_upload_telegram_delete" lay-skin="switch" lay-text="Delete TG|Keep TG">
-                </div>
-              </div>
-            </div>
-          </fieldset>
-
-          <fieldset class="layui-elem-field">
-            <legend>Chats</legend>
-            <div class="layui-field-box">
-              <div id="chat_settings" class="chat-settings"></div>
-            </div>
-          </fieldset>
-
-          <fieldset class="layui-elem-field">
-            <legend>Web</legend>
-            <div class="layui-field-box">
-              <div class="layui-row layui-col-space16">
-                <div class="layui-col-md5">
-                  <label class="layui-form-label">Host</label>
-                  <div class="layui-input-block">
-                    <input type="text" id="web_host" autocomplete="off" class="layui-input">
-                  </div>
-                </div>
-                <div class="layui-col-md3">
-                  <label class="layui-form-label">Port</label>
-                  <div class="layui-input-block">
-                    <input type="number" id="web_port" min="1" max="65535" class="layui-input">
-                  </div>
-                </div>
-                <div class="layui-col-md4 toggle-row">
-                  <input type="checkbox" id="enable_web" lay-skin="switch" lay-text="Web on|Web off">
-                </div>
-              </div>
-            </div>
-          </fieldset>
-
-          <div class="config-actions">
-            <button type="button" class="layui-btn" id="save_config_btn">Save</button>
-            <span id="config_save_status" class="config-save-status"></span>
+        <!-- system monitor: upload throughput + disk / cpu / memory -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;gap:9px;padding:11px 16px;border-bottom:1px solid var(--color-divider)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            <span style="font-family:var(--font-heading);font-weight:600;font-size:15px">系统监控</span>
+            <span class="text-muted" style="font-size:11.5px">每秒刷新</span>
           </div>
-        </form>
+          <div style="display:flex;align-items:stretch">
+            <div style="flex:1;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:5px">
+              <span class="card-kicker" style="color:var(--color-neutral-600)">下行速度</span>
+              <span style="font-family:var(--font-heading);font-size:22px;line-height:1" class="nums" id="sys_dl">—</span>
+            </div>
+            <div style="flex:1;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:5px">
+              <span class="card-kicker" style="color:var(--color-accent)">上行速度 · 上传</span>
+              <span style="font-family:var(--font-heading);font-size:22px;line-height:1;color:var(--color-accent-700)" class="nums" id="sys_ul">—</span>
+            </div>
+            <div style="flex:1.9;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:7px">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <span class="card-kicker" style="color:var(--color-neutral-600)">磁盘 · /downloads</span>
+                <span class="tag tag-outline" id="sys_disk_warn" hidden style="gap:4px;padding:1px 7px"></span>
+              </div>
+              <div class="track" id="sys_disk_track" style="height:8px"><i style="width:0%"></i></div>
+              <div class="nums text-muted" id="sys_disk_text" style="font-size:11.5px">—</div>
+            </div>
+            <div style="flex:1;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:6px">
+              <span class="card-kicker" style="color:var(--color-neutral-600)">CPU</span>
+              <span style="font-family:var(--font-heading);font-size:22px;line-height:1" class="nums" id="sys_cpu">—</span>
+              <div class="track" id="sys_cpu_track" style="height:5px"><i style="width:0%"></i></div>
+            </div>
+            <div style="flex:1;padding:12px 16px;display:flex;flex-direction:column;gap:6px">
+              <span class="card-kicker" style="color:var(--color-neutral-600)">内存</span>
+              <span style="font-family:var(--font-heading);font-size:22px;line-height:1" class="nums" id="sys_mem">—</span>
+              <div class="track" id="sys_mem_track" style="height:5px"><i style="width:0%"></i></div>
+            </div>
+          </div>
         </div>
+
+        <!-- task table -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">下载任务</span>
+              <span class="tag tag-neutral" id="task_count">0</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button type="button" class="btn btn-secondary" data-filter="all" style="padding:5px 11px;font-size:12px">全部</button>
+              <button type="button" class="btn btn-ghost" data-filter="active" style="padding:5px 8px;font-size:12px">进行中</button>
+              <button type="button" class="btn btn-ghost" data-filter="done" style="padding:5px 8px;font-size:12px">已完成</button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr>
+                <th style="padding-left:16px">任务 ID</th><th>来源</th><th>类型</th><th>状态</th><th>标题</th><th>进度</th><th>成 / 败 / 跳</th><th>当前文件</th><th style="padding-right:16px;text-align:right">操作</th>
+              </tr></thead>
+              <tbody id="task_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- task detail: type-aware (T6) — ordinary file table / prescan package list / prescan downloading -->
+        <div class="card blueprint" id="task_detail" style="padding:0;gap:0" hidden>
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;gap:9px;padding:12px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap">
+            <span class="card-kicker" style="color:var(--color-neutral-600)">任务详情</span>
+            <span id="detail_title" style="font-family:var(--font-heading);font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px"></span>
+            <span id="detail_meta" class="text-muted" style="font-size:12px;margin-left:2px"></span>
+          </div>
+          <div id="prescan_controls" style="align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap" hidden></div>
+          <div id="detail_body"></div>
+        </div>
+
+      </div>
+      <div class="tab-panel" id="tab_files">
+
+        <!-- 下载中 -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">下载中</span>
+              <span class="tag tag-accent" id="dl_count">0</span>
+            </div>
+            <span style="display:flex;align-items:center;gap:7px;font-size:13px;color:var(--color-neutral-600)">总速度 <b class="nums" style="color:var(--color-text)" id="dl_total_speed">0.00 B/s</b></span>
+          </div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>ID</th><th>文件名</th><th>大小</th><th>下载进度</th><th style="padding-right:16px">下载速度</th></tr></thead>
+              <tbody id="dl_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 上传中 -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">上传中</span>
+              <span class="tag tag-accent" id="ul_count">0</span>
+            </div>
+            <span style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--color-neutral-600)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 13V2l4 4"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/></svg>
+              rclone → tg-media/incoming
+            </span>
+          </div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>ID</th><th>文件名</th><th>大小</th><th>上传进度</th><th style="padding-right:16px">上传速度</th></tr></thead>
+              <tbody id="ul_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 已完成 -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">已完成</span>
+              <span class="tag tag-neutral" id="done_count">0</span>
+            </div>
+            <button type="button" class="btn btn-ghost" id="clear_done_btn" style="padding:5px 9px;font-size:12px">清空已完成</button>
+          </div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>ID</th><th>文件名</th><th>大小</th><th style="padding-right:16px">保存路径</th></tr></thead>
+              <tbody id="done_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+      <div class="tab-panel" id="tab_config">
+
+        <!-- 存储 -->
+        <div class="card blueprint" style="gap:14px;padding:16px 18px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span>存储</span></div>
+          <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:14px">
+            <div class="field"><label>保存路径</label><input class="input" id="save_path"></div>
+            <div class="field"><label>日期格式</label><input class="input" id="date_format"></div>
+            <div class="field"><label>启动超时（秒）</label><input class="input nums" id="start_timeout" type="number" min="1" max="3600"></div>
+          </div>
+        </div>
+
+        <!-- 并发 + Web 服务 -->
+        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px">
+          <div class="card blueprint" style="gap:14px;padding:16px 18px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span>并发</span></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+              <div class="field"><label>工作线程</label><input class="input nums" id="max_download_task" type="number" min="1" max="32"></div>
+              <div class="field"><label>TG 传输通道</label><input class="input nums" id="max_concurrent_transmissions" type="number" min="1" max="200"></div>
+            </div>
+            <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px">
+              <span class="sw off" id="sw_drop_no_audio_video"><i></i><span>丢弃静音视频</span></span>
+              <span class="sw off" id="sw_enable_download_txt"><i></i><span>下载文本消息</span></span>
+              <span class="sw off" id="sw_hide_file_name"><i></i><span>隐藏文件名</span></span>
+            </div>
+          </div>
+          <div class="card blueprint" style="gap:14px;padding:16px 18px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span>Web 服务</span></div>
+            <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:14px">
+              <div class="field"><label>主机</label><input class="input nums" id="web_host"></div>
+              <div class="field"><label>端口</label><input class="input nums" id="web_port" type="number" min="1" max="65535"></div>
+            </div>
+            <span class="sw off" id="sw_enable_web"><i></i><span>启用 Web 服务</span></span>
+          </div>
+        </div>
+
+        <!-- 媒体 -->
+        <div class="card blueprint" style="gap:14px;padding:16px 18px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/></svg><span>媒体</span></div>
+          <div>
+            <label style="display:block;font-size:12px;margin-bottom:7px;color:color-mix(in srgb,var(--color-text) 70%,transparent)">下载类型</label>
+            <div id="media_type_chips" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+            <div class="field"><label>音频格式</label><input class="input" id="format_audio" placeholder="mp3, flac, m4a"></div>
+            <div class="field"><label>文档格式</label><input class="input" id="format_document" placeholder="pdf, zip, epub"></div>
+            <div class="field"><label>视频格式</label><input class="input" id="format_video" placeholder="mp4, mkv, mov"></div>
+          </div>
+        </div>
+
+        <!-- 命名 -->
+        <div class="card blueprint" style="gap:14px;padding:16px 18px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/><path d="M9 20h6"/><path d="M12 4v16"/></svg><span>命名</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:16px;align-items:start">
+            <div><label style="display:block;font-size:12px;margin-bottom:7px;color:color-mix(in srgb,var(--color-text) 70%,transparent)">目录组成</label><div id="path_prefix_chips" style="display:flex;gap:8px;flex-wrap:wrap"></div></div>
+            <div><label style="display:block;font-size:12px;margin-bottom:7px;color:color-mix(in srgb,var(--color-text) 70%,transparent)">文件名组成</label><div id="name_prefix_chips" style="display:flex;gap:8px;flex-wrap:wrap"></div></div>
+            <div class="field" style="width:110px"><label>分隔符</label><input class="input" id="file_name_prefix_split"></div>
+          </div>
+        </div>
+
+        <!-- 上传 -->
+        <div class="card blueprint" style="gap:14px;padding:16px 18px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 13V2l4 4"/><path d="M12 6 8 2"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/></svg><span>上传</span></div>
+          <div style="display:grid;grid-template-columns:1fr 2fr 2fr;gap:14px">
+            <div class="field"><label>适配器</label><select class="input" id="upload_adapter"><option value="rclone">rclone</option><option value="aligo">aligo</option></select></div>
+            <div class="field"><label>远程目录</label><input class="input" id="remote_dir"></div>
+            <div class="field"><label>rclone 路径</label><input class="input" id="rclone_path"></div>
+          </div>
+          <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px">
+            <span class="sw off" id="sw_enable_upload_file"><i></i><span>启用上传</span></span>
+            <span class="sw off" id="sw_before_upload_file_zip"><i></i><span>先压缩打包</span></span>
+            <span class="sw off" id="sw_after_upload_file_delete"><i></i><span>上传后删本地</span></span>
+            <span class="sw off" id="sw_after_upload_telegram_delete"><i></i><span>删除 TG 原消息</span></span>
+          </div>
+        </div>
+
+        <!-- 会话 -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title" style="padding:14px 16px 10px;margin:0"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M21 12c0 4.418-4.03 8-9 8a9.7 9.7 0 0 1-4-.85L3 20l1.35-4A7.7 7.7 0 0 1 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8Z"/></svg><span>会话</span></div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>最后已读</th><th>下载过滤</th><th style="padding-right:16px">上传会话</th></tr></thead>
+              <tbody id="chat_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- save -->
+        <div style="display:flex;align-items:center;gap:14px;padding:2px 0 4px">
+          <button type="button" class="btn btn-primary blueprint" id="save_config_btn" style="padding:8px 20px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>保存配置
+          </button>
+          <span class="text-muted" id="config_status" style="font-size:12.5px"></span>
+        </div>
+
       </div>
     </div>
-  </div>
-
-  <div class="layui-footer">
-    <div class="layui-row layui-col-space1">
-      <div class="layui-col-md4">
-        <p>Telegram Media Downloader V <b id="app_version">undefined</b></p>
-      </div>
-      <div class="layui-col-md5"></div>
-      <div class="layui-col-md3">
-        <div class="speed-box">
-          <i class="layui-icon layui-icon-download-circle">
-            <i id="download_speed_title"> 0.00 B/s </i>
-          </i>
-        </div>
-      </div>
+    <div class="app-foot">
+      <span>Telegram Media Downloader v<span id="app_version">{{ version }}</span></span>
+      <span class="nums" id="foot_speed">⬇ 0.00 B/s</span>
     </div>
   </div>
-
-  <script src="static/layui/layui.js"></script>
+  <script src="static/request/index.js"></script>
   <script>
-    layui.use(['table', 'element', 'form', 'layer'], function () {
-      var table = layui.table;
-      var element = layui.element;
-      var form = layui.form;
-      var layer = layui.layer;
-      var $ = layui.$;
-      var settingsCache = null;
-      var settingsLoaded = false;
-      var taskDashboardTimer = 0;
-      var downloadListTimer = 0;
-      var downloadedListTimer = 0;
-      var statusTimer = 0;
-      var selectedTaskId = null;
-      var selectedTaskType = null;
-      var lastTasksById = {};
-      var detailColsType = null;
-      var detailSignature = '';
+    const $ = (sel, root=document) => root.querySelector(sel);
+    // Escape Telegram/user-sourced strings before interpolating into innerHTML templates
+    // (task titles, filenames, etc. are attacker-controllable). Reused by later task screens.
+    function escapeHtml(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    const state = { selectedTaskId:null, selectedTaskType:null, lastTasksById:{},
+      prescanRows:{}, prescanSelected:new Set(), sys:null, timers:{} };
+    let taskFilter = 'all';
 
-      function escapeHtml(value) {
-        return String(value == null ? '' : value)
-          .replace(/&/g, '&amp;')
-          .replace(/</g, '&lt;')
-          .replace(/>/g, '&gt;')
-          .replace(/"/g, '&quot;')
-          .replace(/'/g, '&#39;');
+    const ICONS = {
+      download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+      upload:'<path d="M12 13V2l4 4"/><path d="M12 6 8 2"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/>',
+      scan:'<circle cx="11" cy="11" r="7"/><path d="m21 21-3.5-3.5"/>',
+      clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      check:'<path d="M20 6 9 17l-5-5"/>',
+      alert:'<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+      plus:'<path d="M12 5v14"/><path d="M5 12h14"/>',
+      chevron:'<path d="m9 18 6-6-6-6"/>',
+    };
+    const icon = (name, sz=11, sw=1.5) =>
+      `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]||''}</svg>`;
+
+    // status → tag (单色;告警不用红)
+    const TASK_STATUS_TAG = {
+      downloading:{cls:'tag-accent', label:'下载中', ic:'download'},
+      scanning:{cls:'tag-accent', label:'扫描中', ic:'scan'},
+      uploading:{cls:'tag-accent', label:'上传中', ic:'upload'},
+      waiting_confirmation:{cls:'tag-outline', label:'待确认', ic:'clock'},
+      queued:{cls:'tag-neutral', label:'排队中', ic:'clock'},
+      cancelled:{cls:'tag-neutral', label:'已取消', ic:null},
+      completed:{cls:'tag-accent', label:'已完成', ic:'check'},
+      completed_with_errors:{cls:'tag-outline', label:'完成·有错误', ic:'alert'},
+      failed:{cls:'tag-outline', label:'失败', ic:'alert'},
+      created:{cls:'tag-neutral', label:'新建', ic:null},
+    };
+    const statusTag = (s) => {
+      const t = TASK_STATUS_TAG[s] || {cls:'tag-neutral', label:s, ic:null};
+      return `<span class="tag ${t.cls}" style="gap:5px">${t.ic?icon(t.ic):''}${t.label}</span>`;
+    };
+
+    // operation buttons — 严格对应后端
+    function taskActions(task) {
+      const s = task.status;
+      if (task.needs_confirmation || s === 'waiting_confirmation')
+        return `<button class="btn btn-primary" data-act="confirm" data-id="${task.task_id}">开始</button>`
+             + `<button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}">取消</button>`;
+      if (s === 'scanning')
+        return `<button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}">取消</button>`;
+      if (s === 'completed' || s === 'completed_with_errors' || s === 'cancelled' || s === 'failed')
+        return `<button class="btn btn-ghost" data-act="clear" data-id="${task.task_id}">清除</button>`;
+      return '—';  // downloading / uploading / queued
+    }
+
+    // terminal statuses (used for the 已完成 filter and the 进行中 filter's complement)
+    const TERMINAL = ['completed', 'completed_with_errors', 'cancelled', 'failed'];
+
+    function currentFileCell(t) {
+      const cf = t.current_file;
+      if (!cf || !cf.filename) return '—';
+      if (t.status === 'uploading') return `↑ ${escapeHtml(cf.filename)} · ${cf.upload_progress}%`;
+      if (t.status === 'downloading') return `${escapeHtml(cf.filename)} · ${cf.download_progress}%`;
+      return escapeHtml(cf.filename);
+    }
+
+    function progressCell(t) {
+      if (t.status === 'uploading') {
+        return `<div class="track" style="width:120px"><i style="width:100%"></i></div>`
+             + `<span class="nums text-muted" style="font-size:11px">下载 ${t.success_count}/${t.total_count} · 上传 ${t.upload_success_count||0}/${t.total_count}</span>`;
       }
+      const prog = t.total_count ? Math.round((t.success_count + t.skipped_count) / t.total_count * 100) : 0;
+      return `<div class="track" style="width:120px"><i style="width:${prog}%"></i></div>`
+           + `<span class="nums text-muted" style="font-size:11px">${t.success_count}/${t.total_count}</span>`;
+    }
 
-      var STATUS_META = {
-        created: { cls: 'layui-bg-gray', label: 'created' },
-        scanning: { cls: 'layui-bg-blue', label: 'scanning' },
-        waiting_confirmation: { cls: 'layui-bg-cyan', label: 'waiting' },
-        queued: { cls: 'layui-bg-blue', label: 'queued' },
-        downloading: { cls: 'layui-bg-blue', label: 'downloading' },
-        uploading: { cls: 'layui-bg-blue', label: 'uploading' },
-        completed: { cls: 'layui-bg-green', label: 'completed' },
-        completed_with_errors: { cls: 'layui-bg-orange', label: 'completed · errors' },
-        failed: { cls: 'layui-bg-red', label: 'failed' },
-        cancelled: { cls: 'layui-bg-gray', label: 'cancelled' },
-        downloaded: { cls: 'layui-bg-green', label: 'downloaded' },
-        uploaded: { cls: 'layui-bg-green', label: 'uploaded' },
-        upload_failed: { cls: 'layui-bg-red', label: 'upload_failed' }
-      };
+    function renderTaskTable(tasks) {
+      const filtered = taskFilter === 'active' ? tasks.filter(t => !TERMINAL.includes(t.status))
+                      : taskFilter === 'done' ? tasks.filter(t => TERMINAL.includes(t.status))
+                      : tasks;
+      const tbody = $('#task_rows');
+      $('#task_count').textContent = filtered.length;
+      tbody.innerHTML = filtered.map(t => {
+        const fail = t.failed_count > 0 ? `<b>${t.failed_count}</b>` : '0';
+        const sel = t.task_id === state.selectedTaskId ? ' style="background:color-mix(in srgb,var(--color-accent) 8%,transparent)"' : '';
+        return `<tr data-id="${t.task_id}" data-type="${t.task_type}"${sel}>
+          <td class="nums" style="padding-left:16px">${t.task_id}</td><td class="text-muted">${t.source||''}</td><td>${t.task_type||''}</td>
+          <td>${statusTag(t.status)}</td><td>${escapeHtml(t.title||'')}</td>
+          <td><div style="display:flex;flex-direction:column;gap:3px;min-width:118px">${progressCell(t)}</div></td>
+          <td class="nums" style="font-size:12px"><b style="color:var(--color-accent-700)">${t.success_count}</b> · ${fail} · <span style="color:var(--color-neutral-500)">${t.skipped_count}</span></td>
+          <td class="text-muted" style="font-size:12px">${currentFileCell(t)}</td>
+          <td style="padding-right:16px;text-align:right"><div style="display:inline-flex;gap:6px">${taskActions(t)}</div></td></tr>`;
+      }).join('');
+    }
 
-      function badge(status, cls, label, titleText) {
-        var meta = STATUS_META[status] || { cls: cls || 'layui-bg-gray', label: label || status || '' };
-        var title = escapeHtml(titleText || status || '');
-        return '<span class="layui-badge ' + meta.cls + '" title="' + title + '">' + escapeHtml(meta.label) + '</span>';
+    function renderSystem(sys) {
+      state.sys = sys;
+      const mb = (b) => (b/1048576).toFixed(0), gb = (b) => (b/1073741824).toFixed(0);
+      $('#sys_dl').textContent = sys.download_speed;
+      $('#sys_ul').textContent = sys.upload_speed;
+      const diskPct = sys.disk_total ? Math.round(sys.disk_used / sys.disk_total * 100) : 0;
+      $('#sys_disk_track').firstElementChild.style.width = diskPct + '%';
+      $('#sys_disk_text').textContent = `已用 ${gb(sys.disk_used)} GB / ${gb(sys.disk_total)} GB · 剩 ${gb(sys.disk_free)} GB`;
+      const warn = $('#sys_disk_warn');
+      warn.hidden = diskPct <= 80;
+      warn.innerHTML = `${icon('alert',11)} 偏满 ${diskPct}%`;
+      $('#sys_cpu_track').firstElementChild.style.width = Math.round(sys.cpu_percent) + '%';
+      $('#sys_cpu').textContent = `${sys.cpu_percent}%`;
+      const memPct = sys.mem_total ? Math.round(sys.mem_used / sys.mem_total * 100) : 0;
+      $('#sys_mem_track').firstElementChild.style.width = memPct + '%';
+      $('#sys_mem').textContent = `${mb(sys.mem_used)} / ${mb(sys.mem_total)} MB`;
+    }
+
+    async function getJSON(url){ const r = await fetch(url); return r.json(); }
+    async function postJSON(url, body){ const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.json(); }
+
+    async function pollTasks() {
+      const dash = await getJSON('/api/task-dashboard');
+      const tasks = dash.tasks || [];
+      state.lastTasksById = Object.fromEntries(tasks.map(t=>[t.task_id,t]));
+      renderTaskTable(tasks);
+      $('#sum_active').textContent = dash.active_task_count;
+      $('#sum_completed').textContent = dash.completed_task_count;
+      $('#sum_speed').textContent = dash.download_speed;
+      $('#foot_speed').textContent = '⬇ ' + dash.download_speed;
+      setStateChip(dash.download_state);
+      if (state.selectedTaskId && state.lastTasksById[state.selectedTaskId]) renderDetail(state.lastTasksById[state.selectedTaskId]); // T6
+      const sys = await getJSON('/api/system'); renderSystem(sys);
+    }
+    // ── task detail (T6): dispatches on task_type/status into one of three renderers ──
+    function renderDetail(task){
+      const box = $('#task_detail'); box.hidden = false;
+      $('#detail_title').innerHTML = escapeHtml(task.title||'任务') + ' ' + statusTag(task.status);
+      if (task.task_type === 'prescan'){
+        if (task.status === 'waiting_confirmation') renderPrescanPackages(task);
+        else renderPrescanDownloading(task);
+      } else {
+        const ctrl = $('#prescan_controls'); ctrl.hidden = true; ctrl.style.display = '';
+        getJSON(`/api/tasks/${task.task_id}`).then(full => renderFileTable(full.files||[]));
       }
+    }
+    function fileStatusLabel(s){ return ({queued:'待下载',downloading:'下载中',downloaded:'已下载',
+      uploading:'上传中',uploaded:'已上传',upload_failed:'上传失败',skipped:'跳过',failed:'失败'})[s]||s; }
 
-      function statusBadge(task) {
-        return badge(task.status, null, null, task.error || task.status);
-      }
+    // ordinary task → flat file table
+    function renderFileTable(files){
+      $('#detail_meta').textContent = `${files.length} 个文件`;
+      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
+        <thead><tr><th style="padding-left:16px">消息 ID</th><th>状态</th><th>文件名</th><th>大小</th><th>进度</th><th style="padding-right:16px">备注</th></tr></thead>
+        <tbody>${files.map(f=>`<tr><td class="nums" style="padding-left:16px">${f.message_id}</td><td>${fileStatusLabel(f.status)}</td>
+          <td>${escapeHtml(f.filename||'')}</td><td class="nums">${f.total_size}</td>
+          <td><div class="track" style="width:90px"><i style="width:${f.download_progress}%"></i></div></td>
+          <td class="text-muted" style="font-size:12px;padding-right:16px">${escapeHtml(f.error||f.download_speed||'')}</td></tr>`).join('')}</tbody></table></div>`;
+    }
 
-      function fileStatusBadge(d) {
-        return badge(d.status, null, null, d.error || d.status);
-      }
-
-      function progressClass(pct) {
-        if (pct >= 100) { return 'mp-green'; }
-        if (pct > 30) { return 'mp-blue'; }
-        return 'mp-red';
-      }
-
-      function progressBar(pct, text) {
-        pct = Math.max(0, Math.min(Math.round(pct), 100));
-        var html = '<div class="mini-progress"><div class="mini-progress-bar ' + progressClass(pct) + '" style="width:' + pct + '%"></div></div>';
-        if (text) { html += '<div class="mini-progress-text">' + escapeHtml(text) + '</div>'; }
-        return html;
-      }
-
-      function taskProgressCell(task) {
-        var total = Number(task.total_count || 0);
-        if (total <= 0) { return '<span class="task-action-empty">-</span>'; }
-        var done = Number(task.success_count || 0) + Number(task.failed_count || 0) + Number(task.skipped_count || 0);
-        return progressBar(done / total * 100, done + ' / ' + total);
-      }
-
-      function countCell(task) {
-        function seg(value, cls) {
-          var n = Number(value || 0);
-          var strong = (cls === 'cnt-fail' && n > 0) ? ' cnt-strong' : '';
-          return '<span class="' + cls + strong + '">' + n + '</span>';
-        }
-        return seg(task.success_count, 'cnt-ok') + ' / ' + seg(task.failed_count, 'cnt-fail')
-          + ' / ' + seg(task.skipped_count, 'cnt-skip') + ' / ' + seg(task.upload_success_count, 'cnt-up');
-      }
-
-      function fileProgressCell(d) {
-        var pct = Number(d.download_progress || 0);
-        var text = '';
-        if (pct > 0 && pct < 100) { text = pct + '% · ' + (d.download_speed || ''); }
-        return progressBar(pct, text);
-      }
-
-      function fileErrorCell(d) {
-        if (!d.error) { return ''; }
-        return '<span class="file-error">' + escapeHtml(d.error) + '</span>';
-      }
-
-      var FILE_DETAIL_COLS = [[
-        { field: 'message_id', title: 'message', width: 100 },
-        { field: 'status', title: 'status', width: 120, templet: fileStatusBadge },
-        { field: 'filename', title: 'file name', minWidth: 160 },
-        { field: 'total_size', title: 'size', width: 90 },
-        { field: 'download_progress', title: 'progress', width: 150, templet: fileProgressCell },
-        { field: 'error', title: 'error', minWidth: 140, templet: fileErrorCell }
-      ]];
-
-      function listText(value) {
-        return (value || []).join(', ');
-      }
-
-      function switchValue(id, value) {
-        $('#' + id).prop('checked', !!value);
-      }
-
-      function checkedValues(name) {
-        return $('input[name="' + name + '"]:checked').map(function () {
-          return this.value;
-        }).get();
-      }
-
-      function splitValues(value) {
-        return String(value || '').split(',').map(function (item) {
-          return item.trim();
-        }).filter(Boolean);
-      }
-
-      function renderChecks(container, name, options, selected, title) {
-        var selectedMap = {};
-        (selected || []).forEach(function (item) { selectedMap[item] = true; });
-        var html = title ? '<div class="check-title">' + escapeHtml(title) + '</div>' : '';
-        (options || []).forEach(function (item) {
-          html += '<input type="checkbox" name="' + name + '" value="' + escapeHtml(item) + '" title="' + escapeHtml(item) + '"' + (selectedMap[item] ? ' checked' : '') + '>';
-        });
-        $(container).html(html);
-      }
-
-      function renderChatSettings(chats) {
-        if (!chats || !chats.length) {
-          $('#chat_settings').html('<div class="empty-config">No chat config</div>');
-          return;
-        }
-        var html = '';
-        chats.forEach(function (chat, index) {
-          html += '<div class="chat-row" data-index="' + index + '">';
-          html += '<div class="chat-id">' + escapeHtml(chat.chat_id) + '</div>';
-          html += '<div><input type="number" class="layui-input chat-last-id" value="' + escapeHtml(chat.last_read_message_id || 0) + '"></div>';
-          html += '<div><input type="text" class="layui-input chat-filter" value="' + escapeHtml(chat.download_filter || '') + '"></div>';
-          html += '<div><input type="text" class="layui-input chat-upload" value="' + escapeHtml(chat.upload_telegram_chat_id || '') + '"></div>';
-          html += '</div>';
-        });
-        $('#chat_settings').html(
-          '<div class="chat-header"><span>Chat</span><span>Last read</span><span>Filter</span><span>Upload chat</span></div>' + html
-        );
-      }
-
-      function fillSettings(settings) {
-        settingsCache = settings;
-        $('#save_path').val(settings.save_path || '');
-        $('#date_format').val(settings.date_format || '');
-        $('#start_timeout').val(settings.start_timeout || 60);
-        $('#max_download_task').val(settings.max_download_task || 4);
-        $('#max_concurrent_transmissions').val(settings.max_concurrent_transmissions || 10);
-        $('#file_name_prefix_split').val(settings.file_name_prefix_split || '');
-        $('#format_audio').val(listText((settings.file_formats || {}).audio));
-        $('#format_document').val(listText((settings.file_formats || {}).document));
-        $('#format_video').val(listText((settings.file_formats || {}).video));
-        switchValue('drop_no_audio_video', settings.drop_no_audio_video);
-        switchValue('enable_download_txt', settings.enable_download_txt);
-        switchValue('hide_file_name', settings.hide_file_name);
-
-        renderChecks('#media_type_checks', 'media_types', settings.options.media_types, settings.media_types, 'Media types');
-        renderChecks('#file_path_prefix_checks', 'file_path_prefix', settings.options.file_path_prefix, settings.file_path_prefix, 'Folder parts');
-        renderChecks('#file_name_prefix_checks', 'file_name_prefix', settings.options.file_name_prefix, settings.file_name_prefix, 'Filename parts');
-
-        var upload = settings.upload_drive || {};
-        $('#upload_adapter').val(upload.upload_adapter || 'rclone');
-        $('#remote_dir').val(upload.remote_dir || '');
-        $('#rclone_path').val(upload.rclone_path || '');
-        switchValue('enable_upload_file', upload.enable_upload_file);
-        switchValue('before_upload_file_zip', upload.before_upload_file_zip);
-        switchValue('after_upload_file_delete', upload.after_upload_file_delete);
-        switchValue('after_upload_telegram_delete', settings.after_upload_telegram_delete);
-
-        var web = settings.web || {};
-        $('#web_host').val(web.web_host || '0.0.0.0');
-        $('#web_port').val(web.web_port || 5000);
-        switchValue('enable_web', web.enable_web);
-        renderChatSettings(settings.chats || []);
-        form.render();
-      }
-
-      function loadSettings() {
-        return $.ajax({
-          url: 'api/settings',
-          type: 'get',
-          dataType: 'json',
-          success: function (settings) {
-            settingsLoaded = true;
-            fillSettings(settings);
-          }
-        });
-      }
-
-      function readChatSettings() {
-        var chats = [];
-        $('#chat_settings .chat-row').each(function () {
-          var index = Number(this.dataset.index);
-          var source = (settingsCache.chats || [])[index] || {};
-          chats.push({
-            chat_id: source.chat_id,
-            last_read_message_id: Number($(this).find('.chat-last-id').val() || 0),
-            download_filter: $(this).find('.chat-filter').val() || '',
-            upload_telegram_chat_id: $(this).find('.chat-upload').val() || ''
-          });
-        });
-        return chats;
-      }
-
-      function settingsPayload() {
-        return {
-          save_path: $('#save_path').val(),
-          media_types: checkedValues('media_types'),
-          file_formats: {
-            audio: splitValues($('#format_audio').val()),
-            document: splitValues($('#format_document').val()),
-            video: splitValues($('#format_video').val())
-          },
-          file_path_prefix: checkedValues('file_path_prefix'),
-          file_name_prefix: checkedValues('file_name_prefix'),
-          file_name_prefix_split: $('#file_name_prefix_split').val(),
-          max_download_task: Number($('#max_download_task').val() || 4),
-          max_concurrent_transmissions: Number($('#max_concurrent_transmissions').val() || 10),
-          start_timeout: Number($('#start_timeout').val() || 60),
-          date_format: $('#date_format').val(),
-          hide_file_name: $('#hide_file_name').prop('checked'),
-          drop_no_audio_video: $('#drop_no_audio_video').prop('checked'),
-          enable_download_txt: $('#enable_download_txt').prop('checked'),
-          after_upload_telegram_delete: $('#after_upload_telegram_delete').prop('checked'),
-          upload_drive: {
-            enable_upload_file: $('#enable_upload_file').prop('checked'),
-            upload_adapter: $('#upload_adapter').val(),
-            rclone_path: $('#rclone_path').val(),
-            remote_dir: $('#remote_dir').val(),
-            before_upload_file_zip: $('#before_upload_file_zip').prop('checked'),
-            after_upload_file_delete: $('#after_upload_file_delete').prop('checked')
-          },
-          web: {
-            enable_web: $('#enable_web').prop('checked'),
-            web_host: $('#web_host').val(),
-            web_port: Number($('#web_port').val() || 5000)
-          },
-          chats: readChatSettings()
-        };
-      }
-
-      function saveSettings() {
-        $('#config_save_status').text('Saving...');
-        $.ajax({
-          url: 'api/settings',
-          type: 'post',
-          data: JSON.stringify(settingsPayload()),
-          contentType: 'application/json',
-          dataType: 'json',
-          success: function (response) {
-            fillSettings(response.settings);
-            var text = response.restart_required ? 'Saved. Restart required for: ' + response.restart_fields.join(', ') : 'Saved.';
-            $('#config_save_status').text(text);
-            layer.msg(text);
-          },
-          error: function () {
-            $('#config_save_status').text('Save failed.');
-            layer.msg('Save failed.');
-          }
-        });
-      }
-
-      $.ajax({
-        url: 'get_app_version',
-        type: 'get',
-        dataType: 'text',
-        success: function (result) {
-          $('#app_version').html(result);
-        }
-      });
-
-      window.download_state_change = function (e) {
-        $.ajax({
-          url: 'set_download_state?state=' + e.dataset.value,
-          type: 'post',
-          dataType: 'text',
-          success: function (result) {
-            $('#download_state').html(result);
-            e.dataset.value = result;
-          }
-        });
-      };
-
-      $('#logout_btn').on('click', function () {
-        $.ajax({
-          url: 'logout',
-          type: 'post',
-          success: function () {
-            window.location.href = 'login';
-          }
-        });
-      });
-
-      $('#save_config_btn').on('click', saveSettings);
-
-      function syncModeInput() {
-        var show = $('#web_task_mode').val() === 'prescan';
-        $('#web_task_count').css('display', show ? '' : 'none');
-      }
-      $('#web_task_mode').on('change', syncModeInput);
-      form.on('select()', syncModeInput);
-      syncModeInput();
-
-      function submitWebTask() {
-        var link = $('#web_task_link').val();
-        $('#task_submit_status').text('Submitting...');
-        $('#submit_task_btn').prop('disabled', true).addClass('layui-btn-disabled');
-        var mode = $('#web_task_mode').val();
-        var payload = { link: link, mode: mode };
-        if (mode === 'prescan') {
-          payload.max_messages = Number($('#web_task_count').val() || 2000);
-        }
-        $.ajax({
-          url: 'api/tasks',
-          type: 'post',
-          data: JSON.stringify(payload),
-          contentType: 'application/json',
-          dataType: 'json',
-          success: function (response) {
-            $('#web_task_link').val('');
-            $('#task_submit_status').text('Submitted: ' + response.task_id);
-            selectedTaskId = response.task_id;
-            selectedTaskType = response.task_type;
-            updateTaskDashboard();
-          },
-          error: function (xhr) {
-            var response = xhr.responseJSON || {};
-            $('#task_submit_status').text(response.error || 'Submit failed.');
-          },
-          complete: function () {
-            $('#submit_task_btn').prop('disabled', false).removeClass('layui-btn-disabled');
-          }
-        });
-      }
-
-      $('#submit_task_btn').on('click', submitWebTask);
-      $('#web_task_link').on('keydown', function (event) {
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          submitWebTask();
-        }
-      });
-
-      function currentFileText(task) {
-        if (!task.current_file) {
-          return '';
-        }
-        var file = task.current_file;
-        var name = file.filename || file.message_id || '';
-        var progress = Number(file.download_progress || 0);
-        return escapeHtml(name) + (progress ? ' (' + progress + '%)' : '');
-      }
-
-      function workflowText(task) {
-        if (!task.workflow) {
-          return '';
-        }
-        var parts = [];
-        if (task.workflow.summary) {
-          parts.push(task.workflow.summary);
-        }
-        if (task.workflow.media_count || task.workflow.selected_count) {
-          parts.push('media ' + (task.workflow.selected_count || task.workflow.media_count || 0));
-        }
-        if (task.workflow.scan_count) {
-          parts.push('scanned ' + task.workflow.scan_count);
-        }
-        return escapeHtml(parts.join(' · '));
-      }
-
-      function postTaskAction(taskId, action) {
-        $('#task_submit_status').text(action === 'confirm' ? 'Queueing task...' : 'Cancelling task...');
-        $.ajax({
-          url: 'api/tasks/' + encodeURIComponent(taskId) + '/' + action,
-          type: 'post',
-          dataType: 'json',
-          success: function () {
-            $('#task_submit_status').text(action === 'confirm' ? 'Task queued.' : 'Task cancelled.');
-            updateTaskDashboard();
-            loadTaskDetail(taskId);
-          },
-          error: function (xhr) {
-            var response = xhr.responseJSON || {};
-            $('#task_submit_status').text(response.error || 'Task action failed.');
-          }
-        });
-      }
-
-      function postPrescanPackageSelection(taskId, packageId, selected) {
-        $.ajax({
-          url: 'api/prescans/' + encodeURIComponent(taskId) + '/packages/' + encodeURIComponent(packageId) + '/select',
-          type: 'post',
-          data: JSON.stringify({ selected: selected }),
-          contentType: 'application/json',
-          dataType: 'json',
-          success: function (response) {
-            $('#task_submit_status').text('Selected packages: ' + response.selected_count);
-            loadTaskDetail(taskId, 'prescan');
-            updateTaskDashboard();
-          },
-          error: function (xhr) {
-            var response = xhr.responseJSON || {};
-            $('#task_submit_status').text(response.error || 'Package selection failed.');
-          }
-        });
-      }
-
-      function postSelectAll(taskId, selected) {
-        $.ajax({
-          url: 'api/prescans/' + encodeURIComponent(taskId) + '/packages/select-all',
-          type: 'post', data: JSON.stringify({ selected: selected }),
-          contentType: 'application/json', dataType: 'json',
-          success: function (response) {
-            $('#task_submit_status').text('Selected packages: ' + response.selected_count);
-            detailColsType = null; detailSignature = '';
-            loadTaskDetail(taskId, 'prescan');
-            updateTaskDashboard();
-          },
-          error: function (xhr) {
-            $('#task_submit_status').text((xhr.responseJSON || {}).error || 'Selection failed.');
-          }
-        });
-      }
-
-      $('#prescan_select_all').on('click', function () {
-        if (selectedTaskId) { postSelectAll(selectedTaskId, true); }
-      });
-      $('#prescan_clear_all').on('click', function () {
-        if (selectedTaskId) { postSelectAll(selectedTaskId, false); }
-      });
-      $('#prescan_download').on('click', function () {
-        if (selectedTaskId) { postTaskAction(selectedTaskId, 'confirm'); }
-      });
-
-      function packageSelectedText(row) {
-        return row.selected ? 'yes' : 'no';
-      }
-
-      table.render({
-        elem: '#task_list',
-        id: 'task_list_table',
-        data: [],
-        title: 'task_list',
-        height: 'full-268',
-        limit: 10000,
-        text: { none: 'No tasks yet — paste a Telegram link above to start a download.' },
-        cols: [[
-          { field: 'task_id', title: 'task', width: 92 },
-          { field: 'source', title: 'source', width: 88 },
-          { field: 'task_type', title: 'type', width: 104 },
-          { field: 'status', title: 'status', width: 130, templet: statusBadge },
-          { field: 'title', title: 'title', minWidth: 180 },
-          { field: 'workflow', title: 'preview', minWidth: 200, templet: workflowText },
-          { field: 'progress', title: 'progress', width: 118, templet: taskProgressCell },
-          { field: 'counts', title: 'ok/fail/skip/up', width: 150, templet: countCell },
-          { field: 'current_file', title: 'current file', minWidth: 200, templet: currentFileText },
-          { fixed: 'right', title: 'action', width: 132, toolbar: '#task_actions' }
-        ]],
-        done: function () {
-          element.render();
-          if (selectedTaskId == null) { return; }
-          var rows = this.data || [];
-          for (var i = 0; i < rows.length; i++) {
-            if (String(rows[i].task_id) === String(selectedTaskId)) {
-              $(this.elem).next('.layui-table-view')
-                .find('.layui-table-body tr[data-index="' + i + '"]').addClass('layui-table-click');
-              break;
-            }
-          }
-        }
-      });
-
-      table.render({
-        elem: '#task_detail_list',
-        id: 'task_detail_list_table',
-        data: [],
-        title: 'task_detail_list',
-        height: 180,
-        limit: 10000,
-        text: { none: 'Select a task to see its files.' },
-        cols: FILE_DETAIL_COLS,
-        done: function () { element.render(); }
-      });
-
-      table.on('row(task_list)', function (obj) {
-        selectedTaskId = obj.data.task_id;
-        selectedTaskType = obj.data.task_type;
-        obj.tr.addClass('layui-table-click').siblings().removeClass('layui-table-click');
-        detailColsType = null;
-        detailSignature = '';
-        loadTaskDetail(selectedTaskId, selectedTaskType);
-      });
-
-      table.on('tool(task_list)', function (obj) {
-        if (obj.event === 'confirm' || obj.event === 'cancel') {
-          selectedTaskId = obj.data.task_id;
-          selectedTaskType = obj.data.task_type;
-          postTaskAction(obj.data.task_id, obj.event);
-        }
-      });
-
-      table.on('tool(task_detail_list)', function (obj) {
-        if (obj.event === 'select' || obj.event === 'deselect') {
-          postPrescanPackageSelection(selectedTaskId, obj.data.package_id, obj.event === 'select');
-        }
-      });
-
-      table.render({
-        elem: '#download_list',
-        id: 'download_list_table',
-        data: [],
-        title: 'download_list',
-        height: 'full-174',
-        limit: 10000,
-        cols: [[
-          { field: 'chat', title: 'chat', width: 140 },
-          { field: 'id', title: 'id', width: 100 },
-          { field: 'filename', title: 'file name', align: 'center' },
-          { field: 'total_size', title: 'total byte', align: 'center', width: 130 },
-          {
-            field: 'download_progress', title: 'download progress', align: 'center', templet: function (d) {
-              var progress = Number(d.download_progress || 0);
-              var color = progress >= 100 ? 'layui-bg-green' : (progress > 30 ? 'layui-bg-blue' : 'layui-bg-red');
-              return '<div class="layui-progress layui-progress-big" lay-showpercent="true"><div class="layui-progress-bar ' + color + '" lay-percent="' + progress + '%"></div></div>';
-            }
-          },
-          { field: 'download_speed', title: 'download speed', align: 'center', width: 150 }
-        ]],
-        done: function () { element.render(); }
-      });
-
-      table.render({
-        elem: '#already_download_list',
-        id: 'already_download_list_table',
-        data: [],
-        title: 'already_download_list',
-        height: 'full-174',
-        limit: 10000,
-        cols: [[
-          { field: 'chat', title: 'chat', width: 140 },
-          { field: 'id', title: 'id', width: 100 },
-          { field: 'filename', title: 'file name', align: 'center' },
-          { field: 'total_size', title: 'total size', align: 'center', width: 130 },
-          { field: 'save_path', title: 'save path', align: 'center' }
-        ]],
-        done: function () { element.render(); }
-      });
-
-      function updateTaskDashboard() {
-        $.ajax({
-          url: 'api/task-dashboard',
-          type: 'get',
-          dataType: 'json',
-          success: function (result) {
-            $('#summary_active_tasks').text(result.active_task_count || 0);
-            $('#summary_completed_tasks').text(result.completed_task_count || 0);
-            $('#summary_download_state').text(result.download_state || '');
-            $('#summary_download_speed').text(result.download_speed || '0.00 B/s');
-            $('#download_speed_title').html(result.download_speed || '0.00 B/s');
-            lastTasksById = {};
-            (result.tasks || []).forEach(function (task) { lastTasksById[task.task_id] = task; });
-            table.reload('task_list_table', { data: result.tasks || [] });
-            if (selectedTaskId) {
-              loadTaskDetail(selectedTaskId, selectedTaskType);
-            }
-          }
-        });
-      }
-
-      function detailSig(items) {
-        return (items || []).map(function (row) {
-          return [row.message_id || row.package_id, row.status, row.download_progress, row.selected, row.error]
-            .join(':');
-        }).join('|');
-      }
-
-      function showDetailError(taskId) {
-        var task = lastTasksById[taskId];
-        var banner = $('#task_detail_error');
-        if (task && task.error) {
-          banner.text(task.error).removeAttr('hidden');
-        } else {
-          banner.attr('hidden', 'hidden').text('');
-        }
-      }
-
-      var prescanRows = [];
-
-      function formatBytes(n) {
-        n = Number(n || 0);
-        var units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        var i = 0;
-        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
-        return n.toFixed(i === 0 ? 0 : 2) + ' ' + units[i];
-      }
-
-      function updatePrescanControls(taskId) {
-        var selected = prescanRows.filter(function (row) { return row.selected; });
-        var media = selected.reduce(function (sum, row) { return sum + Number(row.media_count || 0); }, 0);
-        var bytes = selected.reduce(function (sum, row) { return sum + Number(row.known_total_size_bytes || 0); }, 0);
-        $('#prescan_summary').text(selected.length + ' packages · ' + media + ' media · ' + formatBytes(bytes));
-        $('#prescan_controls').removeAttr('hidden');
-      }
-
-      function hidePrescanControls() {
-        $('#prescan_controls').attr('hidden', 'hidden');
-        prescanRows = [];
-      }
-
-      function loadTaskDetail(taskId, taskType) {
-        showDetailError(taskId);
-        if (taskType === 'prescan') {
-          $.ajax({
-            url: 'api/prescans/' + encodeURIComponent(taskId) + '/packages?page=1&page_size=50',
-            type: 'get', dataType: 'json',
-            success: function (result) {
-              var items = result.items || [];
-              var sig = 'prescan:' + detailSig(items);
-              if (detailColsType === 'prescan' && sig === detailSignature) { return; }
-              prescanRows = items;
-              updatePrescanControls(taskId);
-              var reload = { data: items };
-              if (detailColsType !== 'prescan') {
-                reload.cols = [[
-                  { field: 'package_id', title: 'package', width: 100 },
-                  { field: 'selected', title: 'selected', width: 100, templet: packageSelectedText },
-                  { field: 'start_message_id', title: 'start', width: 110 },
-                  { field: 'end_message_id', title: 'end', width: 110 },
-                  { field: 'media_count', title: 'media', width: 90 },
-                  { field: 'known_total_size', title: 'known size', width: 120 },
-                  { field: 'title', title: 'title', minWidth: 220 },
-                  { fixed: 'right', title: 'action', width: 110, toolbar: '#prescan_package_actions' }
-                ]];
-              }
-              table.reload('task_detail_list_table', reload);
-              detailColsType = 'prescan';
-              detailSignature = sig;
-            },
-            error: function () {
-              hidePrescanControls();
-              table.reload('task_detail_list_table', { data: [] });
-              detailColsType = 'prescan'; detailSignature = '';
-            }
-          });
-          return;
-        }
-        hidePrescanControls();
-        $.ajax({
-          url: 'api/tasks/' + encodeURIComponent(taskId) + '/files?page=1&page_size=50',
-          type: 'get', dataType: 'json',
-          success: function (result) {
-            var items = result.items || [];
-            var sig = 'files:' + detailSig(items);
-            if (detailColsType === 'files' && sig === detailSignature) { return; }
-            var reload = { data: items };
-            if (detailColsType !== 'files') { reload.cols = FILE_DETAIL_COLS; }
-            table.reload('task_detail_list_table', reload);
-            detailColsType = 'files';
-            detailSignature = sig;
-          },
-          error: function () {
-            table.reload('task_detail_list_table', { data: [] });
-            detailColsType = 'files'; detailSignature = '';
-            selectedTaskId = null; selectedTaskType = null;
-          }
-        });
-      }
-
-      function updateDownloadList() {
-        $.ajax({
-          url: 'get_download_list?already_down=false',
-          type: 'get',
-          dataType: 'json',
-          success: function (result) {
-            table.reload('download_list_table', {
-              data: result.filter(function (item) {
-                return Number(item.download_progress) < 100;
-              })
-            });
-          }
-        });
-      }
-
-      function updateDownloadedList() {
-        $.ajax({
-          url: 'get_download_list?already_down=true',
-          type: 'get',
-          dataType: 'json',
-          success: function (result) {
-            table.reload('already_download_list_table', { data: result });
-          }
-        });
-      }
-
-      function updateDownloadStatus() {
-        $.ajax({
-          url: 'get_download_status',
-          type: 'get',
-          dataType: 'json',
-          success: function (result) {
-            $('#download_speed_title').html(result.download_speed);
-          }
-        });
-      }
-
-      function setActiveTimers(tabIndex) {
-        clearInterval(taskDashboardTimer);
-        clearInterval(downloadListTimer);
-        clearInterval(downloadedListTimer);
-        if (tabIndex === 0) {
-          updateTaskDashboard();
-          taskDashboardTimer = self.setInterval(updateTaskDashboard, 1000);
-        }
-        if (tabIndex === 1) {
-          updateDownloadList();
-          downloadListTimer = self.setInterval(updateDownloadList, 1000);
-          updateDownloadedList();
-          downloadedListTimer = self.setInterval(updateDownloadedList, 1000);
-        }
-        if (tabIndex === 2 && !settingsLoaded) {
-          loadSettings();
-        }
-      }
-
-      element.on('tab(telegram_media_downloader)', function (data) {
-        setActiveTimers(data.index);
-      });
-
-      updateTaskDashboard();
-      updateDownloadStatus();
-      taskDashboardTimer = self.setInterval(updateTaskDashboard, 1000);
-      statusTimer = self.setInterval(updateDownloadStatus, 1000);
+    // prescan + waiting_confirmation → package list with selection controls + expandable files
+    async function renderPrescanPackages(task){
+      const data = await getJSON(`/api/prescans/${task.task_id}/packages?page=1&page_size=200`);
+      state.prescanRows[task.task_id] = data.items;
+      $('#detail_meta').textContent = `${data.total} 个包同属此任务 · 点击包名展开其文件`;
+      const ctrl = $('#prescan_controls'); ctrl.hidden = false; ctrl.style.display = 'flex';
+      const selCount = data.items.filter(p=>p.selected).length;
+      const selMedia = data.items.filter(p=>p.selected).reduce((a,p)=>a+p.media_count,0);
+      ctrl.innerHTML = `<button class="btn btn-secondary" data-pact="all">全选</button>
+        <button class="btn btn-ghost" data-pact="none">清空</button>
+        <span class="text-muted nums" style="font-size:12px">已选 ${selCount} / ${data.total} 包 · ${selMedia} 媒体</span>
+        <button class="btn btn-primary blueprint" data-pact="confirm" style="margin-left:auto"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>下载所选</button>`;
+      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
+        <thead><tr><th style="padding-left:16px"></th><th>包</th><th>选择</th><th>消息区间</th><th>媒体</th><th>已知大小</th><th>标题</th><th style="padding-right:16px;text-align:right">操作</th></tr></thead>
+        <tbody>${data.items.map(p=>`<tr data-pkg="${p.package_id}">
+          <td style="padding-left:16px"><button class="btn btn-ghost" data-expand="${p.package_id}" style="padding:2px">${icon('chevron',12)}</button></td>
+          <td class="nums">#${p.package_id}</td>
+          <td>${p.selected?'<span class="tag tag-accent">已选</span>':'—'}</td>
+          <td class="nums text-muted">${p.start_message_id}–${p.end_message_id}</td>
+          <td class="nums">${p.media_count}</td><td class="nums">${p.known_total_size}</td><td>${escapeHtml(p.title)}</td>
+          <td style="padding-right:16px;text-align:right"><button class="btn ${p.selected?'btn-secondary':'btn-primary blueprint'}" data-toggle="${p.package_id}" data-sel="${p.selected?0:1}">${p.selected?'':'<i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>'}${p.selected?'排除':'加入'}</button></td>
+        </tr>`).join('')}</tbody></table></div>`;
+    }
+    // controls (全选/清空/下载所选) + per-row toggle + expand — delegated on the detail card
+    $('#task_detail').addEventListener('click', async e => {
+      const id = state.selectedTaskId;
+      const cancelBtn = e.target.closest('[data-act="cancel"]');
+      if (cancelBtn){ await postJSON(`/api/tasks/${cancelBtn.dataset.id}/cancel`); return pollTasks(); }
+      const c = e.target.closest('[data-pact]');
+      if (c){ const a=c.dataset.pact;
+        if (a==='all') await postJSON(`/api/prescans/${id}/packages/select-all`, {selected:true});
+        if (a==='none') await postJSON(`/api/prescans/${id}/packages/select-all`, {selected:false});
+        if (a==='confirm'){ const r=await postJSON(`/api/tasks/${id}/confirm`); if(r.error) alert(r.error); }
+        return renderDetail(state.lastTasksById[id]); }
+      const t = e.target.closest('[data-toggle]');
+      if (t){ await postJSON(`/api/prescans/${id}/packages/${t.dataset.toggle}/select`, {selected:t.dataset.sel==='1'});
+        return renderDetail(state.lastTasksById[id]); }
+      const x = e.target.closest('[data-expand]');
+      if (x) return togglePackageFiles(id, x.dataset.expand);
     });
+    // NOTE (known limitation, per plan spec §6.1): FileSnapshot carries no package_id, so
+    // /api/tasks/<id> returns a flat file list with no per-package association. Expanding a
+    // package therefore shows the task's whole file list rather than files scoped to that
+    // package — there is no backend mapping to filter by. Revisit if/when the backend adds one.
+    async function togglePackageFiles(taskId, pkgId){
+      const row = $(`#task_detail tr[data-pkg="${pkgId}"]`);
+      const next = row.nextElementSibling;
+      if (next && next.dataset.filesFor===pkgId){ next.remove(); return; }
+      const full = await getJSON(`/api/tasks/${taskId}`);
+      const files = full.files||[];
+      const tr = document.createElement('tr'); tr.dataset.filesFor = pkgId;
+      tr.innerHTML = `<td></td><td colspan="7" style="padding-left:24px"><table class="table" style="font-size:12px">
+        ${files.map(f=>`<tr><td class="nums">${f.message_id}</td><td>${escapeHtml(f.filename||'')}</td><td class="nums">${f.total_size}</td><td>${fileStatusLabel(f.status)}</td></tr>`).join('')}</table></td>`;
+      row.after(tr);
+    }
+
+    // prescan + downloading (confirmed) → per-package progress, only selected packages
+    async function renderPrescanDownloading(task){
+      const ctrl0 = $('#prescan_controls'); ctrl0.hidden = true; ctrl0.style.display = '';
+      const data = await getJSON(`/api/prescans/${task.task_id}/packages?page=1&page_size=200`);
+      // GET .../packages 404s ({"error":"prescan not found"}) whenever the prescan isn't currently
+      // retained — most commonly while status is still `scanning` (packages don't exist until the
+      // scan finishes), or after a pre-confirmation cancel/fail. Guard against data.items being
+      // undefined instead of crashing on every poll.
+      const items = (data && data.items) || [];
+      const prog = task.total_count ? Math.round((task.success_count+task.skipped_count)/task.total_count*100) : 0;
+      if ((data && data.error) || !items.length){
+        $('#detail_meta').innerHTML = `<div class="track" style="width:260px;display:inline-block;vertical-align:middle"><i style="width:${prog}%"></i></div>
+          <span class="nums text-muted" style="font-size:11.5px;margin-left:8px">整体 ${task.success_count} / ${task.total_count} 媒体</span>
+          <button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}" style="margin-left:10px">暂停</button>`;
+        const scanning = task.status === 'scanning' || task.status === 'created';
+        const msg = scanning ? '扫描中…（等待生成包）' : '暂无包';
+        $('#detail_body').innerHTML = `<div class="text-muted" style="padding:24px;text-align:center;font-size:13px">${escapeHtml(msg)}</div>`;
+        return;
+      }
+      const selected = items.filter(p=>p.selected);  // 仅选中的包参与下载
+      $('#detail_meta').innerHTML = `<div class="track" style="width:260px;display:inline-block;vertical-align:middle"><i style="width:${prog}%"></i></div>
+        <span class="nums text-muted" style="font-size:11.5px;margin-left:8px">整体 ${task.success_count} / ${task.total_count} 媒体</span>
+        <button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}" style="margin-left:10px">暂停</button>`;
+      // NOTE (known limitation): the backend exposes no per-package progress (FileSnapshot has no
+      // package_id), so every row's track reuses the task-level `prog` as an approximation across
+      // all selected packages rather than each package's own completion.
+      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
+        <thead><tr><th style="padding-left:16px"></th><th>包</th><th>状态</th><th>进度</th><th>媒体</th><th>大小</th><th style="padding-right:16px">标题</th></tr></thead>
+        <tbody>${selected.map(p=>`<tr data-pkg="${p.package_id}">
+          <td style="padding-left:16px"><button class="btn btn-ghost" data-expand="${p.package_id}" style="padding:2px">${icon('chevron',12)}</button></td>
+          <td class="nums">#${p.package_id}</td><td>${statusTag(task.status)}</td>
+          <td><div class="track" style="width:100px"><i style="width:${prog}%"></i></div></td>
+          <td class="nums">${p.media_count}</td><td class="nums">${p.known_total_size}</td><td style="padding-right:16px">${escapeHtml(p.title)}</td></tr>`).join('')}</tbody></table></div>`;
+    }
+    // ── files (T7): 下载中 / 上传中 / 已完成 three stacked tables ──
+    async function pollFiles(){
+      const [dl, ul, done, dash] = await Promise.all([
+        getJSON('/get_download_list?already_down=false'),
+        getJSON('/get_upload_list'),
+        getJSON('/get_download_list?already_down=true'),
+        getJSON('/api/task-dashboard'),
+      ]);
+      $('#nav_total_speed').textContent = '⬇ ' + dash.download_speed;
+      $('#dl_total_speed').textContent = dash.download_speed;
+      $('#foot_speed').textContent = '⬇ ' + dash.download_speed;
+      $('#dl_count').textContent = dl.length;
+      $('#ul_count').textContent = ul.length;
+      $('#done_count').textContent = done.length;
+      $('#dl_rows').innerHTML = dl.map(r=>`<tr><td style="padding-left:16px">${escapeHtml(r.chat)}</td><td class="nums">${escapeHtml(r.id)}</td><td>${escapeHtml(r.filename)}</td>
+        <td class="nums">${escapeHtml(r.total_size)}</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track" style="width:120px"><i style="width:${r.download_progress}%"></i></div><span class="nums text-muted" style="font-size:11px">${r.download_progress}%</span></div></td>
+        <td class="nums text-muted" style="padding-right:16px">${escapeHtml(r.download_speed)}</td></tr>`).join('');
+      $('#ul_rows').innerHTML = ul.map(r=>`<tr><td style="padding-left:16px">${escapeHtml(r.chat)}</td><td class="nums">${escapeHtml(r.id)}</td><td>${escapeHtml(r.filename)}</td>
+        <td class="nums">${escapeHtml(r.total_size)}</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track" style="width:120px"><i style="width:${r.upload_progress}%"></i></div><span class="nums text-muted" style="font-size:11px">${r.upload_progress}%</span></div></td>
+        <td class="nums text-muted" style="padding-right:16px">${escapeHtml(r.upload_speed)}</td></tr>`).join('');
+      $('#done_rows').innerHTML = done.map(r=>`<tr><td style="padding-left:16px">${escapeHtml(r.chat)}</td><td class="nums">${escapeHtml(r.id)}</td><td>${escapeHtml(r.filename)}</td>
+        <td class="nums">${escapeHtml(r.total_size)}</td><td class="text-muted" style="padding-right:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">${escapeHtml(r.save_path)}</td></tr>`).join('');
+    }
+    $('#clear_done_btn').addEventListener('click', async () => { await postJSON('/clear_download_list'); pollFiles(); });
+    // ── config (T8): chip multi-select + switch toggle helpers, load/save /api/settings ──
+    const OPTION_LABELS = {
+      audio:'音频', photo:'图片', video:'视频', document:'文档', voice:'语音', video_note:'视频笔记',
+      chat_title:'频道标题', media_datetime:'日期', media_type:'媒体类型',
+      message_id:'消息 ID', file_name:'原文件名', caption:'标题',
+    };
+    function chip(key, on){ const label = OPTION_LABELS[key] || key;
+      return `<span class="tag ${on?'tag-accent':'tag-outline'}" data-chip="${escapeHtml(key)}" data-on="${on?1:0}" style="cursor:pointer;gap:4px">${on?icon('check',10,2):''}${escapeHtml(label)}</span>`; }
+    function renderChips(container, options, selected){
+      container.innerHTML = options.map(o=>chip(o, selected.includes(o))).join('');
+      container.onclick = e => { const c=e.target.closest('[data-chip]'); if(!c) return;
+        const on=c.dataset.on==='1'; c.dataset.on=on?0:1; c.className=`tag ${on?'tag-outline':'tag-accent'}`;
+        const label = OPTION_LABELS[c.dataset.chip] || c.dataset.chip;
+        c.innerHTML = (on?'':icon('check',10,2))+escapeHtml(label); };
+    }
+    function chipValues(container){ return [...container.querySelectorAll('[data-chip][data-on="1"]')].map(c=>c.dataset.chip); }
+    function setSwitch(el, on){ el.classList.toggle('on',on); el.classList.toggle('off',!on); el.dataset.on=on?1:0; el.onclick=()=>{ const v=el.dataset.on==='1'; setSwitch(el,!v); }; }
+
+    async function loadConfig(){
+      const s = await getJSON('/api/settings'); state.settingsCache = s;
+      $('#save_path').value=s.save_path; $('#date_format').value=s.date_format; $('#start_timeout').value=s.start_timeout;
+      $('#max_download_task').value=s.max_download_task; $('#max_concurrent_transmissions').value=s.max_concurrent_transmissions;
+      $('#web_host').value=s.web.web_host; $('#web_port').value=s.web.web_port;
+      $('#format_audio').value=(s.file_formats.audio||[]).join(', ');
+      $('#format_document').value=(s.file_formats.document||[]).join(', ');
+      $('#format_video').value=(s.file_formats.video||[]).join(', ');
+      $('#file_name_prefix_split').value=s.file_name_prefix_split;
+      $('#upload_adapter').value=s.upload_drive.upload_adapter;
+      $('#remote_dir').value=s.upload_drive.remote_dir; $('#rclone_path').value=s.upload_drive.rclone_path;
+      renderChips($('#media_type_chips'), s.options.media_types, s.media_types);
+      renderChips($('#path_prefix_chips'), s.options.file_path_prefix, s.file_path_prefix);
+      renderChips($('#name_prefix_chips'), s.options.file_name_prefix, s.file_name_prefix);
+      setSwitch($('#sw_drop_no_audio_video'), s.drop_no_audio_video);
+      setSwitch($('#sw_enable_download_txt'), s.enable_download_txt);
+      setSwitch($('#sw_hide_file_name'), s.hide_file_name);
+      setSwitch($('#sw_enable_web'), s.web.enable_web);
+      setSwitch($('#sw_enable_upload_file'), s.upload_drive.enable_upload_file);
+      setSwitch($('#sw_before_upload_file_zip'), s.upload_drive.before_upload_file_zip);
+      setSwitch($('#sw_after_upload_file_delete'), s.upload_drive.after_upload_file_delete);
+      setSwitch($('#sw_after_upload_telegram_delete'), s.after_upload_telegram_delete);
+      // chat_id / download_filter / upload_telegram_chat_id come from config.yaml (user-editable) —
+      // escape before innerHTML, same rule as task titles/filenames elsewhere in this script.
+      $('#chat_rows').innerHTML = s.chats.map(c=>`<tr><td class="nums" style="padding-left:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">${escapeHtml(c.chat_id)}</td><td class="nums">${escapeHtml(c.last_read_message_id)}</td><td class="text-muted">${escapeHtml(c.download_filter)||'—'}</td><td class="nums text-muted" style="padding-right:16px">${escapeHtml(c.upload_telegram_chat_id)||'—'}</td></tr>`).join('');
+    }
+    async function saveConfig(){
+      const swOn = id => $(id).dataset.on==='1';
+      const csv = id => $(id).value.split(',').map(x=>x.trim()).filter(Boolean);
+      const payload = {
+        save_path:$('#save_path').value, date_format:$('#date_format').value, start_timeout:Number($('#start_timeout').value),
+        max_download_task:Number($('#max_download_task').value), max_concurrent_transmissions:Number($('#max_concurrent_transmissions').value),
+        media_types:chipValues($('#media_type_chips')), file_path_prefix:chipValues($('#path_prefix_chips')),
+        file_name_prefix:chipValues($('#name_prefix_chips')), file_name_prefix_split:$('#file_name_prefix_split').value,
+        file_formats:{audio:csv('#format_audio'), document:csv('#format_document'), video:csv('#format_video')},
+        drop_no_audio_video:swOn('#sw_drop_no_audio_video'), enable_download_txt:swOn('#sw_enable_download_txt'),
+        hide_file_name:swOn('#sw_hide_file_name'), after_upload_telegram_delete:swOn('#sw_after_upload_telegram_delete'),
+        web:{enable_web:swOn('#sw_enable_web'), web_host:$('#web_host').value, web_port:Number($('#web_port').value)},
+        upload_drive:{enable_upload_file:swOn('#sw_enable_upload_file'), upload_adapter:$('#upload_adapter').value,
+          rclone_path:$('#rclone_path').value, remote_dir:$('#remote_dir').value,
+          before_upload_file_zip:swOn('#sw_before_upload_file_zip'), after_upload_file_delete:swOn('#sw_after_upload_file_delete')},
+      };
+      const r = await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const res = await r.json();
+      $('#config_status').textContent = res.ok ? '已保存 · 主机/端口修改后需重启' : (res.error||'保存失败');
+    }
+    $('#save_config_btn').addEventListener('click', saveConfig);
+    function setStateChip(dstate){
+      const chip = $('#download_state'), on = dstate === 'Downloading';
+      $('#download_state_text').textContent = on ? '运行中' : '已暂停';
+      chip.dataset.value = on ? 'pause' : 'continue';
+      $('#sum_state_text').textContent = on ? '运行中' : '已暂停';
+    }
+
+    function startPolling(tab){
+      stopPolling();
+      if (tab==='tasks'){ pollTasks(); state.timers.tasks = setInterval(pollTasks, 1000); }
+      else if (tab==='files'){ pollFiles(); state.timers.files = setInterval(pollFiles, 1000); }  // T7
+      else if (tab==='config'){ loadConfig(); }  // T8
+    }
+    function stopPolling(){ Object.values(state.timers).forEach(clearInterval); state.timers={}; }
+
+    // tab switching
+    document.querySelectorAll('.app-nav a[data-tab]').forEach(a => a.addEventListener('click', e => {
+      e.preventDefault();
+      const tab = a.dataset.tab;
+      document.querySelectorAll('.app-nav a[data-tab]').forEach(x=>x.removeAttribute('aria-current'));
+      a.setAttribute('aria-current','page');
+      document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+      $('#tab_'+tab).classList.add('active');
+      $('#nav_total_speed').style.display = tab==='files' ? '' : 'none';
+      startPolling(tab);
+    }));
+
+    // command bar
+    $('#web_task_link').addEventListener('keydown', e => { if (e.key==='Enter') submitTask(); });
+    $('#submit_task_btn').addEventListener('click', submitTask);
+    document.querySelectorAll('input[name="web_task_mode"]').forEach(r => r.addEventListener('change', () => {
+      const isPrescan = document.querySelector('input[name="web_task_mode"]:checked').value==='prescan';
+      $('#web_task_count_field').style.display = isPrescan ? '' : 'none';
+    }));
+    async function submitTask(){
+      const link = $('#web_task_link').value.trim();
+      const mode = document.querySelector('input[name="web_task_mode"]:checked').value;
+      const body = mode==='prescan' ? {link, mode:'prescan', max_messages:Number($('#web_task_count').value)||2000} : {link};
+      const r = await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const res = await r.json();
+      $('#task_submit_status').textContent = res.error ? res.error : '已提交';
+      if (res.task_id){ state.selectedTaskId = res.task_id; state.selectedTaskType = res.task_type||null; }
+      pollTasks();
+    }
+    // task filter buttons
+    document.querySelectorAll('button[data-filter]').forEach(btn => btn.addEventListener('click', () => {
+      taskFilter = btn.dataset.filter;
+      document.querySelectorAll('button[data-filter]').forEach(b => {
+        b.classList.toggle('btn-secondary', b===btn);
+        b.classList.toggle('btn-ghost', b!==btn);
+      });
+      renderTaskTable(Object.values(state.lastTasksById));
+    }));
+    // task action buttons (event delegation)
+    $('#task_rows').addEventListener('click', async e => {
+      const btn = e.target.closest('button[data-act]');
+      if (btn){ e.stopPropagation();
+        const id = btn.dataset.id, act = btn.dataset.act;
+        const url = act==='confirm'?`/api/tasks/${id}/confirm`:act==='cancel'?`/api/tasks/${id}/cancel`:`/api/tasks/${id}/clear`;
+        await postJSON(url); pollTasks(); return; }
+      const tr = e.target.closest('tr[data-id]');
+      if (tr) selectTask(tr.dataset.id, tr.dataset.type);
+    });
+    function selectTask(id, type){ state.selectedTaskId=id; state.selectedTaskType=type;
+      const t = state.lastTasksById[id]; if (t) renderDetail(t); pollTasks(); }
+
+    // state chip + logout
+    $('#download_state').addEventListener('click', async () => {
+      const next = $('#download_state').dataset.value;
+      await fetch('/set_download_state?state='+next, {method:'POST'}); pollTasks();
+    });
+    $('#logout_btn').addEventListener('click', async () => { await fetch('/logout',{method:'POST'}); location.href='/'; });
+
+    startPolling('tasks');
   </script>
 </body>
-
 </html>

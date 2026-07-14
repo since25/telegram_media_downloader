@@ -6,11 +6,13 @@ import json
 import logging
 import os
 import secrets
+import shutil
 import threading
 import time
 from pathlib import Path
 from typing import Any, Optional
 
+import psutil
 from flask import Flask, jsonify, render_template, request
 from flask_login import LoginManager, UserMixin, login_required, login_user, logout_user
 
@@ -26,14 +28,16 @@ from module.comment_workflow import (
 from module.download_stat import (
     DownloadState,
     add_active_task_node,
+    clear_completed_download_result,
     get_active_task_nodes,
     get_download_result,
     get_download_state,
     get_total_download_speed,
+    get_total_upload_speed,
     set_download_state,
 )
 from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
-from module.task_state import FileStatus
+from module.task_state import FileStatus, TERMINAL_TASK_STATUSES, mask_display_name
 from utils.crypto import AesBase64
 from utils.format import format_byte
 
@@ -285,6 +289,31 @@ def get_download_speed():
     )
 
 
+@_flask_app.route("/api/system")
+@login_required
+def system_metrics():
+    """Return CPU / memory / disk / throughput for the monitor card."""
+    app = _active_app()
+    save_path = getattr(app, "save_path", None) or "/"
+    try:
+        usage = shutil.disk_usage(save_path)
+    except OSError:
+        usage = shutil.disk_usage("/")
+    vmem = psutil.virtual_memory()
+    return jsonify(
+        {
+            "cpu_percent": round(psutil.cpu_percent(interval=None), 1),
+            "mem_used": int(vmem.total - vmem.available),
+            "mem_total": int(vmem.total),
+            "disk_used": int(usage.used),
+            "disk_total": int(usage.total),
+            "disk_free": int(usage.free),
+            "download_speed": format_byte(get_total_download_speed()) + "/s",
+            "upload_speed": format_byte(get_total_upload_speed()) + "/s",
+        }
+    )
+
+
 @_flask_app.route("/set_download_state", methods=["POST"])
 @login_required
 def web_set_download_state():
@@ -340,6 +369,54 @@ def get_download_list():
                     ),
                     "download_speed": download_speed,
                     "save_path": value["file_name"].replace("\\", "/"),
+                }
+            )
+
+    return jsonify(result)
+
+
+@_flask_app.route("/clear_download_list", methods=["POST"])
+@login_required
+def clear_download_list():
+    """Remove completed entries from the Files page download cache."""
+    cleared = clear_completed_download_result()
+    return jsonify({"ok": True, "cleared": cleared})
+
+
+@_flask_app.route("/get_upload_list")
+@login_required
+def get_upload_list():
+    """get upload list
+
+    This deployment uploads via rclone/cloud-drive, which populates
+    node.cloud_drive_upload_stat_dict (not the Telegram re-upload
+    node.upload_status/upload_stat_dict path), so read from there.
+    """
+
+    app = _active_app()
+    hide_file_name = bool(getattr(app, "hide_file_name", False))
+
+    result = []
+    for node in get_active_task_nodes().values():
+        for message_id, stat in (
+            getattr(node, "cloud_drive_upload_stat_dict", {}) or {}
+        ).items():
+            try:
+                upload_progress = float(
+                    str(stat.percentage).strip().rstrip("%") or 0
+                )
+            except ValueError:
+                upload_progress = 0.0
+            result.append(
+                {
+                    "chat": f"{getattr(node, 'chat_id', '')}",
+                    "id": f"{message_id}",
+                    "filename": mask_display_name(stat.file_name, hide_file_name),
+                    # total_size/upload_speed are already rclone-formatted
+                    # strings (e.g. "12.3 MiB", "1.2 MiB/s") - pass through.
+                    "total_size": stat.total,
+                    "upload_progress": upload_progress,
+                    "upload_speed": stat.speed or "0 B/s",
                 }
             )
 
@@ -1028,14 +1105,30 @@ def submit_task():
     return jsonify(response_payload), status_code
 
 
+def _prune_orphaned_prescans() -> None:
+    """Drop retained prescan entries whose task no longer exists in the store.
+
+    `confirm_task` retains prescan entries so `/api/prescans/<id>/packages`
+    stays readable during download. The task store LRU-evicts old completed
+    tasks once it exceeds its recent-task limit; without this reconciliation
+    a confirmed prescan's entry would orphan forever once its task is
+    evicted that way (unbounded memory growth).
+    """
+    store = get_task_store()
+    for task_id in list(_pending_web_prescans):
+        if store.get_task(task_id) is None:
+            _pending_web_prescans.pop(task_id, None)
+
+
 @_flask_app.route("/api/tasks/<task_id>/confirm", methods=["POST"])
 @login_required
 def confirm_task(task_id: str):
     """Confirm a scanned Web preview and queue its download."""
 
+    _prune_orphaned_prescans()
     app = _active_app()
     preview = _pending_web_task_previews.pop(task_id, None)
-    prescan = _pending_web_prescans.pop(task_id, None)
+    prescan = _pending_web_prescans.get(task_id)  # keep entry so packages stay readable
     if not preview and not prescan:
         return jsonify({"ok": False, "error": "task is not waiting for confirmation"}), 404
 
@@ -1043,8 +1136,8 @@ def confirm_task(task_id: str):
         if prescan:
             selected_ids = set(prescan.get("selected_package_ids") or set())
             if not selected_ids:
-                _pending_web_prescans[task_id] = prescan
                 return jsonify({"ok": False, "error": "select at least one package"}), 400
+            prescan["confirmed"] = True
             coroutine = _run_confirmed_prescan_download(prescan)
         elif preview["task_type"] == "comment":
             coroutine = _run_confirmed_comment_download(preview, _web_client(app))
@@ -1053,7 +1146,7 @@ def confirm_task(task_id: str):
         _schedule_web_coroutine(app, coroutine)
     except RuntimeError as error:
         if prescan:
-            _pending_web_prescans[task_id] = prescan
+            prescan.pop("confirmed", None)
         else:
             _pending_web_task_previews[task_id] = preview
         return jsonify({"ok": False, "error": str(error)}), 503
@@ -1101,9 +1194,10 @@ def clear_task(task_id: str):
     task = get_task_store().get_task(task_id)
     if not task:
         return jsonify({"ok": False, "error": "task not found"}), 404
-    if task.status not in {TaskStatus.COMPLETED, TaskStatus.COMPLETED_WITH_ERRORS, TaskStatus.CANCELLED, TaskStatus.FAILED}:
+    if task.status not in TERMINAL_TASK_STATUSES:
         return jsonify({"ok": False, "error": "only terminal tasks can be cleared"}), 400
     removed = get_task_store().remove_task(task_id)
+    _pending_web_prescans.pop(task_id, None)
     return jsonify({"ok": removed, "task_id": task_id})
 
 
@@ -1112,7 +1206,16 @@ def clear_task(task_id: str):
 def clear_completed_tasks():
     """Remove completed task history from the Web dashboard."""
 
-    return jsonify({"ok": True, "cleared": get_task_store().clear_completed()})
+    terminal_ids = {
+        task.task_id
+        for task in get_task_store().tasks()
+        if task.status in TERMINAL_TASK_STATUSES
+    }
+    cleared = get_task_store().clear_completed()
+    for cleared_task_id in terminal_ids:
+        _pending_web_prescans.pop(cleared_task_id, None)
+    _prune_orphaned_prescans()
+    return jsonify({"ok": True, "cleared": cleared})
 
 
 @_flask_app.route("/api/tasks/<task_id>/retry", methods=["POST"])

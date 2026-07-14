@@ -81,12 +81,20 @@ class FileSnapshot:
     save_path: str = ""
     error: str = ""
     updated_at: float = field(default_factory=_now)
+    uploaded_size: int = 0
+    upload_speed: int = 0
 
     @property
     def download_progress(self) -> float:
         if self.total_size <= 0:
             return 0.0
         return round(min(self.downloaded_size / self.total_size * 100, 100.0), 1)
+
+    @property
+    def upload_progress(self) -> float:
+        if self.total_size <= 0:
+            return 0.0
+        return round(min(self.uploaded_size / self.total_size * 100, 100.0), 1)
 
     def to_dict(self, hide_file_name: bool = False) -> dict:
         return {
@@ -103,6 +111,10 @@ class FileSnapshot:
             "save_path": "" if hide_file_name else self.save_path.replace("\\", "/"),
             "error": self.error,
             "updated_at": self.updated_at,
+            "uploaded_size_bytes": self.uploaded_size,
+            "upload_progress": self.upload_progress,
+            "upload_speed": format_byte(int(self.upload_speed)) + "/s",
+            "upload_speed_bytes": int(self.upload_speed),
         }
 
 
@@ -207,6 +219,8 @@ class TaskSnapshot:
             "workflow": self.workflow.to_dict() if self.workflow else None,
             "error": self.error,
             "needs_confirmation": self.needs_confirmation,
+            "upload_progress": self._upload_progress(),
+            "upload_speed": format_byte(self._upload_speed_bytes()) + "/s",
         }
         if include_files:
             payload["files"] = [
@@ -216,6 +230,30 @@ class TaskSnapshot:
                 )
             ]
         return payload
+
+    def _upload_progress(self) -> float:
+        uploading = [
+            f
+            for f in self.files.values()
+            if f.status in (FileStatus.UPLOADING, FileStatus.UPLOADED)
+        ]
+        if not uploading:
+            return 0.0
+        done = sum(1 for f in uploading if f.status == FileStatus.UPLOADED)
+        active = [
+            f.upload_progress for f in uploading if f.status == FileStatus.UPLOADING
+        ]
+        partial = sum(active) / 100.0
+        return round((done + partial) / len(uploading) * 100, 1)
+
+    def _upload_speed_bytes(self) -> int:
+        return int(
+            sum(
+                f.upload_speed
+                for f in self.files.values()
+                if f.status == FileStatus.UPLOADING
+            )
+        )
 
 
 class TaskStateStore:
@@ -725,6 +763,38 @@ def snapshot_node(
             task.task_id,
             message_id,
             status=_file_status_from_download_status(status),
+        )
+    # Cloud-drive (rclone) uploads: this deployment uploads via rclone, which
+    # populates node.cloud_drive_upload_stat_dict, not the Telegram
+    # re-upload node.upload_status/upload_stat_dict path. An entry only
+    # exists here while a message is actively uploading -
+    # module/cloud_drive.py pops it once rclone reports 100% success, and
+    # media_downloader.py sets the terminal FileStatus.UPLOADED/
+    # UPLOAD_FAILED directly at that point - so this loop only needs to
+    # reflect the UPLOADING state.
+    for message_id, stat in (
+        getattr(node, "cloud_drive_upload_stat_dict", {}) or {}
+    ).items():
+        try:
+            percentage = float(
+                str(getattr(stat, "percentage", "")).strip().rstrip("%") or 0
+            )
+        except ValueError:
+            percentage = 0.0
+        # Approximation: FileSnapshot only exposes upload_progress as
+        # uploaded_size / total_size (both byte-based); there is no
+        # settable progress field. We stash the parsed rclone percentage
+        # (0-100) into uploaded_size and leave total_size untouched (it
+        # was already populated with the real byte count by the earlier
+        # download step), so this file's own upload_progress ratio will
+        # not read as a true percentage. What matters for the dashboard is
+        # the UPLOADING status itself, which drives TaskSnapshot.
+        # _upload_progress()'s file-count aggregation.
+        get_task_store().upsert_file(
+            task.task_id,
+            message_id,
+            status=FileStatus.UPLOADING,
+            uploaded_size=int(percentage),
         )
     if task.status in TERMINAL_TASK_STATUSES:
         get_task_store().complete_task(task.task_id)

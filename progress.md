@@ -446,3 +446,33 @@ Changed files:
 
 Rollback:
 - `git revert <this fix commit>` then redeploy and restart `tg-downloader.service`.
+
+## 2026-07-14 - Task: Add Industry design system CSS and app shell
+
+### What was done
+
+- Imported the approved Industry design handoff and made its complete design-system stylesheet the Web console CSS foundation.
+- Replaced the layui dashboard markup with the shared Chinese app shell for Tasks, Files, and Advanced Config, including the running-state control and version/speed footer.
+- Removed the obsolete layui request bootstrap and added a static shell harness for isolated browser verification.
+- Updated the existing index-shell regression test to assert the new T1 DOM contract.
+
+### Testing
+
+- CSS source-prefix comparison, required-selector checks, HTML parser checks, layui-reference scan, and `git diff --check` passed.
+- Chrome headless rendered `scratchpad/harness/shell.html` at 1440x900; verified the 1240px shadowed shell, square state chip with live dot, active Tab underline, no blueprint corner markers on the shell, and the two-sided footer. Google-hosted Barlow fonts rendered during this online check.
+- `.venv/bin/python -m pytest tests/module/test_web.py::WebTestCase::test_index_contains_industry_app_shell -q` - 1 passed.
+- `.venv/bin/python -m pytest tests/ -q` - 204 passed, 1 skipped.
+
+### Notes
+
+Changed files:
+- `docs/design/frontend-redesign/`: Added the approved README, prototype, and complete design-system stylesheet handoff.
+- `module/static/css/index.css`: Replaced layui-era page styles with the Industry design system and app-shell classes.
+- `module/templates/index.html`: Replaced the old dashboard with the shared navigation, empty screen containers, and footer shell.
+- `module/static/request/index.js`: Removed the layui-dependent request helper and left the T1 no-op placeholder.
+- `tests/module/test_web.py`: Updated the index-page shell contract assertion for the new DOM.
+- `scratchpad/harness/shell.html`: Added the isolated static shell preview used for browser verification.
+- `progress.md`: Recorded this implementation and verification.
+
+Rollback:
+- `git revert <Task 1 commit>` to restore the prior layui dashboard shell and CSS.

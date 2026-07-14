@@ -18,6 +18,8 @@ Confirmed tasks use the existing scan and download pipeline and the recommended 
 
 Prescan mode scans a bounded message window, writes package summaries to the Web state, and waits for the user to include packages before `Start`. Selected packages are downloaded serially through the existing prescan download path. The scan window is configurable per submission via `max_messages` (default 2000, capped at 10000).
 
+Confirming a prescan keeps its package list in Web state instead of discarding it, so `GET /api/prescans/<task_id>/packages` keeps returning `200` (with each package's `selected` flag as of confirmation time) while the download is in progress, which is what backs the prescan download detail view. Cancelling a prescan, or clearing/clear-completing its task once it reaches a terminal state, drops the retained package list so it does not linger in memory.
+
 ## Resource Boundaries
 
 The Web console persists task and file snapshots to `web_tasks.sqlite3` using SQLite WAL mode. Runtime Telegram sessions, auth files, and downloaded media are not stored in this database.
@@ -32,8 +34,9 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 
 ## APIs
 
-- `GET /api/task-dashboard`: task summary plus current download speed.
+- `GET /api/task-dashboard`: task summary plus current download speed. Each task row and file row now also carries `upload_progress` and `upload_speed` (task rows aggregate upload progress across their files).
 - `GET /api/tasks`: task summaries.
+- `GET /get_upload_list`: rows for files currently uploading (chat, id, filename, total_size, upload_progress, upload_speed).
 - `GET /api/tasks/<task_id>`: one task with file rows.
 - `GET /api/tasks/<task_id>/files?page=1&page_size=50`: paginated file rows.
 - `POST /api/tasks`: submit JSON `{"link": "https://t.me/..."}`.
@@ -46,5 +49,6 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 - `POST /api/tasks/<task_id>/clear`: clear one terminal task from Web history.
 - `POST /api/tasks/clear-completed`: clear completed task history.
 - `POST /api/tasks/<task_id>/retry`: currently returns `409` until original command metadata is persisted for safe retry.
+- `GET /api/system`: CPU / memory / disk(save_path 卷)/ throughput 快照。
 
 All APIs require the existing Web login session.

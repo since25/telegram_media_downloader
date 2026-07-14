@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+  <meta name="design_doc_mode" content="canvas">
+  <link rel="stylesheet" href="ds/styles.css">
+  <style>
+    body { margin: 0; background: #dcdce0; font-family: var(--font-body, system-ui, sans-serif); }
+    .dv-turn { padding: 52px 56px 44px; border-bottom: 1px solid var(--color-divider); scroll-margin-top: 16px; }
+    .dv-thd { display: flex; align-items: baseline; gap: 10px; margin: 0 0 26px; }
+    .dv-tid { font: 600 10px ui-monospace, Menlo, monospace; padding: 3px 7px; background: var(--color-accent-900); color: #fff; text-decoration: none; }
+    .dv-tname { font: 600 14px/1.3 var(--font-body); color: var(--color-text); }
+    .dv-tname b { font-weight: 700; }
+    .dv-opts { display: flex; flex-wrap: wrap; gap: 44px; align-items: flex-start; }
+    .dv-opt { flex: none; display: flex; flex-direction: column; gap: 12px; scroll-margin-top: 16px; }
+    .dv-oid { font: 600 10.5px ui-monospace, Menlo, monospace; padding: 3px 7px; background: var(--color-neutral-200); color: var(--color-text); text-decoration: none; }
+    .dv-olabel { display: flex; align-items: baseline; gap: 9px; font: 400 12.5px/1.4 var(--font-body); color: var(--color-neutral-600); }
+    .dv-olabel b { font-weight: 700; color: var(--color-text); }
+    .dv-opt:target .dv-oid { background: var(--color-accent); color: #fff; }
+    .dv-next { margin: 30px 0 0; font: 13px/1.7 var(--font-body); color: var(--color-neutral-700); }
+    .dv-next a { text-decoration: none; }
+    .screen-cap { display: flex; align-items: center; gap: 9px; margin: 24px 0 -2px; font: 600 12px/1 var(--font-heading); letter-spacing: .02em; color: var(--color-neutral-700); }
+    .screen-cap::before { content: ""; width: 18px; height: 1px; background: var(--color-accent); }
+    .screen-cap .n { font: 600 10px ui-monospace, Menlo, monospace; padding: 2px 6px; background: var(--color-neutral-200); color: var(--color-neutral-700); letter-spacing: 0; }
+    .cfg-title { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+    .cfg-title span { font-family: var(--font-heading); font-weight: 600; font-size: 15.5px; }
+    .sw { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+    .sw > i { width: 34px; height: 19px; position: relative; flex: none; background: var(--color-neutral-200); border: 1px solid var(--color-divider); }
+    .sw > i::after { content: ""; position: absolute; top: 1px; left: 1px; width: 15px; height: 15px; background: var(--color-bg); border: 1px solid var(--color-neutral-400); }
+    .sw.on > i { background: var(--color-accent); border-color: var(--color-accent); }
+    .sw.on > i::after { left: 16px; border: 0; }
+    .sw.off span { color: var(--color-neutral-600); }
+
+    /* ── app surface (a screenshot of the running web console) ── */
+    .app { width: 1240px; background: var(--color-bg); border: 1px solid var(--color-divider); box-shadow: var(--shadow-lg); overflow: hidden; }
+    .app-nav { display: flex; align-items: center; gap: 26px; padding: 15px 24px; border-bottom: 1px solid var(--color-divider); }
+    .app-nav .brand { display: flex; align-items: center; gap: 10px; font-family: var(--font-heading); font-weight: 600; font-size: 18px; letter-spacing: -0.01em; }
+    .app-nav a { color: inherit; text-decoration: none; font-size: 14px; padding-bottom: 2px; }
+    .app-nav a:hover { color: var(--color-accent); }
+    .app-nav a[aria-current="page"] { color: var(--color-accent); border-bottom: 2px solid var(--color-accent); }
+    .app-body { padding: 22px 24px 26px; display: flex; flex-direction: column; gap: 18px; }
+    .state-chip { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; font-family: var(--font-heading); font-weight: 600; font-size: 13px; padding: 6px 12px; border: 1px solid var(--color-divider); background: transparent; color: var(--color-text); }
+    .state-chip:hover { background: color-mix(in srgb, var(--color-text) 6%, transparent); }
+    .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-accent); box-shadow: 0 0 0 3px var(--color-accent-100); }
+    .track { height: 6px; background: var(--color-neutral-200); position: relative; overflow: hidden; }
+    .track > i { position: absolute; top: 0; bottom: 0; left: 0; background: var(--color-accent); }
+    .nums { font-variant-numeric: tabular-nums; }
+    .app-foot { display: flex; align-items: center; justify-content: space-between; padding: 11px 24px; border-top: 1px solid var(--color-divider); font-size: 12px; color: var(--color-neutral-600); }
+    .app-foot b { color: var(--color-text); }
+  </style>
+</helmet>
+
+<section class="dv-turn" id="t1">
+  <div class="dv-thd">
+    <a class="dv-tid" href="#t1">1</a>
+    <span class="dv-tname"><b>Tasks 任务面板</b> — 两个方向，均采用 Industry 蓝图风格（钢蓝 · 方角 · 十字定位标记 · Barlow）</span>
+  </div>
+
+  <div class="dv-opts">
+
+    <!-- ══════════════════════════ 1a 控制台 ══════════════════════════ -->
+    <div class="dv-opt" id="1a">
+      <div class="dv-olabel"><a class="dv-oid" href="#1a">1a</a><b>控制台</b> · 表格优先 · 信息密集 · 一屏全掌控 —— 全部屏幕（任务 / 文件 / 高级配置 / 登录）</div>
+      <div class="dv-card app" data-screen-label="任务">
+
+        <!-- nav -->
+        <nav class="app-nav">
+          <span class="brand">
+            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+            TG 媒体下载器
+          </span>
+          <a href="#1a" aria-current="page">任务</a>
+          <a href="#1a">文件</a>
+          <a href="#1a">高级配置</a>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:12px;">
+            <button type="button" class="state-chip"><span class="live-dot"></span>运行中<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" style="opacity:.55"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg></button>
+            <button type="button" class="btn btn-ghost" style="gap:6px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>退出</button>
+          </div>
+        </nav>
+
+        <div class="app-body">
+
+          <!-- command / submit bar -->
+          <div class="card blueprint" style="flex-direction:row;align-items:flex-end;gap:16px;padding:18px 20px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="field" style="flex:1">
+              <label>粘贴 Telegram 链接</label>
+              <input class="input" style="font-family:ui-monospace,Menlo,monospace;font-size:13px" value="https://t.me/c/1298283297/126711" readonly>
+            </div>
+            <div class="field" style="flex:none">
+              <label>模式</label>
+              <div class="seg">
+                <label class="seg-opt"><input type="radio" name="m1a" checked>预览</label>
+                <label class="seg-opt"><input type="radio" name="m1a">预扫描</label>
+              </div>
+            </div>
+            <div class="field" style="flex:none;width:96px">
+              <label>消息数</label>
+              <input class="input" value="2000" readonly>
+            </div>
+            <button type="button" class="btn btn-primary blueprint" style="height:36px;padding-inline:16px">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>提交任务
+            </button>
+          </div>
+
+          <!-- stat strip -->
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">
+            <div class="card blueprint" style="gap:4px;padding:12px 14px">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div class="card-kicker">进行中</div>
+              <div style="font-family:var(--font-heading);font-size:26px;line-height:1" class="nums">3</div>
+            </div>
+            <div class="card blueprint" style="gap:4px;padding:12px 14px">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div class="card-kicker">已完成</div>
+              <div style="font-family:var(--font-heading);font-size:26px;line-height:1" class="nums">128</div>
+            </div>
+            <div class="card blueprint" style="gap:4px;padding:12px 14px">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div class="card-kicker">状态</div>
+              <div style="font-family:var(--font-heading);font-size:26px;line-height:1;display:flex;align-items:center;gap:8px"><span class="live-dot"></span>运行中</div>
+            </div>
+            <div class="card blueprint" style="gap:4px;padding:12px 14px">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div class="card-kicker">当前速度</div>
+              <div style="font-family:var(--font-heading);font-size:26px;line-height:1" class="nums">6.88 <span style="font-size:14px;color:var(--color-neutral-600)">MB/s</span></div>
+            </div>
+          </div>
+
+          <!-- system monitor: upload throughput + disk / cpu / memory -->
+          <div class="card blueprint" style="padding:0;gap:0">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div style="display:flex;align-items:center;gap:9px;padding:11px 16px;border-bottom:1px solid var(--color-divider)">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:15px">系统监控</span>
+              <span class="text-muted" style="font-size:11.5px">每秒刷新</span>
+            </div>
+            <div style="display:flex;align-items:stretch">
+              <div style="flex:1;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:5px">
+                <span class="card-kicker" style="color:var(--color-neutral-600)">下行速度</span>
+                <span style="font-family:var(--font-heading);font-size:22px;line-height:1" class="nums">6.88 <span style="font-size:12px;color:var(--color-neutral-600)">MB/s</span></span>
+              </div>
+              <div style="flex:1;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:5px">
+                <span class="card-kicker" style="color:var(--color-accent)">上行速度 · 上传</span>
+                <span style="font-family:var(--font-heading);font-size:22px;line-height:1;color:var(--color-accent-700)" class="nums">3.10 <span style="font-size:12px;color:var(--color-neutral-600)">MB/s</span></span>
+              </div>
+              <div style="flex:1.9;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:7px">
+                <div style="display:flex;align-items:center;justify-content:space-between"><span class="card-kicker" style="color:var(--color-neutral-600)">磁盘 · /downloads</span><span class="tag tag-outline" style="gap:4px;padding:1px 7px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>偏满 82%</span></div>
+                <div class="track" style="height:8px"><i style="width:82%"></i></div>
+                <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--color-neutral-600)" class="nums"><span>已用 412 GB / 500 GB</span><span>剩 88 GB</span></div>
+              </div>
+              <div style="flex:1;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:6px">
+                <span class="card-kicker" style="color:var(--color-neutral-600)">CPU</span>
+                <span style="font-family:var(--font-heading);font-size:22px;line-height:1" class="nums">34<span style="font-size:12px;color:var(--color-neutral-600)">%</span></span>
+                <div class="track" style="height:5px"><i style="width:34%"></i></div>
+              </div>
+              <div style="flex:1;padding:12px 16px;display:flex;flex-direction:column;gap:6px">
+                <span class="card-kicker" style="color:var(--color-neutral-600)">内存</span>
+                <span style="font-family:var(--font-heading);font-size:22px;line-height:1" class="nums">512<span style="font-size:12px;color:var(--color-neutral-600)"> / 1024 MB</span></span>
+                <div class="track" style="height:5px"><i style="width:50%"></i></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- task table -->
+          <div class="card blueprint" style="padding:0;gap:0">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+              <div style="display:flex;align-items:baseline;gap:9px"><span style="font-family:var(--font-heading);font-weight:600;font-size:16px">下载任务</span><span class="tag tag-neutral">6</span></div>
+              <div style="display:flex;gap:6px">
+                <button type="button" class="btn btn-secondary" style="padding:5px 11px;font-size:12px">全部</button>
+                <button type="button" class="btn btn-ghost" style="padding:5px 8px;font-size:12px">进行中</button>
+                <button type="button" class="btn btn-ghost" style="padding:5px 8px;font-size:12px">已完成</button>
+              </div>
+            </div>
+            <table class="table" style="font-size:13px">
+              <thead><tr>
+                <th style="padding-left:16px">任务</th><th>来源</th><th>类型</th><th>状态</th><th>标题</th><th>进度</th><th>成功 / 失败 / 跳过</th><th>当前文件</th><th style="padding-right:16px;text-align:right">操作</th>
+              </tr></thead>
+              <tbody>
+                <tr>
+                  <td style="padding-left:16px" class="nums">A7F2</td>
+                  <td class="text-muted">频道</td>
+                  <td>合集</td>
+                  <td><span class="tag tag-accent" style="gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>下载中</span></td>
+                  <td>航拍素材 4K 合集</td>
+                  <td><div style="display:flex;flex-direction:column;gap:3px;min-width:118px"><div class="track"><i style="width:63%"></i></div><span style="font-size:11px;color:var(--color-neutral-600)" class="nums">12 / 19</span></div></td>
+                  <td class="nums" style="font-size:12px"><b style="color:var(--color-accent-700)">12</b> · 0 · <span style="color:var(--color-neutral-500)">2</span></td>
+                  <td style="font-size:12px" class="text-muted">clip_07.mp4 · 63%</td>
+                  <td style="padding-right:16px;text-align:right" class="text-muted">—</td>
+                </tr>
+                <tr>
+                  <td style="padding-left:16px" class="nums">5F3A</td>
+                  <td class="text-muted">频道</td>
+                  <td>合集</td>
+                  <td><span class="tag tag-accent" style="gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 13V2l4 4"/><path d="M12 6 8 2"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/></svg>上传中</span></td>
+                  <td>壁纸合集 8K</td>
+                  <td><div style="display:flex;flex-direction:column;gap:3px;min-width:118px"><div class="track"><i style="width:100%"></i></div><span style="font-size:11px;color:var(--color-neutral-600)" class="nums">下载 40/40 · 上传 30/40</span></div></td>
+                  <td class="nums" style="font-size:12px"><b style="color:var(--color-accent-700)">40</b> · 0 · 0</td>
+                  <td style="font-size:12px" class="text-muted">↑ wall_31.jpg · 74%</td>
+                  <td style="padding-right:16px;text-align:right" class="text-muted">—</td>
+                </tr>
+                <tr>
+                  <td style="padding-left:16px" class="nums">B0C1</td>
+                  <td class="text-muted">私聊</td>
+                  <td>评论</td>
+                  <td><span class="tag tag-outline" style="gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>待确认</span></td>
+                  <td>设计资源打包 · 48 项</td>
+                  <td class="text-muted">媒体 48 · 2.1 GB</td>
+                  <td class="text-muted" style="font-size:12px">—</td>
+                  <td class="text-muted" style="font-size:12px">—</td>
+                  <td style="padding-right:16px;text-align:right"><div style="display:inline-flex;gap:6px"><button type="button" class="btn btn-primary blueprint" style="padding:4px 10px;font-size:12px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>开始</button><button type="button" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">取消</button></div></td>
+                </tr>
+                <tr style="background:color-mix(in srgb, var(--color-accent) 8%, transparent)">
+                  <td style="padding-left:16px" class="nums">C3D9</td>
+                  <td class="text-muted">频道</td>
+                  <td>预扫描</td>
+                  <td><span class="tag tag-outline" style="gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/></svg>待确认</span></td>
+                  <td>纪录片存档</td>
+                  <td class="text-muted">识别 5 包</td>
+                  <td class="text-muted" style="font-size:12px">—</td>
+                  <td class="text-muted" style="font-size:12px">已选 3 · 96 媒体</td>
+                  <td style="padding-right:16px;text-align:right"><div style="display:inline-flex;gap:6px"><button type="button" class="btn btn-primary blueprint" style="padding:4px 10px;font-size:12px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>开始</button><button type="button" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">取消</button></div></td>
+                </tr>
+                <tr>
+                  <td style="padding-left:16px" class="nums">9E12</td>
+                  <td class="text-muted">私聊</td>
+                  <td>单条</td>
+                  <td><span class="tag tag-accent" style="gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已完成</span></td>
+                  <td>会议录音 0714</td>
+                  <td><div style="display:flex;flex-direction:column;gap:3px;min-width:118px"><div class="track"><i style="width:100%"></i></div><span style="font-size:11px;color:var(--color-neutral-600)" class="nums">1 / 1</span></div></td>
+                  <td class="nums" style="font-size:12px"><b style="color:var(--color-accent-700)">1</b> · 0 · 0</td>
+                  <td class="text-muted" style="font-size:12px">—</td>
+                  <td style="padding-right:16px;text-align:right" class="text-muted">—</td>
+                </tr>
+                <tr>
+                  <td style="padding-left:16px" class="nums">7A55</td>
+                  <td class="text-muted">频道</td>
+                  <td>合集</td>
+                  <td><span class="tag tag-outline" style="gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>完成·有错误</span></td>
+                  <td>教程视频批量</td>
+                  <td><div style="display:flex;flex-direction:column;gap:3px;min-width:118px"><div class="track"><i style="width:100%"></i></div><span style="font-size:11px;color:var(--color-neutral-600)" class="nums">34 / 34</span></div></td>
+                  <td class="nums" style="font-size:12px"><b style="color:var(--color-accent-700)">30</b> · <b>4</b> · 0</td>
+                  <td class="text-muted" style="font-size:12px">4 项超时</td>
+                  <td style="padding-right:16px;text-align:right"><button type="button" class="btn btn-ghost" style="padding:4px 8px;font-size:12px">清除</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- detail: type-aware. 预扫描任务 → 显示其“包”（全部挂在同一任务下），任一包可展开为其文件 -->
+          <div class="card blueprint" style="padding:0;gap:0">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div style="display:flex;align-items:center;gap:9px;padding:12px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap">
+              <span class="card-kicker" style="color:var(--color-neutral-600)">任务详情</span>
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:15px">C3D9 · 纪录片存档</span>
+              <span class="tag tag-outline" style="margin-left:4px">待确认 · 预扫描</span>
+              <span class="text-muted" style="font-size:12px;margin-left:2px">5 个包同属此任务 · 点击包名展开其文件</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap">
+              <button type="button" class="btn btn-secondary" style="padding:5px 11px;font-size:12px">全选</button>
+              <button type="button" class="btn btn-ghost" style="padding:5px 9px;font-size:12px">清空</button>
+              <span class="text-muted nums" style="font-size:12.5px">已选 <b style="color:var(--color-accent-700)">3</b> / 5 包 · 96 媒体 · 4.2 GB</span>
+              <button type="button" class="btn btn-primary blueprint" style="padding:6px 14px;font-size:12.5px;margin-left:auto"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>下载所选</button>
+            </div>
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">包</th><th>选择</th><th>消息区间</th><th>媒体</th><th>已知大小</th><th>标题</th><th style="padding-right:16px;text-align:right">操作</th></tr></thead>
+              <tbody>
+                <tr style="background:color-mix(in srgb, var(--color-accent) 6%, transparent)">
+                  <td style="padding-left:16px"><span style="display:inline-flex;align-items:center;gap:7px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg><span class="nums">1</span></span></td>
+                  <td><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已选</span></td>
+                  <td class="nums text-muted">12801–12760</td>
+                  <td class="nums">24</td>
+                  <td class="nums">1.6 GB</td>
+                  <td>S01 · 早期影像</td>
+                  <td style="padding-right:16px;text-align:right"><button type="button" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">排除</button></td>
+                </tr>
+                <tr><td colspan="7" style="padding:0 16px 12px 42px;background:color-mix(in srgb, var(--color-text) 3%, transparent)">
+                  <div style="border-left:2px solid var(--color-divider);padding:10px 0 2px 14px;display:flex;flex-direction:column;gap:6px">
+                    <div style="display:flex;justify-content:space-between;font-size:11.5px;color:var(--color-neutral-600)"><span>包内文件（点“下载所选”后开始）</span><span class="nums">24 个 · 待下载</span></div>
+                    <div style="display:flex;align-items:center;gap:10px;font-size:12.5px"><span class="nums text-muted" style="width:60px">12801</span><span style="flex:1">ep01_intro.mp4</span><span class="nums text-muted" style="width:72px;text-align:right">220 MB</span><span class="tag tag-neutral" style="margin-left:8px">待下载</span></div>
+                    <div style="display:flex;align-items:center;gap:10px;font-size:12.5px"><span class="nums text-muted" style="width:60px">12799</span><span style="flex:1">ep01_reel.mp4</span><span class="nums text-muted" style="width:72px;text-align:right">540 MB</span><span class="tag tag-neutral" style="margin-left:8px">待下载</span></div>
+                    <div style="display:flex;align-items:center;gap:10px;font-size:12.5px"><span class="nums text-muted" style="width:60px">12795</span><span style="flex:1">ep01_notes.pdf</span><span class="nums text-muted" style="width:72px;text-align:right">3 MB</span><span class="tag tag-neutral" style="margin-left:8px">待下载</span></div>
+                    <div style="font-size:11.5px;color:var(--color-neutral-500);padding-top:2px">… 其余 21 个文件</div>
+                  </div>
+                </td></tr>
+                <tr>
+                  <td style="padding-left:16px"><span style="display:inline-flex;align-items:center;gap:7px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-neutral-500)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg><span class="nums">2</span></span></td>
+                  <td><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已选</span></td>
+                  <td class="nums text-muted">12759–12720</td>
+                  <td class="nums">40</td>
+                  <td class="nums">1.9 GB</td>
+                  <td>S02 · 战后重建</td>
+                  <td style="padding-right:16px;text-align:right"><button type="button" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">排除</button></td>
+                </tr>
+                <tr>
+                  <td style="padding-left:16px"><span style="display:inline-flex;align-items:center;gap:7px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-neutral-500)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg><span class="nums">3</span></span></td>
+                  <td><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已选</span></td>
+                  <td class="nums text-muted">12719–12690</td>
+                  <td class="nums">32</td>
+                  <td class="nums">0.7 GB</td>
+                  <td>S03 · 口述历史</td>
+                  <td style="padding-right:16px;text-align:right"><button type="button" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">排除</button></td>
+                </tr>
+                <tr>
+                  <td style="padding-left:16px"><span style="display:inline-flex;align-items:center;gap:7px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-neutral-500)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg><span class="nums">4</span></span></td>
+                  <td class="text-muted">—</td>
+                  <td class="nums text-muted">12689–12650</td>
+                  <td class="nums">18</td>
+                  <td class="nums">0.4 GB</td>
+                  <td>花絮 / 片头</td>
+                  <td style="padding-right:16px;text-align:right"><button type="button" class="btn btn-primary blueprint" style="padding:4px 10px;font-size:12px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>加入</button></td>
+                </tr>
+                <tr>
+                  <td style="padding-left:16px"><span style="display:inline-flex;align-items:center;gap:7px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-neutral-500)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg><span class="nums">5</span></span></td>
+                  <td class="text-muted">—</td>
+                  <td class="nums text-muted">12649–12610</td>
+                  <td class="nums">12</td>
+                  <td class="nums">0.3 GB</td>
+                  <td>未分类</td>
+                  <td style="padding-right:16px;text-align:right"><button type="button" class="btn btn-primary blueprint" style="padding:4px 10px;font-size:12px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>加入</button></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+        </div>
+
+        <div class="app-foot">
+          <span>Telegram Media Downloader <b>v2.2.0</b></span>
+          <span style="display:flex;align-items:center;gap:7px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg><b class="nums">6.88 MB/s</b></span>
+        </div>
+
+      </div>
+
+      <!-- ── 1a · 补充：预扫描「下载中」详情 ── -->
+      <div class="screen-cap"><span class="n">任务 · 补充</span> 预扫描「下载中」详情 —— 确认后只对选中的包串行下载</div>
+      <div class="dv-card app" style="padding:20px 24px">
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;gap:9px;padding:12px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap">
+            <span class="card-kicker" style="color:var(--color-neutral-600)">任务详情</span>
+            <span style="font-family:var(--font-heading);font-weight:600;font-size:15px">D4E1 · 纪录片存档</span>
+            <span class="tag tag-accent" style="margin-left:4px;gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>下载中</span>
+            <span class="text-muted" style="font-size:12px;margin-left:2px">已选 3 包 · 串行进行到 包 2 / 3</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap">
+            <div style="display:flex;flex-direction:column;gap:3px;min-width:180px;flex:1;max-width:340px"><div class="track"><i style="width:40%"></i></div><span class="text-muted nums" style="font-size:11.5px">整体 38 / 96 媒体 · 已完成 1 包</span></div>
+            <span class="text-muted nums" style="font-size:12.5px">当前 1.48 MB/s</span>
+            <button type="button" class="btn btn-secondary" style="padding:5px 12px;font-size:12px;margin-left:auto;gap:6px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg>暂停</button>
+          </div>
+          <table class="table" style="font-size:13px">
+            <thead><tr><th style="padding-left:16px">包</th><th>状态</th><th>进度</th><th>媒体</th><th>大小</th><th style="padding-right:16px">标题</th></tr></thead>
+            <tbody>
+              <tr>
+                <td style="padding-left:16px"><span style="display:inline-flex;align-items:center;gap:7px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-neutral-500)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg><span class="nums">1</span></span></td>
+                <td><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已完成</span></td>
+                <td><div class="track" style="width:120px"><i style="width:100%"></i></div></td>
+                <td class="nums">24 / 24</td>
+                <td class="nums">1.6 GB</td>
+                <td style="padding-right:16px">S01 · 早期影像</td>
+              </tr>
+              <tr style="background:color-mix(in srgb, var(--color-accent) 6%, transparent)">
+                <td style="padding-left:16px"><span style="display:inline-flex;align-items:center;gap:7px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg><span class="nums">2</span></span></td>
+                <td><span class="tag tag-accent" style="gap:5px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>下载中</span></td>
+                <td><div class="track" style="width:120px"><i style="width:35%"></i></div></td>
+                <td class="nums">14 / 40</td>
+                <td class="nums">1.9 GB</td>
+                <td style="padding-right:16px">S02 · 战后重建</td>
+              </tr>
+              <tr><td colspan="6" style="padding:0 16px 12px 42px;background:color-mix(in srgb, var(--color-text) 3%, transparent)">
+                <div style="border-left:2px solid var(--color-divider);padding:10px 0 2px 14px;display:flex;flex-direction:column;gap:6px">
+                  <div style="display:flex;align-items:center;gap:10px;font-size:12.5px"><span class="nums text-muted" style="width:60px">12758</span><span style="flex:1">chapter1.mp4</span><span class="nums text-muted" style="width:70px;text-align:right">320 MB</span><span style="display:flex;align-items:center;gap:6px;width:150px;justify-content:flex-end"><span class="track" style="width:78px"><i style="width:62%"></i></span><span class="tag tag-accent">62%</span></span></div>
+                  <div style="display:flex;align-items:center;gap:10px;font-size:12.5px"><span class="nums text-muted" style="width:60px">12757</span><span style="flex:1">chapter0.mp4</span><span class="nums text-muted" style="width:70px;text-align:right">210 MB</span><span style="display:flex;align-items:center;gap:6px;width:150px;justify-content:flex-end"><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已下载</span></span></div>
+                  <div style="display:flex;align-items:center;gap:10px;font-size:12.5px"><span class="nums text-muted" style="width:60px">12756</span><span style="flex:1">intro.mp4</span><span class="nums text-muted" style="width:70px;text-align:right">90 MB</span><span style="display:flex;align-items:center;gap:6px;width:150px;justify-content:flex-end"><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已下载</span></span></div>
+                  <div style="font-size:11.5px;color:var(--color-neutral-500);padding-top:2px">… 其余 37 个文件 · 待下载</div>
+                </div>
+              </td></tr>
+              <tr>
+                <td style="padding-left:16px"><span style="display:inline-flex;align-items:center;gap:7px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-neutral-500)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg><span class="nums">3</span></span></td>
+                <td><span class="tag tag-neutral">待下载</span></td>
+                <td><div class="track" style="width:120px"><i style="width:0%"></i></div></td>
+                <td class="nums">0 / 32</td>
+                <td class="nums">0.7 GB</td>
+                <td style="padding-right:16px">S03 · 口述历史</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ── 1a · 文件 ── -->
+      <div class="screen-cap"><span class="n">文件</span> Files · 下载中 + 已完成</div>
+      <div class="dv-card app" data-screen-label="文件">
+        <nav class="app-nav">
+          <span class="brand"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>TG 媒体下载器</span>
+          <a href="#1a">任务</a>
+          <a href="#1a" aria-current="page">文件</a>
+          <a href="#1a">高级配置</a>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:12px">
+            <button type="button" class="state-chip"><span class="live-dot"></span>运行中</button>
+            <button type="button" class="btn btn-ghost" style="gap:6px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>退出</button>
+          </div>
+        </nav>
+        <div class="app-body">
+          <div class="card blueprint" style="padding:0;gap:0">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+              <div style="display:flex;align-items:baseline;gap:9px"><span style="font-family:var(--font-heading);font-weight:600;font-size:16px">下载中</span><span class="tag tag-accent">3</span></div>
+              <span style="display:flex;align-items:center;gap:7px;font-size:13px;color:var(--color-neutral-600)">总速度 <b class="nums" style="color:var(--color-text)">6.88 MB/s</b></span>
+            </div>
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>ID</th><th>文件名</th><th>大小</th><th>下载进度</th><th style="padding-right:16px">速度</th></tr></thead>
+              <tbody>
+                <tr><td style="padding-left:16px">航拍频道</td><td class="nums">126711</td><td>clip_07.mp4</td><td class="nums">432.8 MB</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track" style="width:150px"><i style="width:63%"></i></div><span class="nums text-muted" style="font-size:11.5px">63%</span></div></td><td class="nums text-muted" style="padding-right:16px">1.48 MB/s</td></tr>
+                <tr><td style="padding-left:16px">播客 FM</td><td class="nums">88012</td><td>ep_04.mp3</td><td class="nums">88.0 MB</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track" style="width:150px"><i style="width:90%"></i></div><span class="nums text-muted" style="font-size:11.5px">90%</span></div></td><td class="nums text-muted" style="padding-right:16px">2.05 MB/s</td></tr>
+                <tr><td style="padding-left:16px">教程频道</td><td class="nums">40233</td><td>lesson_12.mp4</td><td class="nums">399.9 MB</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track" style="width:150px"><i style="width:65%"></i></div><span class="nums text-muted" style="font-size:11.5px">65%</span></div></td><td class="nums text-muted" style="padding-right:16px">2.19 MB/s</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card blueprint" style="padding:0;gap:0">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+              <div style="display:flex;align-items:baseline;gap:9px"><span style="font-family:var(--font-heading);font-weight:600;font-size:16px">上传中</span><span class="tag tag-accent">2</span></div>
+              <span style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--color-neutral-600)"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 13V2l4 4"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/></svg>rclone → tg-media/incoming</span>
+            </div>
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>ID</th><th>文件名</th><th>大小</th><th>上传进度</th><th style="padding-right:16px">上传速度</th></tr></thead>
+              <tbody>
+                <tr><td style="padding-left:16px">会议室</td><td class="nums">77120</td><td>会议录音_0714.m4a</td><td class="nums">96 MB</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track" style="width:150px"><i style="width:62%"></i></div><span class="nums text-muted" style="font-size:11.5px">62%</span></div></td><td class="nums text-muted" style="padding-right:16px">3.10 MB/s</td></tr>
+                <tr><td style="padding-left:16px">壁纸频道</td><td class="nums">51200</td><td>wall_31.jpg</td><td class="nums">12 MB</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track" style="width:150px"><i style="width:88%"></i></div><span class="nums text-muted" style="font-size:11.5px">88%</span></div></td><td class="nums text-muted" style="padding-right:16px">4.20 MB/s</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card blueprint" style="padding:0;gap:0">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+              <div style="display:flex;align-items:baseline;gap:9px"><span style="font-family:var(--font-heading);font-weight:600;font-size:16px">已完成</span><span class="tag tag-neutral">128</span></div>
+              <button type="button" class="btn btn-ghost" style="padding:5px 9px;font-size:12px">清空已完成</button>
+            </div>
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>ID</th><th>文件名</th><th>大小</th><th style="padding-right:16px">保存路径</th></tr></thead>
+              <tbody>
+                <tr><td style="padding-left:16px">会议室</td><td class="nums">77120</td><td>会议录音_0714.m4a</td><td class="nums">96 MB</td><td class="text-muted" style="padding-right:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">/downloads/会议室/2026-07</td></tr>
+                <tr><td style="padding-left:16px">航拍频道</td><td class="nums">126710</td><td>clip_06.mp4</td><td class="nums">288.9 MB</td><td class="text-muted" style="padding-right:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">/downloads/航拍频道/4K</td></tr>
+                <tr><td style="padding-left:16px">播客 FM</td><td class="nums">88011</td><td>ep_03.mp3</td><td class="nums">84 MB</td><td class="text-muted" style="padding-right:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">/downloads/播客FM</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="app-foot">
+          <span>Telegram Media Downloader <b>v2.2.0</b></span>
+          <span style="display:flex;align-items:center;gap:7px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg><b class="nums">6.88 MB/s</b></span>
+        </div>
+      </div>
+
+      <!-- ── 1a · 高级配置 ── -->
+      <div class="screen-cap"><span class="n">高级配置</span> Advanced Config · 每个环节可细调</div>
+      <div class="dv-card app" data-screen-label="高级配置">
+        <nav class="app-nav">
+          <span class="brand"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>TG 媒体下载器</span>
+          <a href="#1a">任务</a>
+          <a href="#1a">文件</a>
+          <a href="#1a" aria-current="page">高级配置</a>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:12px">
+            <button type="button" class="state-chip"><span class="live-dot"></span>运行中</button>
+            <button type="button" class="btn btn-ghost" style="gap:6px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>退出</button>
+          </div>
+        </nav>
+        <div class="app-body">
+          <div class="card blueprint" style="gap:14px;padding:16px 18px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span>存储</span></div>
+            <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:14px">
+              <div class="field"><label>保存路径</label><input class="input" value="/downloads" readonly></div>
+              <div class="field"><label>日期格式</label><input class="input" value="%Y-%m" readonly></div>
+              <div class="field"><label>启动超时（秒）</label><input class="input nums" value="60" readonly></div>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px">
+            <div class="card blueprint" style="gap:14px;padding:16px 18px">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span>并发</span></div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+                <div class="field"><label>工作线程</label><input class="input nums" value="4" readonly></div>
+                <div class="field"><label>TG 传输通道</label><input class="input nums" value="10" readonly></div>
+              </div>
+              <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px">
+                <span class="sw on"><i></i>丢弃静音视频</span>
+                <span class="sw off"><i></i><span>下载文本消息</span></span>
+                <span class="sw off"><i></i><span>隐藏文件名</span></span>
+              </div>
+            </div>
+            <div class="card blueprint" style="gap:14px;padding:16px 18px">
+              <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+              <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span>Web 服务</span></div>
+              <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:14px">
+                <div class="field"><label>主机</label><input class="input nums" value="0.0.0.0" readonly></div>
+                <div class="field"><label>端口</label><input class="input nums" value="5000" readonly></div>
+              </div>
+              <span class="sw on"><i></i>启用 Web 服务</span>
+            </div>
+          </div>
+          <div class="card blueprint" style="gap:14px;padding:16px 18px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/></svg><span>媒体</span></div>
+            <div><label style="display:block;font-size:12px;margin-bottom:7px;color:color-mix(in srgb,var(--color-text) 70%,transparent)">下载类型</label><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>视频</span><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>图片</span><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>音频</span><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>文档</span><span class="tag tag-outline">视频笔记</span><span class="tag tag-outline">语音</span></div></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+              <div class="field"><label>音频格式</label><input class="input" value="mp3, flac, m4a" readonly></div>
+              <div class="field"><label>文档格式</label><input class="input" value="pdf, zip, epub" readonly></div>
+              <div class="field"><label>视频格式</label><input class="input" value="mp4, mkv, mov" readonly></div>
+            </div>
+          </div>
+          <div class="card blueprint" style="gap:14px;padding:16px 18px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/><path d="M9 20h6"/><path d="M12 4v16"/></svg><span>命名</span></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:16px;align-items:start">
+              <div><label style="display:block;font-size:12px;margin-bottom:7px;color:color-mix(in srgb,var(--color-text) 70%,transparent)">目录组成</label><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="tag tag-accent">频道标题</span><span class="tag tag-accent">媒体类型</span><span class="tag tag-outline">日期</span></div></div>
+              <div><label style="display:block;font-size:12px;margin-bottom:7px;color:color-mix(in srgb,var(--color-text) 70%,transparent)">文件名组成</label><div style="display:flex;gap:8px;flex-wrap:wrap"><span class="tag tag-accent">消息 ID</span><span class="tag tag-accent">原文件名</span><span class="tag tag-outline">标题</span></div></div>
+              <div class="field" style="width:110px"><label>分隔符</label><input class="input" value="_" readonly></div>
+            </div>
+          </div>
+          <div class="card blueprint" style="gap:14px;padding:16px 18px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 13V2l4 4"/><path d="M12 6 8 2"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/></svg><span>上传</span></div>
+            <div style="display:grid;grid-template-columns:1fr 2fr 2fr;gap:14px">
+              <div class="field"><label>适配器</label><select class="input"><option>rclone</option><option>aligo</option></select></div>
+              <div class="field"><label>远程目录</label><input class="input" value="tg-media/incoming" readonly></div>
+              <div class="field"><label>rclone 路径</label><input class="input" value="/usr/bin/rclone" readonly></div>
+            </div>
+            <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px">
+              <span class="sw on"><i></i>启用上传</span>
+              <span class="sw off"><i></i><span>先压缩打包</span></span>
+              <span class="sw on"><i></i>上传后删本地</span>
+              <span class="sw off"><i></i><span>删除 TG 原消息</span></span>
+            </div>
+          </div>
+          <div class="card blueprint" style="padding:0;gap:0">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="cfg-title" style="padding:14px 16px 10px;margin:0"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M21 12c0 4.418-4.03 8-9 8a9.7 9.7 0 0 1-4-.85L3 20l1.35-4A7.7 7.7 0 0 1 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8Z"/></svg><span>会话</span></div>
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>最后已读</th><th>下载过滤</th><th style="padding-right:16px">上传会话</th></tr></thead>
+              <tbody>
+                <tr><td style="padding-left:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">-1001298283297</td><td class="nums">126710</td><td class="text-muted">video, photo</td><td class="text-muted" style="padding-right:16px">—</td></tr>
+                <tr><td style="padding-left:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">@designdaily</td><td class="nums">40233</td><td class="text-muted">—</td><td class="nums" style="padding-right:16px">-1009988776655</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;padding:2px 0 4px">
+            <button type="button" class="btn btn-primary blueprint" style="padding:8px 20px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>保存配置</button>
+            <span class="text-muted" style="font-size:12.5px">已保存 · 主机/端口 修改后需重启</span>
+          </div>
+        </div>
+        <div class="app-foot">
+          <span>Telegram Media Downloader <b>v2.2.0</b></span>
+          <span style="display:flex;align-items:center;gap:7px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg><b class="nums">6.88 MB/s</b></span>
+        </div>
+      </div>
+
+      <!-- ── 1a · 登录 ── -->
+      <div class="screen-cap"><span class="n">登录</span> Login</div>
+      <div class="dv-card app" data-screen-label="登录" style="min-height:520px;display:grid;place-items:center">
+        <div class="card blueprint" style="flex-direction:row;width:820px;padding:0;gap:0;align-items:stretch">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="width:320px;background:var(--color-accent-900);color:var(--color-bg);padding:34px 30px;display:flex;flex-direction:column;justify-content:space-between;gap:20px">
+            <div style="display:flex;align-items:center;gap:11px;font-family:var(--font-heading);font-weight:600;font-size:20px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>TG 媒体下载器</div>
+            <div><div style="font-family:var(--font-heading);font-weight:600;font-size:27px;line-height:1.12">私有部署<br>下载控制台</div><p style="font-size:13px;opacity:.72;margin:12px 0 0;max-width:30ch">任务队列、预扫描批量下载与上传，全部在你自己的机器上运行。</p></div>
+            <div style="font-size:11px;opacity:.6;letter-spacing:.04em" class="nums">v2.2.0 · localhost:5000</div>
+          </div>
+          <div style="flex:1;padding:38px 40px;display:flex;flex-direction:column;justify-content:center;gap:16px">
+            <div><div class="card-kicker">欢迎回来</div><div style="font-family:var(--font-heading);font-weight:600;font-size:24px;margin-top:2px">登录</div></div>
+            <div class="field"><label>密码</label><input class="input" type="password" value="passwordvalue" style="min-height:40px" readonly></div>
+            <button type="button" class="btn btn-primary btn-block blueprint" style="margin-top:2px;height:42px;font-size:14px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>确认登录</button>
+            <p class="text-muted" style="font-size:12px;margin:2px 0 0">密码在服务端 config.yaml 中设置 · 提交时经 AES 加密</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══════════════════════════ 1b 流水线 ══════════════════════════ -->
+    <div class="dv-opt" id="1b">
+      <div class="dv-olabel"><a class="dv-oid" href="#1b">1b</a><b>流水线</b> · 看板式任务流 · 阶段清晰 · 每个任务可配更多选项（对准痛点）</div>
+      <div class="dv-card app">
+
+        <!-- nav -->
+        <nav class="app-nav">
+          <span class="brand">
+            <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>
+            TG 媒体下载器
+          </span>
+          <a href="#1b" aria-current="page">任务</a>
+          <a href="#1b">文件</a>
+          <a href="#1b">高级配置</a>
+          <div style="margin-left:auto;display:flex;align-items:center;gap:12px">
+            <span style="display:flex;align-items:center;gap:7px;font-size:13px;color:var(--color-neutral-700)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><b class="nums" style="color:var(--color-text)">6.88 MB/s</b></span>
+            <button type="button" class="state-chip"><span class="live-dot"></span>运行中</button>
+            <button type="button" class="btn btn-ghost" style="gap:6px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg></button>
+          </div>
+        </nav>
+
+        <div class="app-body">
+
+          <!-- guided submit zone with per-task options -->
+          <div class="card blueprint" style="gap:14px;padding:18px 20px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div style="display:flex;align-items:center;gap:9px">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:17px">新建下载任务</span>
+              <span style="font-size:12px;color:var(--color-neutral-600)">支持 私聊 / 合集 / 评论链接 · 或预扫描后批量勾选</span>
+            </div>
+            <div style="display:flex;align-items:flex-end;gap:14px">
+              <div class="field" style="flex:1">
+                <input class="input" style="font-family:ui-monospace,Menlo,monospace;font-size:13px;min-height:40px" placeholder="https://t.me/c/…  粘贴链接后回车" value="https://t.me/channel/422?comment=4978" readonly>
+              </div>
+              <div class="field" style="flex:none">
+                <div class="seg" style="height:40px">
+                  <label class="seg-opt" style="padding-inline:14px"><input type="radio" name="m1b" checked>预览</label>
+                  <label class="seg-opt" style="padding-inline:14px"><input type="radio" name="m1b">预扫描</label>
+                </div>
+              </div>
+              <button type="button" class="btn btn-primary blueprint" style="height:40px;padding-inline:22px;font-size:14px">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>提交
+              </button>
+            </div>
+            <!-- per-task configurable options -->
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--color-divider)">
+              <span class="card-kicker" style="color:var(--color-neutral-600)">本次任务选项</span>
+              <span class="tag tag-accent" style="gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M17 3v18"/><path d="M3 12h18"/></svg>视频</span>
+              <span class="tag tag-accent" style="gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21"/></svg>图片</span>
+              <span class="tag tag-outline">文档</span>
+              <span class="tag tag-outline">音频</span>
+              <span style="width:1px;height:16px;background:var(--color-divider)"></span>
+              <span class="tag tag-accent" style="gap:5px"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 13V2l4 4"/><path d="M12 6 8 2"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/></svg>下载后上传</span>
+              <span class="tag tag-outline">压缩打包</span>
+              <button type="button" class="btn btn-ghost" style="padding:3px 8px;font-size:12px;gap:5px;margin-left:auto"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>更多选项</button>
+            </div>
+          </div>
+
+          <!-- pipeline / kanban -->
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">任务流水线</span>
+            <span style="font-size:12px;color:var(--color-neutral-600)">进行中 <b class="nums" style="color:var(--color-text)">3</b> · 今日完成 <b class="nums" style="color:var(--color-text)">128</b></span>
+          </div>
+          <div style="display:flex;gap:14px;align-items:stretch">
+
+            <!-- 扫描中 -->
+            <div style="display:flex;flex-direction:column;gap:11px;flex:1;min-width:0">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--color-divider)"><span style="font-family:var(--font-heading);font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><line x1="7" x2="17" y1="12" y2="12"/></svg>扫描中</span><span class="tag tag-neutral" style="padding:1px 7px">1</span></div>
+              <div class="card blueprint" style="gap:8px;padding:12px 13px">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div class="card-kicker">预扫描 · 频道</div>
+                <div style="font-family:var(--font-heading);font-weight:600;font-size:14.5px;line-height:1.15">纪录片存档</div>
+                <div class="track"><i style="width:60%"></i></div>
+                <div style="font-size:11px;color:var(--color-neutral-600)" class="nums">扫描 1200 / 2000 · 命中 48</div>
+                <button type="button" class="btn btn-secondary" style="padding:5px 10px;font-size:12px;align-self:flex-start;margin-top:2px">取消</button>
+              </div>
+            </div>
+
+            <!-- 待确认 -->
+            <div style="display:flex;flex-direction:column;gap:11px;flex:1;min-width:0">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--color-divider)"><span style="font-family:var(--font-heading);font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>待确认</span><span class="tag tag-neutral" style="padding:1px 7px">1</span></div>
+              <div class="card blueprint elev-sm" style="gap:8px;padding:12px 13px">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;justify-content:space-between"><span class="card-kicker">评论 · 私聊</span><span class="tag tag-outline">待确认</span></div>
+                <div style="font-family:var(--font-heading);font-weight:600;font-size:14.5px;line-height:1.15">设计资源打包</div>
+                <div style="font-size:11px;color:var(--color-neutral-600)" class="nums">媒体 48 · 2.1 GB · 视频·图片</div>
+                <div style="display:flex;gap:6px;margin-top:2px">
+                  <button type="button" class="btn btn-primary blueprint" style="padding:5px 12px;font-size:12px"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>开始</button>
+                  <button type="button" class="btn btn-secondary" style="padding:5px 10px;font-size:12px">取消</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 队列 -->
+            <div style="display:flex;flex-direction:column;gap:11px;flex:1;min-width:0">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--color-divider)"><span style="font-family:var(--font-heading);font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/></svg>队列</span><span class="tag tag-neutral" style="padding:1px 7px">2</span></div>
+              <div class="card blueprint" style="gap:6px;padding:12px 13px">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;justify-content:space-between"><span class="card-kicker">合集 · 频道</span><span class="nums" style="font-size:11px;color:var(--color-neutral-500)">#1</span></div>
+                <div style="font-family:var(--font-heading);font-weight:600;font-size:14.5px;line-height:1.15">播客合集 2024</div>
+                <div style="font-size:11px;color:var(--color-neutral-600)" class="nums">媒体 62 · 音频</div>
+              </div>
+              <div class="card blueprint" style="gap:6px;padding:12px 13px">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;justify-content:space-between"><span class="card-kicker">合集 · 频道</span><span class="nums" style="font-size:11px;color:var(--color-neutral-500)">#2</span></div>
+                <div style="font-family:var(--font-heading);font-weight:600;font-size:14.5px;line-height:1.15">摄影后期教程</div>
+                <div style="font-size:11px;color:var(--color-neutral-600)" class="nums">媒体 24 · 视频</div>
+              </div>
+            </div>
+
+            <!-- 下载中 -->
+            <div style="display:flex;flex-direction:column;gap:11px;flex:1;min-width:0">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--color-divider)"><span style="font-family:var(--font-heading);font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg>下载中</span><span class="tag tag-accent" style="padding:1px 7px">1</span></div>
+              <div class="card blueprint elev-sm" style="gap:8px;padding:12px 13px">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;justify-content:space-between"><span class="card-kicker">合集 · 频道</span><span class="tag tag-accent">63%</span></div>
+                <div style="font-family:var(--font-heading);font-weight:600;font-size:14.5px;line-height:1.15">航拍素材 4K 合集</div>
+                <div class="track"><i style="width:63%"></i></div>
+                <div style="font-size:11px;color:var(--color-neutral-600)" class="nums">12 / 19 · clip_07.mp4</div>
+                <div style="font-size:11px;color:var(--color-neutral-600);display:flex;justify-content:space-between" class="nums"><span>1.48 MB/s</span><span>剩 4 分钟</span></div>
+              </div>
+            </div>
+
+            <!-- 已完成 -->
+            <div style="display:flex;flex-direction:column;gap:11px;flex:1;min-width:0">
+              <div style="display:flex;align-items:center;justify-content:space-between;padding-bottom:8px;border-bottom:1px solid var(--color-divider)"><span style="font-family:var(--font-heading);font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:6px"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>已完成</span><span class="tag tag-neutral" style="padding:1px 7px">2</span></div>
+              <div class="card blueprint" style="gap:6px;padding:12px 13px">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;justify-content:space-between"><span class="card-kicker">单条 · 私聊</span><span class="tag tag-accent" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>完成</span></div>
+                <div style="font-family:var(--font-heading);font-weight:600;font-size:14.5px;line-height:1.15">会议录音 0714</div>
+                <div style="font-size:11px;color:var(--color-neutral-600)" class="nums">1 / 1 · 96 MB</div>
+                <div style="display:flex;gap:6px;margin-top:2px"><button type="button" class="btn btn-ghost" style="padding:4px 8px;font-size:12px;gap:5px"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>打开</button></div>
+              </div>
+              <div class="card blueprint" style="gap:6px;padding:12px 13px">
+                <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+                <div style="display:flex;align-items:center;justify-content:space-between"><span class="card-kicker">合集 · 频道</span><span class="tag tag-outline" style="gap:4px"><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>有错误</span></div>
+                <div style="font-family:var(--font-heading);font-weight:600;font-size:14.5px;line-height:1.15">教程视频批量</div>
+                <div style="font-size:11px;color:var(--color-neutral-600)" class="nums">30 / 34 · 4 项超时</div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+
+        <div class="app-foot">
+          <span>Telegram Media Downloader <b>v2.2.0</b> · 6 个任务</span>
+          <span style="display:flex;align-items:center;gap:7px"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3"/><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10 5 5 5-5"/></svg><b class="nums">6.88 MB/s</b></span>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <p class="dv-next">试试：「把 <a class="dv-oid" href="#1a">1a</a> 做成可点击原型（Tab 切换 + 假数据）」 · 「<a class="dv-oid" href="#1a">1a</a> 加深色模式」 · 「<a class="dv-oid" href="#1b">1b</a> 也铺满全部屏幕」 · 「想要更多方向」</p>
+</section>
+</x-dc>
+</body>
+</html>
