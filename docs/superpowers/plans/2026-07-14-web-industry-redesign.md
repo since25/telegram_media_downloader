@@ -281,7 +281,7 @@ def system_metrics():
     )
 ```
 
-> `get_total_upload_speed` 在 T3 提供。**本任务先临时**用 `"0.00 B/s"` 占位以解耦:把 `format_byte(get_total_upload_speed()) + "/s"` 替换为字符串 `"0.00 B/s"`,并在代码留 `# TODO(T3): wire upload speed`。T3 再替换。(此为跨任务接口顺序,非计划占位。)
+> **执行顺序**:T3 已先于本任务完成,`get_total_upload_speed()` 已在 `module/download_stat.py` 中定义并可用——**直接调用,无占位、无 TODO**。确保 `module/web.py` 顶部从 `module.download_stat` import 了 `get_total_upload_speed`(若缺则加入现有 import 行)。
 
 - [ ] **Step 5: 运行确认通过**
 
@@ -302,18 +302,20 @@ git commit -m "feat(web): add GET /api/system metrics endpoint"
 ### Task 3: 上传进度接入(dashboard 字段 + `GET /get_upload_list`)
 
 **Files:**
-- Modify: `module/task_state.py`(FileSnapshot 上传字段;TaskSnapshot dashboard/to_dict 输出上传进度)
-- Modify: `module/web.py`(`get_total_upload_speed`、`GET /get_upload_list`;`/api/system` 接上真实 upload_speed)
+- Modify: `module/task_state.py`(FileSnapshot 上传字段;TaskSnapshot 任务级上传聚合;**`snapshot_node` 补写上传态**)
+- Modify: `module/download_stat.py`(`get_total_upload_speed`)
+- Modify: `module/web.py`(`GET /get_upload_list`)
 - Create: `tests/test_web_upload_progress.py`
 - Modify: `docs/web-control-console.md`
 
 **Interfaces:**
-- Consumes:T2 `/api/system`(替换其中 upload_speed 占位)。
-- Produces(供 T5/T6/T7):
-  - `FileSnapshot.to_dict` 新增 `upload_progress:float(0–100)`、`upload_speed:str`、`upload_speed_bytes:int`。
+- Consumes:活跃节点上传态 —— `get_active_task_nodes()`、`TaskNode.upload_status`/`upload_stat_dict`、`module.app.UploadStatus`/`UploadProgressStat`(真实模型,见 Step 5.5 说明块)。
+- Produces(供 T2/T5/T6/T7):
+  - `FileSnapshot.to_dict` 新增 `uploaded_size_bytes`、`upload_progress:float(0–100)`、`upload_speed:str`、`upload_speed_bytes:int`。
+  - **`snapshot_node` 现在也把 `node.upload_status`/`upload_stat_dict` 写入 FileSnapshot**(否则 dashboard/文件列表永远显示不出上传进度)。
   - task-dashboard 每个任务新增 `upload_progress:float`、`upload_speed:str`(`upload_success_count` 已存在)。
   - `GET /get_upload_list` → `[{chat, id, filename, total_size, upload_progress, upload_speed}]`(uploading 状态文件)。
-  - `get_total_upload_speed() -> int`(字节/秒)。
+  - `get_total_upload_speed() -> int`(字节/秒,供 T2 `/api/system` 直接调用)。
 
 - [ ] **Step 1: 写失败测试(FileSnapshot 上传字段)**
 
@@ -403,32 +405,95 @@ Expected: FAIL(`FileSnapshot` 无 `uploaded_size`/`upload_speed` 字段 → Type
 Run: `pytest tests/test_web_upload_progress.py -v`
 Expected: PASS。
 
-- [ ] **Step 6: 写 `GET /get_upload_list` 测试**
+> **真实数据模型(执行前已由控制器核实,取代原「get_upload_result」假设)**:仓库**没有** `get_upload_result()`。上传进度挂在活跃 `TaskNode` 上:
+> - `module.download_stat.get_active_task_nodes() -> {task_id: TaskNode}`(活跃节点表)。
+> - `TaskNode.upload_status: {message_id: UploadStatus}`;`TaskNode.upload_stat_dict: {message_id: UploadProgressStat}`;`TaskNode.upload_success_count: int`。
+> - `module.app.UploadStatus`:`Uploading / SuccessUpload / FailedUpload / SkipUpload`。
+> - `module.app.UploadProgressStat`:`file_name, total_size, upload_size, start_time, last_stat_time, upload_speed`(逐文件字节进度**存在**,可做全保真)。
+> - 关键:`module/task_state.py` 的 `snapshot_node()`(节点→Web 快照的唯一桥)**当前只映射 `download_status`,完全忽略上传**。所以只加 FileSnapshot 字段还不够——必须在 `snapshot_node` 里补写上传状态,dashboard/文件列表才会真正显示上传进度。
 
-追加到 `tests/test_web_upload_progress.py`:
+- [ ] **Step 6: 关键接线 —— `snapshot_node` 写入上传状态(TDD)**
+
+先在 `tests/test_web_upload_progress.py` 追加失败测试(用最小 fake node,真实模型):
 
 ```python
-import json
-from unittest import mock
-import module.web as web
+def test_snapshot_node_maps_upload_state():
+    from module.task_state import snapshot_node, get_task_store, FileStatus
+    from module.app import UploadStatus, UploadProgressStat
 
+    class _Node:
+        pass
+    node = _Node()
+    node.task_id = "up-1"; node.chat_id = -100
+    node.download_status = {}
+    node.upload_status = {7: UploadStatus.Uploading}
+    node.upload_stat_dict = {7: UploadProgressStat(
+        file_name="wall_31.jpg", total_size=1000, upload_size=600,
+        start_time=0.0, last_stat_time=0.0, upload_speed=150)}
+    node.upload_success_count = 0
+    snapshot_node(node)
+    f = get_task_store().get_task("up-1").files["7"]
+    assert f.status == FileStatus.UPLOADING
+    assert f.uploaded_size == 600 and f.upload_speed == 150
+```
 
-def _client():
-    app = web.get_flask_app()
-    app.config["TESTING"] = True
-    return app.test_client()
+> `snapshot_node` 对 node 大量用 `getattr(..., 默认值)`,最小 fake node 可用;若 `_status_from_node(node)` 需要额外属性,给 fake node 补最小属性(执行时按报错补,勿改 `_status_from_node` 逻辑)。
 
+实现:`module/task_state.py` 顶部 `from module.app import DownloadStatus` 改为 `from module.app import DownloadStatus, UploadStatus`。加映射辅助:
 
+```python
+def _file_status_from_upload_status(status) -> str:
+    if status is UploadStatus.SuccessUpload:
+        return FileStatus.UPLOADED
+    if status is UploadStatus.FailedUpload:
+        return FileStatus.UPLOAD_FAILED
+    if status is UploadStatus.Uploading:
+        return FileStatus.UPLOADING
+    return FileStatus.SKIPPED
+```
+
+在 `snapshot_node` 的 `download_status` 循环**之后**追加上传循环(上传是后续阶段,须覆盖同一文件的下载态):
+
+```python
+    for message_id, up_status in (getattr(node, "upload_status", {}) or {}).items():
+        if up_status is None:
+            continue
+        updates = {"status": _file_status_from_upload_status(up_status)}
+        stat = (getattr(node, "upload_stat_dict", {}) or {}).get(message_id)
+        if stat is not None:
+            updates["uploaded_size"] = int(getattr(stat, "upload_size", 0) or 0)
+            updates["upload_speed"] = int(getattr(stat, "upload_speed", 0) or 0)
+            if getattr(stat, "total_size", 0):
+                updates["total_size"] = int(stat.total_size)
+            if getattr(stat, "file_name", ""):
+                updates["filename"] = stat.file_name
+        get_task_store().upsert_file(task.task_id, message_id, **updates)
+```
+
+Run: `pytest tests/test_web_upload_progress.py -v` → PASS。
+
+- [ ] **Step 7: `get_total_upload_speed` + `/get_upload_list`(基于活跃节点,TDD)**
+
+失败测试(追加,monkeypatch 活跃节点表):
+
+```python
 def test_get_upload_list_returns_uploading_files(monkeypatch):
-    fake_result = {
-        "-100": {
-            "5": {"file_name": "/d/wall_31.jpg", "total_size": 1000,
-                  "uploaded_byte": 740, "upload_speed": 200,
-                  "status": "uploading"},
-        }
-    }
-    monkeypatch.setattr(web, "get_upload_result", lambda: fake_result, raising=False)
-    with _client() as client:
+    import json
+    import module.web as web
+    from module.app import UploadStatus, UploadProgressStat
+
+    class _Node:
+        pass
+    node = _Node()
+    node.chat_id = -100
+    node.upload_status = {5: UploadStatus.Uploading}
+    node.upload_stat_dict = {5: UploadProgressStat(
+        file_name="/d/wall_31.jpg", total_size=1000, upload_size=740,
+        start_time=0.0, last_stat_time=0.0, upload_speed=200)}
+    monkeypatch.setattr(web, "get_active_task_nodes", lambda: {"up-1": node}, raising=False)
+
+    app = web.get_flask_app(); app.config["TESTING"] = True
+    with app.test_client() as client:
         with client.session_transaction() as sess:
             sess["login"] = True
         resp = client.get("/get_upload_list")
@@ -438,42 +503,47 @@ def test_get_upload_list_returns_uploading_files(monkeypatch):
     assert rows[0]["upload_progress"] == 74.0
 ```
 
-> **实现前先定位上传统计来源**:`grep -rniE "upload_result|upload_speed|uploaded_byte|def get_total_download_speed|download_result" module/*.py`。上传进度的真实数据源(下载器/上传器的统计结构)在此步确认。若上传器没有逐文件字节进度,退化为「任务级 uploading 文件计数 + 速度」并调整测试断言为存在 uploading 行即可——**在本步用真实数据源确定断言,不臆造**。
+> 先核对登录 session 键(`grep -n "session\[" module/web.py`)与 `web.get_active_task_nodes` 是否已 import(web.py 顶部若无则 `from module.download_stat import ... get_active_task_nodes`)。
 
-- [ ] **Step 7: 实现 `get_total_upload_speed` + `/get_upload_list`,并回填 `/api/system`**
-
-按 Step 6 定位到的数据源实现(下例假设与 `get_download_result` 对称的 `get_upload_result`;若结构不同按实际改):
+实现 —— `module/download_stat.py`(`get_total_download_speed` 附近):
 
 ```python
 def get_total_upload_speed() -> int:
+    """sum live per-file upload speed across active task nodes"""
+    from module.app import UploadStatus
     total = 0
-    for messages in get_upload_result().values():
-        for value in messages.values():
-            total += int(value.get("upload_speed", 0) or 0)
+    for node in get_active_task_nodes().values():
+        for message_id, stat in (getattr(node, "upload_stat_dict", {}) or {}).items():
+            if node.upload_status.get(message_id) is UploadStatus.Uploading:
+                total += int(getattr(stat, "upload_speed", 0) or 0)
     return total
+```
 
+`module/web.py` 新路由(确保 `get_active_task_nodes`、`get_total_upload_speed` 已从 `module.download_stat` import):
 
+```python
 @_flask_app.route("/get_upload_list")
 @login_required
 def get_upload_list():
+    from module.app import UploadStatus
     result = []
-    for chat_id, messages in get_upload_result().items():
-        for idx, value in messages.items():
-            if value.get("status") != "uploading":
+    for node in get_active_task_nodes().values():
+        for message_id, stat in (getattr(node, "upload_stat_dict", {}) or {}).items():
+            if node.upload_status.get(message_id) is not UploadStatus.Uploading:
                 continue
-            total = value.get("total_size") or 1
+            total = getattr(stat, "total_size", 0) or 1
             result.append({
-                "chat": f"{chat_id}",
-                "id": f"{idx}",
-                "filename": os.path.basename(value["file_name"]),
-                "total_size": format_byte(value.get("total_size", 0)),
-                "upload_progress": round(value.get("uploaded_byte", 0) / total * 100, 1),
-                "upload_speed": format_byte(int(value.get("upload_speed", 0))) + "/s",
+                "chat": f"{getattr(node, 'chat_id', '')}",
+                "id": f"{message_id}",
+                "filename": os.path.basename(stat.file_name),
+                "total_size": format_byte(getattr(stat, "total_size", 0)),
+                "upload_progress": round(getattr(stat, "upload_size", 0) / total * 100, 1),
+                "upload_speed": format_byte(int(getattr(stat, "upload_speed", 0))) + "/s",
             })
     return jsonify(result)
 ```
 
-回到 T2 的 `/api/system`,把 upload_speed 占位替换为 `format_byte(get_total_upload_speed()) + "/s"`,删除 TODO。
+> **执行顺序说明**:本任务(T3)在 T2 之前执行。T2 的 `/api/system` 会直接调用 `get_total_upload_speed()`,**无占位**。本任务无需回填 T2。
 
 - [ ] **Step 8: 运行全部 + Commit**
 
