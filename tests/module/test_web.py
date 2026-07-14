@@ -837,7 +837,7 @@ class WebTestCase(unittest.TestCase):
                 TaskStatus.CANCELLED,
             )
 
-    def test_index_contains_task_dashboard_shell(self):
+    def test_index_contains_industry_app_shell(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
             self.web_module._current_app = app
@@ -848,11 +848,13 @@ class WebTestCase(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             html = response.get_data(as_text=True)
-            self.assertIn('id="task_dashboard_summary"', html)
-            self.assertIn('id="web_task_link"', html)
-            self.assertIn('id="web_task_mode"', html)
-            self.assertIn('id="submit_task_btn"', html)
-            self.assertIn('id="task_list"', html)
-            self.assertIn('id="task_detail_list"', html)
-            self.assertIn('lay-filter="task_actions"', html)
-            self.assertIn('lay-filter="prescan_package_actions"', html)
+            self.assertIn('class="app"', html)
+            self.assertIn('class="app-nav"', html)
+            self.assertIn('id="download_state"', html)
+            self.assertIn('id="logout_btn"', html)
+            self.assertIn('id="tab_tasks"', html)
+            self.assertIn('id="tab_files"', html)
+            self.assertIn('id="tab_config"', html)
+            self.assertIn('id="app_version"', html)
+            self.assertIn('id="foot_speed"', html)
+            self.assertNotIn("static/layui", html)

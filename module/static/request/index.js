@@ -1,20 +1,2 @@
-var request = (url, type = 'get' | 'post', data) => {
-    const $ = layui.$
-
-    return new Promise((resolve, reject) => {
-        $.ajax({
-            url,
-            type,
-            data,
-            dataType: 'json',
-            timeout: 60 * 1000,
-            contentType: 'application/x-www-form-urlencoded',
-            success: (res) => {
-                resolve(res)
-            },
-            error: (err) => {
-                reject(err)
-            }
-        })
-    })
-}
+// Industry web console — rendering logic lives inline in index.html.
+// This file intentionally left as a no-op after the layui removal.
