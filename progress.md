@@ -398,3 +398,26 @@ Changed files:
 
 Rollback:
 - `git revert ea3aeaf`, redeploy and restart `tg-downloader.service` (restores the plaintext logging — not recommended).
+
+## 2026-07-14 - Task: Fix Web rejection of telegram.me links
+
+### What was done
+
+- Fixed "unsupported prescan link" for official alias hosts: Web link builders now accept `https://t.me`, `https://telegram.me`, and `https://telegram.dog` via a proper hostname check (prescan, preview, and comment submission all share these builders).
+- The hostname check also closes a lookalike-host hole: prefixes such as `https://t.mexample.com` previously passed the old `startswith("https://t.me")` gate and parsed as real links.
+
+### Testing
+
+- TDD: new tests for `telegram.me` package/comment links and lookalike-host rejection failed first (including the reported link `https://telegram.me/c/1446289027/158156`), passed after the fix.
+- `.venv/bin/python -m pytest tests/ -q` — 199 passed, 1 skipped (pre-change baseline 196 passed; delta is exactly the 3 new tests).
+
+### Notes
+
+Changed files:
+- `module/comment_workflow.py`: Added `_is_telegram_link_url` host check; replaced three `startswith` gates.
+- `tests/module/test_comment_workflow.py`: Host acceptance and lookalike rejection coverage.
+
+Known limitation (unchanged, out of scope): the bot's own text handler (`module/bot.py:752`) still requires the `https://t.me` prefix.
+
+Rollback:
+- `git revert <this fix commit>` then redeploy and restart `tg-downloader.service`.
