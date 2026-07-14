@@ -421,3 +421,28 @@ Known limitation (unchanged, out of scope): the bot's own text handler (`module/
 
 Rollback:
 - `git revert <this fix commit>` then redeploy and restart `tg-downloader.service`.
+
+## 2026-07-14 - Task: Fix uncancellable Web scan phase
+
+### What was done
+
+- Made scan-phase Web tasks cancellable for all three types (prescan, package preview, comment preview): scanning nodes are now registered at creation so `/api/tasks/<id>/cancel` can find them, and the task row shows a Cancel button while scanning.
+- Prescan scans now stop mid-flight: `scan_prescan_packages` accepts a `should_stop` callback checked before each batch, so cancelling a 10000-message scan takes effect within one batch instead of running minutes to completion (also frees the single-scan slot promptly).
+- Guarded all three scan coroutines against resurrection: a cancelled task stays cancelled instead of being overwritten by the scan's completion write-back, and cancellation-induced scan errors report as cancelled rather than failed.
+- Fixed a latent crash in cancel: cancelling a task found only in the active-node table (e.g. mid-download) previously hit `None.get` and returned 500.
+
+### Testing
+
+- TDD: five failing tests first (scan-loop early stop; cancel-during-scan via the new registry; prescan and package write-back guards; active-node cancel 500 regression), all passing after the fix.
+- `.venv/bin/python -m pytest tests/ -q` — 204 passed, 1 skipped (previous baseline 199; delta is exactly the 5 new tests).
+
+### Notes
+
+Changed files:
+- `media_downloader.py`: `scan_prescan_packages` gained the optional `should_stop` batch-boundary check.
+- `module/web.py`: `_scanning_web_task_nodes` registry, `_mark_web_task_cancelled` helper, cancel lookup + crash fix, write-back guards in the three scan coroutines.
+- `module/templates/index.html`: Cancel button on scanning task rows.
+- `tests/module/test_web.py`, `tests/module/test_comment_workflow.py`: coverage above.
+
+Rollback:
+- `git revert <this fix commit>` then redeploy and restart `tg-downloader.service`.
