@@ -32,8 +32,9 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 
 ## APIs
 
-- `GET /api/task-dashboard`: task summary plus current download speed.
+- `GET /api/task-dashboard`: task summary plus current download speed. Each task row and file row now also carries `upload_progress` and `upload_speed` (task rows aggregate upload progress across their files).
 - `GET /api/tasks`: task summaries.
+- `GET /get_upload_list`: rows for files currently uploading (chat, id, filename, total_size, upload_progress, upload_speed).
 - `GET /api/tasks/<task_id>`: one task with file rows.
 - `GET /api/tasks/<task_id>/files?page=1&page_size=50`: paginated file rows.
 - `POST /api/tasks`: submit JSON `{"link": "https://t.me/..."}`.

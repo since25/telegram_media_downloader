@@ -79,6 +79,18 @@ def get_total_download_speed() -> int:
     return _total_download_speed
 
 
+def get_total_upload_speed() -> int:
+    """sum live per-file upload speed across active task nodes"""
+    from module.app import UploadStatus
+
+    total = 0
+    for node in get_active_task_nodes().values():
+        for message_id, stat in (getattr(node, "upload_stat_dict", {}) or {}).items():
+            if node.upload_status.get(message_id) is UploadStatus.Uploading:
+                total += int(getattr(stat, "upload_speed", 0) or 0)
+    return total
+
+
 def get_download_state() -> DownloadState:
     """get download state"""
     return _download_state

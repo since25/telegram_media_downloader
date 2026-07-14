@@ -346,6 +346,35 @@ def get_download_list():
     return jsonify(result)
 
 
+@_flask_app.route("/get_upload_list")
+@login_required
+def get_upload_list():
+    """get upload list"""
+    from module.app import UploadStatus
+
+    result = []
+    for node in get_active_task_nodes().values():
+        for message_id, stat in (getattr(node, "upload_stat_dict", {}) or {}).items():
+            if node.upload_status.get(message_id) is not UploadStatus.Uploading:
+                continue
+            total = getattr(stat, "total_size", 0) or 1
+            result.append(
+                {
+                    "chat": f"{getattr(node, 'chat_id', '')}",
+                    "id": f"{message_id}",
+                    "filename": os.path.basename(stat.file_name),
+                    "total_size": format_byte(getattr(stat, "total_size", 0)),
+                    "upload_progress": round(
+                        getattr(stat, "upload_size", 0) / total * 100, 1
+                    ),
+                    "upload_speed": format_byte(int(getattr(stat, "upload_speed", 0)))
+                    + "/s",
+                }
+            )
+
+    return jsonify(result)
+
+
 def _task_dashboard_payload(app: Optional[Application] = None) -> dict:
     """Build the Web task dashboard payload."""
 

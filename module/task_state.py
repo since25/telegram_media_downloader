@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from module.app import DownloadStatus
+from module.app import DownloadStatus, UploadStatus
 from utils.format import format_byte
 
 
@@ -81,12 +81,20 @@ class FileSnapshot:
     save_path: str = ""
     error: str = ""
     updated_at: float = field(default_factory=_now)
+    uploaded_size: int = 0
+    upload_speed: int = 0
 
     @property
     def download_progress(self) -> float:
         if self.total_size <= 0:
             return 0.0
         return round(min(self.downloaded_size / self.total_size * 100, 100.0), 1)
+
+    @property
+    def upload_progress(self) -> float:
+        if self.total_size <= 0:
+            return 0.0
+        return round(min(self.uploaded_size / self.total_size * 100, 100.0), 1)
 
     def to_dict(self, hide_file_name: bool = False) -> dict:
         return {
@@ -103,6 +111,10 @@ class FileSnapshot:
             "save_path": "" if hide_file_name else self.save_path.replace("\\", "/"),
             "error": self.error,
             "updated_at": self.updated_at,
+            "uploaded_size_bytes": self.uploaded_size,
+            "upload_progress": self.upload_progress,
+            "upload_speed": format_byte(int(self.upload_speed)) + "/s",
+            "upload_speed_bytes": int(self.upload_speed),
         }
 
 
@@ -207,6 +219,8 @@ class TaskSnapshot:
             "workflow": self.workflow.to_dict() if self.workflow else None,
             "error": self.error,
             "needs_confirmation": self.needs_confirmation,
+            "upload_progress": self._upload_progress(),
+            "upload_speed": format_byte(self._upload_speed_bytes()) + "/s",
         }
         if include_files:
             payload["files"] = [
@@ -216,6 +230,30 @@ class TaskSnapshot:
                 )
             ]
         return payload
+
+    def _upload_progress(self) -> float:
+        uploading = [
+            f
+            for f in self.files.values()
+            if f.status in (FileStatus.UPLOADING, FileStatus.UPLOADED)
+        ]
+        if not uploading:
+            return 0.0
+        done = sum(1 for f in uploading if f.status == FileStatus.UPLOADED)
+        active = [
+            f.upload_progress for f in uploading if f.status == FileStatus.UPLOADING
+        ]
+        partial = sum(active) / 100.0
+        return round((done + partial) / len(uploading) * 100, 1)
+
+    def _upload_speed_bytes(self) -> int:
+        return int(
+            sum(
+                f.upload_speed
+                for f in self.files.values()
+                if f.status == FileStatus.UPLOADING
+            )
+        )
 
 
 class TaskStateStore:
@@ -726,6 +764,19 @@ def snapshot_node(
             message_id,
             status=_file_status_from_download_status(status),
         )
+    for message_id, up_status in (getattr(node, "upload_status", {}) or {}).items():
+        if up_status is None:
+            continue
+        updates = {"status": _file_status_from_upload_status(up_status)}
+        stat = (getattr(node, "upload_stat_dict", {}) or {}).get(message_id)
+        if stat is not None:
+            updates["uploaded_size"] = int(getattr(stat, "upload_size", 0) or 0)
+            updates["upload_speed"] = int(getattr(stat, "upload_speed", 0) or 0)
+            if getattr(stat, "total_size", 0):
+                updates["total_size"] = int(stat.total_size)
+            if getattr(stat, "file_name", ""):
+                updates["filename"] = stat.file_name
+        get_task_store().upsert_file(task.task_id, message_id, **updates)
     if task.status in TERMINAL_TASK_STATUSES:
         get_task_store().complete_task(task.task_id)
     return task
@@ -744,3 +795,13 @@ def _file_status_from_download_status(status) -> str:
     ):
         return FileStatus.DOWNLOADING
     return FileStatus.QUEUED
+
+
+def _file_status_from_upload_status(status) -> str:
+    if status is UploadStatus.SuccessUpload:
+        return FileStatus.UPLOADED
+    if status is UploadStatus.FailedUpload:
+        return FileStatus.UPLOAD_FAILED
+    if status is UploadStatus.Uploading:
+        return FileStatus.UPLOADING
+    return FileStatus.SKIPPED
