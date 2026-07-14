@@ -211,7 +211,109 @@
         </div>
 
       </div>
-      <div class="tab-panel" id="tab_config"><!-- T8 --></div>
+      <div class="tab-panel" id="tab_config">
+
+        <!-- 存储 -->
+        <div class="card blueprint" style="gap:14px;padding:16px 18px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span>存储</span></div>
+          <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:14px">
+            <div class="field"><label>保存路径</label><input class="input" id="save_path"></div>
+            <div class="field"><label>日期格式</label><input class="input" id="date_format"></div>
+            <div class="field"><label>启动超时（秒）</label><input class="input nums" id="start_timeout" type="number" min="1" max="3600"></div>
+          </div>
+        </div>
+
+        <!-- 并发 + Web 服务 -->
+        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px">
+          <div class="card blueprint" style="gap:14px;padding:16px 18px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg><span>并发</span></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+              <div class="field"><label>工作线程</label><input class="input nums" id="max_download_task" type="number" min="1" max="32"></div>
+              <div class="field"><label>TG 传输通道</label><input class="input nums" id="max_concurrent_transmissions" type="number" min="1" max="200"></div>
+            </div>
+            <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px">
+              <span class="sw off" id="sw_drop_no_audio_video"><i></i><span>丢弃静音视频</span></span>
+              <span class="sw off" id="sw_enable_download_txt"><i></i><span>下载文本消息</span></span>
+              <span class="sw off" id="sw_hide_file_name"><i></i><span>隐藏文件名</span></span>
+            </div>
+          </div>
+          <div class="card blueprint" style="gap:14px;padding:16px 18px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span>Web 服务</span></div>
+            <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:14px">
+              <div class="field"><label>主机</label><input class="input nums" id="web_host"></div>
+              <div class="field"><label>端口</label><input class="input nums" id="web_port" type="number" min="1" max="65535"></div>
+            </div>
+            <span class="sw off" id="sw_enable_web"><i></i><span>启用 Web 服务</span></span>
+          </div>
+        </div>
+
+        <!-- 媒体 -->
+        <div class="card blueprint" style="gap:14px;padding:16px 18px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M7 3v18"/><path d="M3 7.5h4"/><path d="M3 12h18"/><path d="M3 16.5h4"/><path d="M17 3v18"/></svg><span>媒体</span></div>
+          <div>
+            <label style="display:block;font-size:12px;margin-bottom:7px;color:color-mix(in srgb,var(--color-text) 70%,transparent)">下载类型</label>
+            <div id="media_type_chips" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px">
+            <div class="field"><label>音频格式</label><input class="input" id="format_audio" placeholder="mp3, flac, m4a"></div>
+            <div class="field"><label>文档格式</label><input class="input" id="format_document" placeholder="pdf, zip, epub"></div>
+            <div class="field"><label>视频格式</label><input class="input" id="format_video" placeholder="mp4, mkv, mov"></div>
+          </div>
+        </div>
+
+        <!-- 命名 -->
+        <div class="card blueprint" style="gap:14px;padding:16px 18px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7V5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v2"/><path d="M9 20h6"/><path d="M12 4v16"/></svg><span>命名</span></div>
+          <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:16px;align-items:start">
+            <div><label style="display:block;font-size:12px;margin-bottom:7px;color:color-mix(in srgb,var(--color-text) 70%,transparent)">目录组成</label><div id="path_prefix_chips" style="display:flex;gap:8px;flex-wrap:wrap"></div></div>
+            <div><label style="display:block;font-size:12px;margin-bottom:7px;color:color-mix(in srgb,var(--color-text) 70%,transparent)">文件名组成</label><div id="name_prefix_chips" style="display:flex;gap:8px;flex-wrap:wrap"></div></div>
+            <div class="field" style="width:110px"><label>分隔符</label><input class="input" id="file_name_prefix_split"></div>
+          </div>
+        </div>
+
+        <!-- 上传 -->
+        <div class="card blueprint" style="gap:14px;padding:16px 18px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 13V2l4 4"/><path d="M12 6 8 2"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/></svg><span>上传</span></div>
+          <div style="display:grid;grid-template-columns:1fr 2fr 2fr;gap:14px">
+            <div class="field"><label>适配器</label><select class="input" id="upload_adapter"><option value="rclone">rclone</option><option value="aligo">aligo</option></select></div>
+            <div class="field"><label>远程目录</label><input class="input" id="remote_dir"></div>
+            <div class="field"><label>rclone 路径</label><input class="input" id="rclone_path"></div>
+          </div>
+          <div style="display:flex;gap:18px;flex-wrap:wrap;padding-top:2px">
+            <span class="sw off" id="sw_enable_upload_file"><i></i><span>启用上传</span></span>
+            <span class="sw off" id="sw_before_upload_file_zip"><i></i><span>先压缩打包</span></span>
+            <span class="sw off" id="sw_after_upload_file_delete"><i></i><span>上传后删本地</span></span>
+            <span class="sw off" id="sw_after_upload_telegram_delete"><i></i><span>删除 TG 原消息</span></span>
+          </div>
+        </div>
+
+        <!-- 会话 -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="cfg-title" style="padding:14px 16px 10px;margin:0"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 12h.01"/><path d="M12 12h.01"/><path d="M16 12h.01"/><path d="M21 12c0 4.418-4.03 8-9 8a9.7 9.7 0 0 1-4-.85L3 20l1.35-4A7.7 7.7 0 0 1 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8Z"/></svg><span>会话</span></div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>最后已读</th><th>下载过滤</th><th style="padding-right:16px">上传会话</th></tr></thead>
+              <tbody id="chat_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- save -->
+        <div style="display:flex;align-items:center;gap:14px;padding:2px 0 4px">
+          <button type="button" class="btn btn-primary blueprint" id="save_config_btn" style="padding:8px 20px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>保存配置
+          </button>
+          <span class="text-muted" id="config_status" style="font-size:12.5px"></span>
+        </div>
+
+      </div>
     </div>
     <div class="app-foot">
       <span>Telegram Media Downloader v<span id="app_version">{{ version }}</span></span>
@@ -486,7 +588,64 @@
         <td class="nums">${escapeHtml(r.total_size)}</td><td class="text-muted" style="padding-right:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">${escapeHtml(r.save_path)}</td></tr>`).join('');
     }
     $('#clear_done_btn').addEventListener('click', async () => { await postJSON('/clear_download_list'); pollFiles(); });
-    function loadConfig(){ /* T8 */ }
+    // ── config (T8): chip multi-select + switch toggle helpers, load/save /api/settings ──
+    function chip(label, on){ return `<span class="tag ${on?'tag-accent':'tag-outline'}" data-chip="${escapeHtml(label)}" data-on="${on?1:0}" style="cursor:pointer;gap:4px">${on?icon('check',10,2):''}${escapeHtml(label)}</span>`; }
+    function renderChips(container, options, selected){
+      container.innerHTML = options.map(o=>chip(o, selected.includes(o))).join('');
+      container.onclick = e => { const c=e.target.closest('[data-chip]'); if(!c) return;
+        const on=c.dataset.on==='1'; c.dataset.on=on?0:1; c.className=`tag ${on?'tag-outline':'tag-accent'}`;
+        c.innerHTML = (on?'':icon('check',10,2))+escapeHtml(c.dataset.chip); };
+    }
+    function chipValues(container){ return [...container.querySelectorAll('[data-chip][data-on="1"]')].map(c=>c.dataset.chip); }
+    function setSwitch(el, on){ el.classList.toggle('on',on); el.classList.toggle('off',!on); el.dataset.on=on?1:0; el.onclick=()=>{ const v=el.dataset.on==='1'; setSwitch(el,!v); }; }
+
+    async function loadConfig(){
+      const s = await getJSON('/api/settings'); state.settingsCache = s;
+      $('#save_path').value=s.save_path; $('#date_format').value=s.date_format; $('#start_timeout').value=s.start_timeout;
+      $('#max_download_task').value=s.max_download_task; $('#max_concurrent_transmissions').value=s.max_concurrent_transmissions;
+      $('#web_host').value=s.web.web_host; $('#web_port').value=s.web.web_port;
+      $('#format_audio').value=(s.file_formats.audio||[]).join(', ');
+      $('#format_document').value=(s.file_formats.document||[]).join(', ');
+      $('#format_video').value=(s.file_formats.video||[]).join(', ');
+      $('#file_name_prefix_split').value=s.file_name_prefix_split;
+      $('#upload_adapter').value=s.upload_drive.upload_adapter;
+      $('#remote_dir').value=s.upload_drive.remote_dir; $('#rclone_path').value=s.upload_drive.rclone_path;
+      renderChips($('#media_type_chips'), s.options.media_types, s.media_types);
+      renderChips($('#path_prefix_chips'), s.options.file_path_prefix, s.file_path_prefix);
+      renderChips($('#name_prefix_chips'), s.options.file_name_prefix, s.file_name_prefix);
+      setSwitch($('#sw_drop_no_audio_video'), s.drop_no_audio_video);
+      setSwitch($('#sw_enable_download_txt'), s.enable_download_txt);
+      setSwitch($('#sw_hide_file_name'), s.hide_file_name);
+      setSwitch($('#sw_enable_web'), s.web.enable_web);
+      setSwitch($('#sw_enable_upload_file'), s.upload_drive.enable_upload_file);
+      setSwitch($('#sw_before_upload_file_zip'), s.upload_drive.before_upload_file_zip);
+      setSwitch($('#sw_after_upload_file_delete'), s.upload_drive.after_upload_file_delete);
+      setSwitch($('#sw_after_upload_telegram_delete'), s.after_upload_telegram_delete);
+      // chat_id / download_filter / upload_telegram_chat_id come from config.yaml (user-editable) —
+      // escape before innerHTML, same rule as task titles/filenames elsewhere in this script.
+      $('#chat_rows').innerHTML = s.chats.map(c=>`<tr><td class="nums" style="padding-left:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">${escapeHtml(c.chat_id)}</td><td class="nums">${escapeHtml(c.last_read_message_id)}</td><td class="text-muted">${escapeHtml(c.download_filter)||'—'}</td><td class="nums text-muted" style="padding-right:16px">${escapeHtml(c.upload_telegram_chat_id)||'—'}</td></tr>`).join('');
+    }
+    async function saveConfig(){
+      const swOn = id => $(id).dataset.on==='1';
+      const csv = id => $(id).value.split(',').map(x=>x.trim()).filter(Boolean);
+      const payload = {
+        save_path:$('#save_path').value, date_format:$('#date_format').value, start_timeout:Number($('#start_timeout').value),
+        max_download_task:Number($('#max_download_task').value), max_concurrent_transmissions:Number($('#max_concurrent_transmissions').value),
+        media_types:chipValues($('#media_type_chips')), file_path_prefix:chipValues($('#path_prefix_chips')),
+        file_name_prefix:chipValues($('#name_prefix_chips')), file_name_prefix_split:$('#file_name_prefix_split').value,
+        file_formats:{audio:csv('#format_audio'), document:csv('#format_document'), video:csv('#format_video')},
+        drop_no_audio_video:swOn('#sw_drop_no_audio_video'), enable_download_txt:swOn('#sw_enable_download_txt'),
+        hide_file_name:swOn('#sw_hide_file_name'), after_upload_telegram_delete:swOn('#sw_after_upload_telegram_delete'),
+        web:{enable_web:swOn('#sw_enable_web'), web_host:$('#web_host').value, web_port:Number($('#web_port').value)},
+        upload_drive:{enable_upload_file:swOn('#sw_enable_upload_file'), upload_adapter:$('#upload_adapter').value,
+          rclone_path:$('#rclone_path').value, remote_dir:$('#remote_dir').value,
+          before_upload_file_zip:swOn('#sw_before_upload_file_zip'), after_upload_file_delete:swOn('#sw_after_upload_file_delete')},
+      };
+      const r = await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const res = await r.json();
+      $('#config_status').textContent = res.ok ? '已保存 · 主机/端口修改后需重启' : (res.error||'保存失败');
+    }
+    $('#save_config_btn').addEventListener('click', saveConfig);
     function setStateChip(dstate){
       const chip = $('#download_state'), on = dstate === 'Downloading';
       $('#download_state_text').textContent = on ? '运行中' : '已暂停';
