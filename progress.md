@@ -348,3 +348,28 @@ Changed files:
 
 Rollback:
 - Same combined revert as the dashboard UX entry above (shared files), then redeploy and restart `tg-downloader.service`.
+
+## 2026-07-14 - Task: Deploy Web console UX and ranged prescan to RackNerd
+
+### What was done
+
+- Merged `feat/web-task-console-ux-batch` into `master` (fast-forward) and pushed to `origin/master`.
+- Fast-forwarded the RackNerd checkout and restarted `tg-downloader.service`.
+- Verified Cloudflare-proxied Web routes and the new bulk-select endpoint reach the login flow, and checked server memory and the task database.
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/ -q` on merged master — 194 passed, 1 skipped.
+- `git push origin master` — `97aa52f..ea0e8cf master -> master`.
+- `ssh rn 'git pull --ff-only && systemctl restart tg-downloader.service && systemctl is-active ...'` — service `active`, server at `ea0e8cf`.
+- `curl -I https://tgdn.wyichuan.cc/` and `/api/task-dashboard` — `HTTP/2 302` to login.
+- `curl -I -X POST https://tgdn.wyichuan.cc/api/prescans/x/packages/select-all` — `HTTP/2 302` to login (route present, auth-gated).
+- Server health: `web_tasks.sqlite3` 32K, memory available ~529MiB.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded this deployment.
+
+Rollback:
+- On the server: `cd /root/telegram_media_downloader && git reset --hard 97aa52f && systemctl restart tg-downloader.service` (or revert the six feature commits and redeploy).
