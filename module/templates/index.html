@@ -711,10 +711,10 @@
         done: function () {
           element.render();
           if (selectedTaskId == null) { return; }
-          var rows = this.config.data || [];
+          var rows = this.data || [];
           for (var i = 0; i < rows.length; i++) {
             if (String(rows[i].task_id) === String(selectedTaskId)) {
-              $(this.config.elem).next('.layui-table-view')
+              $(this.elem).next('.layui-table-view')
                 .find('.layui-table-body tr[data-index="' + i + '"]').addClass('layui-table-click');
               break;
             }
