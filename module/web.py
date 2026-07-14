@@ -33,7 +33,7 @@ from module.download_stat import (
     set_download_state,
 )
 from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
-from module.task_state import FileStatus
+from module.task_state import FileStatus, mask_display_name
 from utils.crypto import AesBase64
 from utils.format import format_byte
 
@@ -352,6 +352,9 @@ def get_upload_list():
     """get upload list"""
     from module.app import UploadStatus
 
+    app = _active_app()
+    hide_file_name = bool(getattr(app, "hide_file_name", False))
+
     result = []
     for node in get_active_task_nodes().values():
         for message_id, stat in (getattr(node, "upload_stat_dict", {}) or {}).items():
@@ -362,7 +365,7 @@ def get_upload_list():
                 {
                     "chat": f"{getattr(node, 'chat_id', '')}",
                     "id": f"{message_id}",
-                    "filename": os.path.basename(stat.file_name),
+                    "filename": mask_display_name(stat.file_name, hide_file_name),
                     "total_size": format_byte(getattr(stat, "total_size", 0)),
                     "upload_progress": round(
                         getattr(stat, "upload_size", 0) / total * 100, 1

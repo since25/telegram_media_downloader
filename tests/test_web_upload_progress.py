@@ -55,10 +55,7 @@ def test_snapshot_node_maps_upload_state():
     assert f.uploaded_size == 600 and f.upload_speed == 150
 
 
-def test_get_upload_list_returns_uploading_files(monkeypatch):
-    import json
-
-    import module.web as web
+def _build_upload_node():
     from module.app import UploadProgressStat, UploadStatus
 
     class _Node:
@@ -77,8 +74,21 @@ def test_get_upload_list_returns_uploading_files(monkeypatch):
             upload_speed=200,
         )
     }
+    return node
+
+
+def test_get_upload_list_returns_uploading_files(monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import module.web as web
+
+    node = _build_upload_node()
     monkeypatch.setattr(
         web, "get_active_task_nodes", lambda: {"up-1": node}, raising=False
+    )
+    monkeypatch.setattr(
+        web, "_current_app", SimpleNamespace(hide_file_name=False), raising=False
     )
 
     app = web.get_flask_app()
@@ -95,3 +105,32 @@ def test_get_upload_list_returns_uploading_files(monkeypatch):
     rows = json.loads(resp.data)
     assert rows and rows[0]["filename"] == "wall_31.jpg"
     assert rows[0]["upload_progress"] == 74.0
+
+
+def test_get_upload_list_masks_filename_when_hide_file_name_enabled(monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    import module.web as web
+
+    node = _build_upload_node()
+    monkeypatch.setattr(
+        web, "get_active_task_nodes", lambda: {"up-1": node}, raising=False
+    )
+    monkeypatch.setattr(
+        web, "_current_app", SimpleNamespace(hide_file_name=True), raising=False
+    )
+
+    app = web.get_flask_app()
+    app.config["TESTING"] = True
+    old_login_disabled = app.config.get("LOGIN_DISABLED")
+    app.config["LOGIN_DISABLED"] = True
+    try:
+        with app.test_client() as client:
+            resp = client.get("/get_upload_list")
+    finally:
+        app.config["LOGIN_DISABLED"] = old_login_disabled
+
+    assert resp.status_code == 200
+    rows = json.loads(resp.data)
+    assert rows and rows[0]["filename"] == "****.jpg"
