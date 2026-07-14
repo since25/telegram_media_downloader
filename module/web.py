@@ -63,10 +63,10 @@ SUPPORTED_MEDIA_TYPES = ["audio", "photo", "video", "document", "voice", "video_
 PATH_PREFIX_OPTIONS = ["chat_title", "media_datetime", "media_type"]
 NAME_PREFIX_OPTIONS = ["message_id", "file_name", "caption"]
 FILE_FORMAT_TYPES = ["audio", "document", "video"]
-WEB_PRESCAN_DEFAULT_MESSAGES = 1000
-WEB_PRESCAN_MAX_MESSAGES = 2000
-WEB_PRESCAN_DEFAULT_PACKAGES = 20
-WEB_PRESCAN_MAX_PACKAGES = 30
+WEB_PRESCAN_DEFAULT_MESSAGES = 2000
+WEB_PRESCAN_MAX_MESSAGES = 10000
+WEB_PRESCAN_DEFAULT_PACKAGES = 30
+WEB_PRESCAN_MAX_PACKAGES = 100
 WEB_PRESCAN_DEFAULT_BATCH_SIZE = 50
 WEB_PRESCAN_MAX_BATCH_SIZE = 100
 WEB_PRESCAN_BATCH_DELAY_SECONDS = 1
@@ -1144,6 +1144,37 @@ def select_prescan_package(task_id: str, package_id: int):
             "package_id": package_id,
             "selected": package_id in selected_ids,
             "selected_count": len(selected_ids),
+        }
+    )
+
+
+@_flask_app.route("/api/prescans/<task_id>/packages/select-all", methods=["POST"])
+@login_required
+def select_all_prescan_packages(task_id: str):
+    """Select or clear every Web prescan package at once."""
+
+    prescan = _pending_web_prescans.get(task_id)
+    if not prescan:
+        return jsonify({"ok": False, "error": "prescan not found"}), 404
+    payload = request.get_json(silent=True) or {}
+    selected = _as_bool(payload.get("selected"), True)
+    packages = list(prescan.get("packages") or [])
+    selected_ids = prescan.setdefault("selected_package_ids", set())
+    selected_ids.clear()
+    if selected:
+        for package in packages:
+            selected_ids.add(int(getattr(package, "package_id", 0) or 0))
+    task = get_task_store().get_task(task_id)
+    if task and task.workflow:
+        task.workflow.selected_count = len(selected_ids)
+        get_task_store().update_task(task_id, workflow=task.workflow)
+    return jsonify(
+        {
+            "ok": True,
+            "task_id": task_id,
+            "selected": selected,
+            "selected_count": len(selected_ids),
+            "total": len(packages),
         }
     )
 

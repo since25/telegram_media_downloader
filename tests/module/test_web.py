@@ -390,6 +390,42 @@ class WebTestCase(unittest.TestCase):
             self.assertEqual(select_response.status_code, 200)
             self.assertTrue(select_response.get_json()["selected"])
 
+    def test_prescan_select_all_and_clear(self):
+        def make_pkg(pid):
+            return SimpleNamespace(
+                package_id=pid, title="Pack %d" % pid,
+                start_message_id=100 + pid, end_message_id=105 + pid,
+                media_count=2, messages=[], failed_message_ids=[],
+            )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            self.web_module._pending_web_prescans["web-prescan-all"] = {
+                "packages": [make_pkg(1), make_pkg(2), make_pkg(3)],
+                "selected_package_ids": set(),
+            }
+            client = self.web_module.get_flask_app().test_client()
+
+            select_all = client.post(
+                "/api/prescans/web-prescan-all/packages/select-all",
+                json={"selected": True},
+            )
+            clear_all = client.post(
+                "/api/prescans/web-prescan-all/packages/select-all",
+                json={"selected": False},
+            )
+            missing = client.post(
+                "/api/prescans/does-not-exist/packages/select-all",
+                json={"selected": True},
+            )
+
+            self.assertEqual(select_all.status_code, 200)
+            self.assertEqual(select_all.get_json()["selected_count"], 3)
+            self.assertEqual(select_all.get_json()["total"], 3)
+            self.assertEqual(clear_all.get_json()["selected_count"], 0)
+            self.assertEqual(missing.status_code, 404)
+
     def test_confirm_prescan_schedules_selected_download(self):
         class FakeLoop:
             def __init__(self):
