@@ -1159,11 +1159,13 @@ def select_all_prescan_packages(task_id: str):
     payload = request.get_json(silent=True) or {}
     selected = _as_bool(payload.get("selected"), True)
     packages = list(prescan.get("packages") or [])
-    selected_ids = prescan.setdefault("selected_package_ids", set())
-    selected_ids.clear()
     if selected:
-        for package in packages:
-            selected_ids.add(int(getattr(package, "package_id", 0) or 0))
+        selected_ids = {
+            int(getattr(package, "package_id", 0) or 0) for package in packages
+        }
+    else:
+        selected_ids = set()
+    prescan["selected_package_ids"] = selected_ids
     task = get_task_store().get_task(task_id)
     if task and task.workflow:
         task.workflow.selected_count = len(selected_ids)

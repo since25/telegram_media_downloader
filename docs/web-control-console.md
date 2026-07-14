@@ -16,7 +16,7 @@ Web-submitted package/comment tasks first scan into a preview state. The task ro
 
 Confirmed tasks use the existing scan and download pipeline and the recommended naming strategy. Task rows move through scan, confirmation, queue, download, upload, and completion states on `/api/task-dashboard`.
 
-Prescan mode scans a bounded message window, writes package summaries to the Web state, and waits for the user to include packages before `Start`. Selected packages are downloaded serially through the existing prescan download path.
+Prescan mode scans a bounded message window, writes package summaries to the Web state, and waits for the user to include packages before `Start`. Selected packages are downloaded serially through the existing prescan download path. The scan window is configurable per submission via `max_messages` (default 2000, capped at 10000).
 
 ## Resource Boundaries
 
@@ -26,8 +26,8 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 
 - dashboard polling returns only recent task summaries
 - large file lists are loaded through paginated APIs
-- Web prescan defaults to 1000 messages and 20 packages
-- Web prescan is capped at 2000 messages, 30 packages, and batch size 100
+- Web prescan defaults to 2000 messages and 30 packages
+- Web prescan is capped at 10000 messages, 100 packages, and batch size 100
 - only one Web prescan scan may run at a time
 
 ## APIs
@@ -37,11 +37,12 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 - `GET /api/tasks/<task_id>`: one task with file rows.
 - `GET /api/tasks/<task_id>/files?page=1&page_size=50`: paginated file rows.
 - `POST /api/tasks`: submit JSON `{"link": "https://t.me/..."}`.
-- `POST /api/tasks` with `{"mode": "prescan"}`: start a bounded Web prescan.
+- `POST /api/tasks` with `{"mode": "prescan", "max_messages": 2000}`: start a bounded Web prescan (max_messages optional, clamped to 10000).
 - `POST /api/tasks/<task_id>/confirm`: confirm a preview and queue the download.
 - `POST /api/tasks/<task_id>/cancel`: cancel a preview before download.
 - `GET /api/prescans/<task_id>/packages?page=1&page_size=50`: paginated prescan packages.
 - `POST /api/prescans/<task_id>/packages/<package_id>/select`: include or exclude a package.
+- `POST /api/prescans/<task_id>/packages/select-all`: include or exclude all packages at once with `{"selected": true|false}`.
 - `POST /api/tasks/<task_id>/clear`: clear one terminal task from Web history.
 - `POST /api/tasks/clear-completed`: clear completed task history.
 - `POST /api/tasks/<task_id>/retry`: currently returns `409` until original command metadata is persisted for safe retry.
