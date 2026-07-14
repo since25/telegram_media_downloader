@@ -151,7 +151,66 @@
         </div>
 
       </div>
-      <div class="tab-panel" id="tab_files"><!-- T7 --></div>
+      <div class="tab-panel" id="tab_files">
+
+        <!-- 下载中 -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">下载中</span>
+              <span class="tag tag-accent" id="dl_count">0</span>
+            </div>
+            <span style="display:flex;align-items:center;gap:7px;font-size:13px;color:var(--color-neutral-600)">总速度 <b class="nums" style="color:var(--color-text)" id="dl_total_speed">0.00 B/s</b></span>
+          </div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>ID</th><th>文件名</th><th>大小</th><th>下载进度</th><th style="padding-right:16px">下载速度</th></tr></thead>
+              <tbody id="dl_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 上传中 -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">上传中</span>
+              <span class="tag tag-accent" id="ul_count">0</span>
+            </div>
+            <span style="display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--color-neutral-600)">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 13V2l4 4"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/></svg>
+              rclone → tg-media/incoming
+            </span>
+          </div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>ID</th><th>文件名</th><th>大小</th><th>上传进度</th><th style="padding-right:16px">上传速度</th></tr></thead>
+              <tbody id="ul_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 已完成 -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">已完成</span>
+              <span class="tag tag-neutral" id="done_count">0</span>
+            </div>
+            <button type="button" class="btn btn-ghost" id="clear_done_btn" style="padding:5px 9px;font-size:12px">清空已完成</button>
+          </div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr><th style="padding-left:16px">会话</th><th>ID</th><th>文件名</th><th>大小</th><th style="padding-right:16px">保存路径</th></tr></thead>
+              <tbody id="done_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
       <div class="tab-panel" id="tab_config"><!-- T8 --></div>
     </div>
     <div class="app-foot">
@@ -403,7 +462,30 @@
           <td><div class="track" style="width:100px"><i style="width:${prog}%"></i></div></td>
           <td class="nums">${p.media_count}</td><td class="nums">${p.known_total_size}</td><td style="padding-right:16px">${escapeHtml(p.title)}</td></tr>`).join('')}</tbody></table></div>`;
     }
-    function pollFiles(){ /* T7 */ }
+    // ── files (T7): 下载中 / 上传中 / 已完成 three stacked tables ──
+    async function pollFiles(){
+      const [dl, ul, done, dash] = await Promise.all([
+        getJSON('/get_download_list?already_down=false'),
+        getJSON('/get_upload_list'),
+        getJSON('/get_download_list?already_down=true'),
+        getJSON('/api/task-dashboard'),
+      ]);
+      $('#nav_total_speed').textContent = '⬇ ' + dash.download_speed;
+      $('#dl_total_speed').textContent = dash.download_speed;
+      $('#foot_speed').textContent = '⬇ ' + dash.download_speed;
+      $('#dl_count').textContent = dl.length;
+      $('#ul_count').textContent = ul.length;
+      $('#done_count').textContent = done.length;
+      $('#dl_rows').innerHTML = dl.map(r=>`<tr><td style="padding-left:16px">${escapeHtml(r.chat)}</td><td class="nums">${escapeHtml(r.id)}</td><td>${escapeHtml(r.filename)}</td>
+        <td class="nums">${escapeHtml(r.total_size)}</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track" style="width:120px"><i style="width:${r.download_progress}%"></i></div><span class="nums text-muted" style="font-size:11px">${r.download_progress}%</span></div></td>
+        <td class="nums text-muted" style="padding-right:16px">${escapeHtml(r.download_speed)}</td></tr>`).join('');
+      $('#ul_rows').innerHTML = ul.map(r=>`<tr><td style="padding-left:16px">${escapeHtml(r.chat)}</td><td class="nums">${escapeHtml(r.id)}</td><td>${escapeHtml(r.filename)}</td>
+        <td class="nums">${escapeHtml(r.total_size)}</td><td><div style="display:flex;align-items:center;gap:8px"><div class="track" style="width:120px"><i style="width:${r.upload_progress}%"></i></div><span class="nums text-muted" style="font-size:11px">${r.upload_progress}%</span></div></td>
+        <td class="nums text-muted" style="padding-right:16px">${escapeHtml(r.upload_speed)}</td></tr>`).join('');
+      $('#done_rows').innerHTML = done.map(r=>`<tr><td style="padding-left:16px">${escapeHtml(r.chat)}</td><td class="nums">${escapeHtml(r.id)}</td><td>${escapeHtml(r.filename)}</td>
+        <td class="nums">${escapeHtml(r.total_size)}</td><td class="text-muted" style="padding-right:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">${escapeHtml(r.save_path)}</td></tr>`).join('');
+    }
+    $('#clear_done_btn').addEventListener('click', async () => { await postJSON('/api/tasks/clear-completed'); pollFiles(); });
     function loadConfig(){ /* T8 */ }
     function setStateChip(dstate){
       const chip = $('#download_state'), on = dstate === 'Downloading';
