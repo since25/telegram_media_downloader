@@ -1,5 +1,6 @@
 """Download Stat"""
 import asyncio
+import re
 import time
 from enum import Enum
 
@@ -96,15 +97,48 @@ def get_total_download_speed() -> int:
     return _total_download_speed
 
 
-def get_total_upload_speed() -> int:
-    """sum live per-file upload speed across active task nodes"""
-    from module.app import UploadStatus
+_RCLONE_SPEED_UNITS = {
+    "": 1,
+    "B": 1,
+    "KB": 1024,
+    "KIB": 1024,
+    "MB": 1024**2,
+    "MIB": 1024**2,
+    "GB": 1024**3,
+    "GIB": 1024**3,
+}
 
+
+def _parse_rclone_speed(speed: str) -> int:
+    """Parse an rclone progress speed string (e.g. "1.234 MiB/s", "512 KiB/s",
+    "0 B/s", or "") into bytes/s. Returns 0 for anything unparseable."""
+    if not speed:
+        return 0
+    text = speed.strip()
+    if text.endswith("/s"):
+        text = text[: -len("/s")].strip()
+    match = re.match(r"^([\d.]+)\s*([A-Za-z]*)$", text)
+    if not match:
+        return 0
+    try:
+        value = float(match.group(1))
+    except ValueError:
+        return 0
+    unit = match.group(2).upper()
+    return int(value * _RCLONE_SPEED_UNITS.get(unit, 1))
+
+
+def get_total_upload_speed() -> int:
+    """sum live per-file upload speed across active task nodes
+
+    This deployment uploads via rclone/cloud-drive, so speeds come from
+    node.cloud_drive_upload_stat_dict (rclone-formatted strings), not the
+    Telegram re-upload node.upload_status/upload_stat_dict path.
+    """
     total = 0
     for node in get_active_task_nodes().values():
-        for message_id, stat in (getattr(node, "upload_stat_dict", {}) or {}).items():
-            if node.upload_status.get(message_id) is UploadStatus.Uploading:
-                total += int(getattr(stat, "upload_speed", 0) or 0)
+        for stat in (getattr(node, "cloud_drive_upload_stat_dict", {}) or {}).values():
+            total += _parse_rclone_speed(getattr(stat, "speed", "") or "")
     return total
 
 

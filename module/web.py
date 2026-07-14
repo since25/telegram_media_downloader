@@ -386,29 +386,37 @@ def clear_download_list():
 @_flask_app.route("/get_upload_list")
 @login_required
 def get_upload_list():
-    """get upload list"""
-    from module.app import UploadStatus
+    """get upload list
+
+    This deployment uploads via rclone/cloud-drive, which populates
+    node.cloud_drive_upload_stat_dict (not the Telegram re-upload
+    node.upload_status/upload_stat_dict path), so read from there.
+    """
 
     app = _active_app()
     hide_file_name = bool(getattr(app, "hide_file_name", False))
 
     result = []
     for node in get_active_task_nodes().values():
-        for message_id, stat in (getattr(node, "upload_stat_dict", {}) or {}).items():
-            if node.upload_status.get(message_id) is not UploadStatus.Uploading:
-                continue
-            total = getattr(stat, "total_size", 0) or 1
+        for message_id, stat in (
+            getattr(node, "cloud_drive_upload_stat_dict", {}) or {}
+        ).items():
+            try:
+                upload_progress = float(
+                    str(stat.percentage).strip().rstrip("%") or 0
+                )
+            except ValueError:
+                upload_progress = 0.0
             result.append(
                 {
                     "chat": f"{getattr(node, 'chat_id', '')}",
                     "id": f"{message_id}",
                     "filename": mask_display_name(stat.file_name, hide_file_name),
-                    "total_size": format_byte(getattr(stat, "total_size", 0)),
-                    "upload_progress": round(
-                        getattr(stat, "upload_size", 0) / total * 100, 1
-                    ),
-                    "upload_speed": format_byte(int(getattr(stat, "upload_speed", 0)))
-                    + "/s",
+                    # total_size/upload_speed are already rclone-formatted
+                    # strings (e.g. "12.3 MiB", "1.2 MiB/s") - pass through.
+                    "total_size": stat.total,
+                    "upload_progress": upload_progress,
+                    "upload_speed": stat.speed or "0 B/s",
                 }
             )
 

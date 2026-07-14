@@ -136,6 +136,13 @@ class CloudDrive:
                         if drive_config.before_upload_file_zip:
                             os.remove(zip_file_path)
                         upload_status = True
+                        # rclone's final "100%" line never reaches the
+                        # progress_callback branch below, so the display
+                        # cache would otherwise keep a stale sub-100% entry
+                        # for this message forever. Drop it here.
+                        if progress_args:
+                            node, message_id, *_ = progress_args
+                            node.cloud_drive_upload_stat_dict.pop(message_id, None)
                     else:
                         pattern = (
                             r"Transferred: (.*?) / (.*?), (.*?)%, (.*?/s)?, ETA (.*?)$"
