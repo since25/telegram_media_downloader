@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+from urllib.parse import urlsplit
 
 import aiohttp
 import yaml
@@ -2420,6 +2421,19 @@ async def stop_server(client: PyrogramClient):
     await client.stop()
 
 
+def _sanitize_monitor_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """返回可安全写日志的 monitor 配置副本，webhook_url 只保留 scheme+host。"""
+    safe = dict(cfg)
+    url = safe.get("webhook_url")
+    if url:
+        parts = urlsplit(str(url))
+        if parts.scheme and parts.netloc:
+            safe["webhook_url"] = f"{parts.scheme}://{parts.netloc}/***"
+        else:
+            safe["webhook_url"] = "***"
+    return safe
+
+
 def main():
     """Main function of the downloader."""
     tasks = []
@@ -2440,7 +2454,9 @@ def main():
             _full_cfg = yaml.safe_load(f) or {}
 
         m_cfg = _full_cfg.get("monitor", {}) or {}
-        logger.info(f"[MONITOR][CFG] monitor 配置读取结果: {m_cfg}")
+        logger.info(
+            f"[MONITOR][CFG] monitor 配置读取结果: {_sanitize_monitor_cfg(m_cfg)}"
+        )
         enabled = bool(m_cfg.get("enabled"))
 
         if enabled:

@@ -16,6 +16,7 @@ from media_downloader import (
     _check_config,
     _get_media_meta,
     _is_exist,
+    _sanitize_monitor_cfg,
     app,
     download_all_chat,
     download_media,
@@ -1644,6 +1645,39 @@ class MediaDownloaderTestCase(unittest.TestCase):
     def test_check_config_suc(self):
         app.update_config()
         self.assertEqual(_check_config(), True)
+
+    def test_sanitize_monitor_cfg_masks_webhook_url(self):
+        cfg = {
+            "enabled": True,
+            "chats": [8654123],
+            "webhook_url": "https://discord.com/api/webhooks/111222333/secret-token",
+        }
+        safe = _sanitize_monitor_cfg(cfg)
+        self.assertEqual(safe["webhook_url"], "https://discord.com/***")
+        self.assertNotIn("secret-token", str(safe))
+        # 其他键保持原样，且不修改原配置
+        self.assertEqual(safe["enabled"], True)
+        self.assertEqual(safe["chats"], [8654123])
+        self.assertEqual(
+            cfg["webhook_url"],
+            "https://discord.com/api/webhooks/111222333/secret-token",
+        )
+        # 解析不出 scheme+host 时整体脱敏，不回显原值
+        self.assertEqual(
+            _sanitize_monitor_cfg(
+                {"webhook_url": "discord.com/api/webhooks/1/tok"}
+            )["webhook_url"],
+            "***",
+        )
+
+    def test_sanitize_monitor_cfg_without_webhook_url(self):
+        self.assertEqual(
+            _sanitize_monitor_cfg({"enabled": False}), {"enabled": False}
+        )
+        self.assertEqual(
+            _sanitize_monitor_cfg({"enabled": True, "webhook_url": None}),
+            {"enabled": True, "webhook_url": None},
+        )
 
     # @mock.patch(
     #     "media_downloader.queue",
