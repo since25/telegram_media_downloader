@@ -936,6 +936,7 @@
               detailSignature = sig;
             },
             error: function () {
+              hidePrescanControls();
               table.reload('task_detail_list_table', { data: [] });
               detailColsType = 'prescan'; detailSignature = '';
             }

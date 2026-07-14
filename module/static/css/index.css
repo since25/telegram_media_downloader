@@ -69,10 +69,14 @@ body {
 
 .task-submit {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) 132px auto minmax(160px, auto);
+  grid-template-columns: minmax(220px, 1fr) 132px auto auto minmax(160px, auto);
   gap: 8px;
   align-items: center;
   margin-bottom: 10px;
+}
+
+.task-submit .task-submit-status {
+  grid-column: 5;
 }
 
 .task-submit-status {
@@ -223,6 +227,10 @@ body {
 
   .task-submit {
     grid-template-columns: 1fr;
+  }
+
+  .task-submit .task-submit-status {
+    grid-column: auto;
   }
 
   .config-form .layui-form-label {
