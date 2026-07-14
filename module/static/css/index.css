@@ -262,4 +262,9 @@ body {
 }
 .task-detail-error[hidden] { display: none; }
 
+.task-count-input { width: 120px; }
+.prescan-controls { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.prescan-controls[hidden] { display: none; }
+.prescan-summary { font-size: 13px; color: #5f5f5f; }
+
 /*# sourceMappingURL=index.css.map */

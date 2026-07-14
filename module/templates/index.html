@@ -52,6 +52,7 @@
               <option value="auto">Preview</option>
               <option value="prescan">Prescan</option>
             </select>
+            <input type="number" id="web_task_count" class="layui-input task-count-input" min="1" max="10000" value="2000" placeholder="messages" style="display:none;">
             <button type="button" class="layui-btn" id="submit_task_btn">Submit</button>
             <span id="task_submit_status" class="task-submit-status"></span>
           </div>
@@ -77,6 +78,12 @@
             {{# } }}
             {% endraw %}
           </script>
+          <div class="prescan-controls" id="prescan_controls" hidden>
+            <button type="button" class="layui-btn layui-btn-sm" id="prescan_select_all">Select all</button>
+            <button type="button" class="layui-btn layui-btn-sm layui-btn-primary" id="prescan_clear_all">Clear all</button>
+            <span class="prescan-summary" id="prescan_summary">0 packages selected</span>
+            <button type="button" class="layui-btn layui-btn-sm" id="prescan_download">Download selected</button>
+          </div>
         </div>
         <div class="layui-tab-item">
           <table class="layui-hide" id="download_list" lay-filter="download_list"></table>
@@ -585,14 +592,27 @@
 
       $('#save_config_btn').on('click', saveSettings);
 
+      function syncModeInput() {
+        var show = $('#web_task_mode').val() === 'prescan';
+        $('#web_task_count').css('display', show ? '' : 'none');
+      }
+      $('#web_task_mode').on('change', syncModeInput);
+      form.on('select()', syncModeInput);
+      syncModeInput();
+
       function submitWebTask() {
         var link = $('#web_task_link').val();
         $('#task_submit_status').text('Submitting...');
         $('#submit_task_btn').prop('disabled', true).addClass('layui-btn-disabled');
+        var mode = $('#web_task_mode').val();
+        var payload = { link: link, mode: mode };
+        if (mode === 'prescan') {
+          payload.max_messages = Number($('#web_task_count').val() || 2000);
+        }
         $.ajax({
           url: 'api/tasks',
           type: 'post',
-          data: JSON.stringify({ link: link, mode: $('#web_task_mode').val() }),
+          data: JSON.stringify(payload),
           contentType: 'application/json',
           dataType: 'json',
           success: function (response) {
@@ -683,6 +703,33 @@
           }
         });
       }
+
+      function postSelectAll(taskId, selected) {
+        $.ajax({
+          url: 'api/prescans/' + encodeURIComponent(taskId) + '/packages/select-all',
+          type: 'post', data: JSON.stringify({ selected: selected }),
+          contentType: 'application/json', dataType: 'json',
+          success: function (response) {
+            $('#task_submit_status').text('Selected packages: ' + response.selected_count);
+            detailColsType = null; detailSignature = '';
+            loadTaskDetail(taskId, 'prescan');
+            updateTaskDashboard();
+          },
+          error: function (xhr) {
+            $('#task_submit_status').text((xhr.responseJSON || {}).error || 'Selection failed.');
+          }
+        });
+      }
+
+      $('#prescan_select_all').on('click', function () {
+        if (selectedTaskId) { postSelectAll(selectedTaskId, true); }
+      });
+      $('#prescan_clear_all').on('click', function () {
+        if (selectedTaskId) { postSelectAll(selectedTaskId, false); }
+      });
+      $('#prescan_download').on('click', function () {
+        if (selectedTaskId) { postTaskAction(selectedTaskId, 'confirm'); }
+      });
 
       function packageSelectedText(row) {
         return row.selected ? 'yes' : 'no';
@@ -836,6 +883,29 @@
         }
       }
 
+      var prescanRows = [];
+
+      function formatBytes(n) {
+        n = Number(n || 0);
+        var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        var i = 0;
+        while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+        return n.toFixed(i === 0 ? 0 : 2) + ' ' + units[i];
+      }
+
+      function updatePrescanControls(taskId) {
+        var selected = prescanRows.filter(function (row) { return row.selected; });
+        var media = selected.reduce(function (sum, row) { return sum + Number(row.media_count || 0); }, 0);
+        var bytes = selected.reduce(function (sum, row) { return sum + Number(row.known_total_size_bytes || 0); }, 0);
+        $('#prescan_summary').text(selected.length + ' packages · ' + media + ' media · ' + formatBytes(bytes));
+        $('#prescan_controls').removeAttr('hidden');
+      }
+
+      function hidePrescanControls() {
+        $('#prescan_controls').attr('hidden', 'hidden');
+        prescanRows = [];
+      }
+
       function loadTaskDetail(taskId, taskType) {
         showDetailError(taskId);
         if (taskType === 'prescan') {
@@ -846,6 +916,8 @@
               var items = result.items || [];
               var sig = 'prescan:' + detailSig(items);
               if (detailColsType === 'prescan' && sig === detailSignature) { return; }
+              prescanRows = items;
+              updatePrescanControls(taskId);
               var reload = { data: items };
               if (detailColsType !== 'prescan') {
                 reload.cols = [[
@@ -870,6 +942,7 @@
           });
           return;
         }
+        hidePrescanControls();
         $.ajax({
           url: 'api/tasks/' + encodeURIComponent(taskId) + '/files?page=1&page_size=50',
           type: 'get', dataType: 'json',
