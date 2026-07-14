@@ -1095,7 +1095,7 @@ def confirm_task(task_id: str):
 
     app = _active_app()
     preview = _pending_web_task_previews.pop(task_id, None)
-    prescan = _pending_web_prescans.pop(task_id, None)
+    prescan = _pending_web_prescans.get(task_id)  # keep entry so packages stay readable
     if not preview and not prescan:
         return jsonify({"ok": False, "error": "task is not waiting for confirmation"}), 404
 
@@ -1103,8 +1103,8 @@ def confirm_task(task_id: str):
         if prescan:
             selected_ids = set(prescan.get("selected_package_ids") or set())
             if not selected_ids:
-                _pending_web_prescans[task_id] = prescan
                 return jsonify({"ok": False, "error": "select at least one package"}), 400
+            prescan["confirmed"] = True
             coroutine = _run_confirmed_prescan_download(prescan)
         elif preview["task_type"] == "comment":
             coroutine = _run_confirmed_comment_download(preview, _web_client(app))
@@ -1113,7 +1113,7 @@ def confirm_task(task_id: str):
         _schedule_web_coroutine(app, coroutine)
     except RuntimeError as error:
         if prescan:
-            _pending_web_prescans[task_id] = prescan
+            prescan.pop("confirmed", None)
         else:
             _pending_web_task_previews[task_id] = preview
         return jsonify({"ok": False, "error": str(error)}), 503
@@ -1164,6 +1164,7 @@ def clear_task(task_id: str):
     if task.status not in {TaskStatus.COMPLETED, TaskStatus.COMPLETED_WITH_ERRORS, TaskStatus.CANCELLED, TaskStatus.FAILED}:
         return jsonify({"ok": False, "error": "only terminal tasks can be cleared"}), 400
     removed = get_task_store().remove_task(task_id)
+    _pending_web_prescans.pop(task_id, None)
     return jsonify({"ok": removed, "task_id": task_id})
 
 
@@ -1172,7 +1173,21 @@ def clear_task(task_id: str):
 def clear_completed_tasks():
     """Remove completed task history from the Web dashboard."""
 
-    return jsonify({"ok": True, "cleared": get_task_store().clear_completed()})
+    terminal_ids = {
+        task.task_id
+        for task in get_task_store().tasks()
+        if task.status
+        in {
+            TaskStatus.COMPLETED,
+            TaskStatus.COMPLETED_WITH_ERRORS,
+            TaskStatus.CANCELLED,
+            TaskStatus.FAILED,
+        }
+    }
+    cleared = get_task_store().clear_completed()
+    for cleared_task_id in terminal_ids:
+        _pending_web_prescans.pop(cleared_task_id, None)
+    return jsonify({"ok": True, "cleared": cleared})
 
 
 @_flask_app.route("/api/tasks/<task_id>/retry", methods=["POST"])
