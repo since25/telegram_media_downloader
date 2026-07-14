@@ -485,7 +485,7 @@
       ctrl.innerHTML = `<button class="btn btn-secondary" data-pact="all">全选</button>
         <button class="btn btn-ghost" data-pact="none">清空</button>
         <span class="text-muted nums" style="font-size:12px">已选 ${selCount} / ${data.total} 包 · ${selMedia} 媒体</span>
-        <button class="btn btn-primary" data-pact="confirm" style="margin-left:auto">下载所选</button>`;
+        <button class="btn btn-primary blueprint" data-pact="confirm" style="margin-left:auto"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>下载所选</button>`;
       $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
         <thead><tr><th style="padding-left:16px"></th><th>包</th><th>选择</th><th>消息区间</th><th>媒体</th><th>已知大小</th><th>标题</th><th style="padding-right:16px;text-align:right">操作</th></tr></thead>
         <tbody>${data.items.map(p=>`<tr data-pkg="${p.package_id}">
@@ -494,7 +494,7 @@
           <td>${p.selected?'<span class="tag tag-accent">已选</span>':'—'}</td>
           <td class="nums text-muted">${p.start_message_id}–${p.end_message_id}</td>
           <td class="nums">${p.media_count}</td><td class="nums">${p.known_total_size}</td><td>${escapeHtml(p.title)}</td>
-          <td style="padding-right:16px;text-align:right"><button class="btn btn-secondary" data-toggle="${p.package_id}" data-sel="${p.selected?0:1}">${p.selected?'排除':'加入'}</button></td>
+          <td style="padding-right:16px;text-align:right"><button class="btn ${p.selected?'btn-secondary':'btn-primary blueprint'}" data-toggle="${p.package_id}" data-sel="${p.selected?0:1}">${p.selected?'':'<i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>'}${p.selected?'排除':'加入'}</button></td>
         </tr>`).join('')}</tbody></table></div>`;
     }
     // controls (全选/清空/下载所选) + per-row toggle + expand — delegated on the detail card
@@ -589,12 +589,19 @@
     }
     $('#clear_done_btn').addEventListener('click', async () => { await postJSON('/clear_download_list'); pollFiles(); });
     // ── config (T8): chip multi-select + switch toggle helpers, load/save /api/settings ──
-    function chip(label, on){ return `<span class="tag ${on?'tag-accent':'tag-outline'}" data-chip="${escapeHtml(label)}" data-on="${on?1:0}" style="cursor:pointer;gap:4px">${on?icon('check',10,2):''}${escapeHtml(label)}</span>`; }
+    const OPTION_LABELS = {
+      audio:'音频', photo:'图片', video:'视频', document:'文档', voice:'语音', video_note:'视频笔记',
+      chat_title:'频道标题', media_datetime:'日期', media_type:'媒体类型',
+      message_id:'消息 ID', file_name:'原文件名', caption:'标题',
+    };
+    function chip(key, on){ const label = OPTION_LABELS[key] || key;
+      return `<span class="tag ${on?'tag-accent':'tag-outline'}" data-chip="${escapeHtml(key)}" data-on="${on?1:0}" style="cursor:pointer;gap:4px">${on?icon('check',10,2):''}${escapeHtml(label)}</span>`; }
     function renderChips(container, options, selected){
       container.innerHTML = options.map(o=>chip(o, selected.includes(o))).join('');
       container.onclick = e => { const c=e.target.closest('[data-chip]'); if(!c) return;
         const on=c.dataset.on==='1'; c.dataset.on=on?0:1; c.className=`tag ${on?'tag-outline':'tag-accent'}`;
-        c.innerHTML = (on?'':icon('check',10,2))+escapeHtml(c.dataset.chip); };
+        const label = OPTION_LABELS[c.dataset.chip] || c.dataset.chip;
+        c.innerHTML = (on?'':icon('check',10,2))+escapeHtml(label); };
     }
     function chipValues(container){ return [...container.querySelectorAll('[data-chip][data-on="1"]')].map(c=>c.dataset.chip); }
     function setSwitch(el, on){ el.classList.toggle('on',on); el.classList.toggle('off',!on); el.dataset.on=on?1:0; el.onclick=()=>{ const v=el.dataset.on==='1'; setSwitch(el,!v); }; }
