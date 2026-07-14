@@ -36,7 +36,7 @@ from module.download_stat import (
     set_download_state,
 )
 from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
-from module.task_state import FileStatus, mask_display_name
+from module.task_state import FileStatus, TERMINAL_TASK_STATUSES, mask_display_name
 from utils.crypto import AesBase64
 from utils.format import format_byte
 
@@ -1088,11 +1088,27 @@ def submit_task():
     return jsonify(response_payload), status_code
 
 
+def _prune_orphaned_prescans() -> None:
+    """Drop retained prescan entries whose task no longer exists in the store.
+
+    `confirm_task` retains prescan entries so `/api/prescans/<id>/packages`
+    stays readable during download. The task store LRU-evicts old completed
+    tasks once it exceeds its recent-task limit; without this reconciliation
+    a confirmed prescan's entry would orphan forever once its task is
+    evicted that way (unbounded memory growth).
+    """
+    store = get_task_store()
+    for task_id in list(_pending_web_prescans):
+        if store.get_task(task_id) is None:
+            _pending_web_prescans.pop(task_id, None)
+
+
 @_flask_app.route("/api/tasks/<task_id>/confirm", methods=["POST"])
 @login_required
 def confirm_task(task_id: str):
     """Confirm a scanned Web preview and queue its download."""
 
+    _prune_orphaned_prescans()
     app = _active_app()
     preview = _pending_web_task_previews.pop(task_id, None)
     prescan = _pending_web_prescans.get(task_id)  # keep entry so packages stay readable
@@ -1161,7 +1177,7 @@ def clear_task(task_id: str):
     task = get_task_store().get_task(task_id)
     if not task:
         return jsonify({"ok": False, "error": "task not found"}), 404
-    if task.status not in {TaskStatus.COMPLETED, TaskStatus.COMPLETED_WITH_ERRORS, TaskStatus.CANCELLED, TaskStatus.FAILED}:
+    if task.status not in TERMINAL_TASK_STATUSES:
         return jsonify({"ok": False, "error": "only terminal tasks can be cleared"}), 400
     removed = get_task_store().remove_task(task_id)
     _pending_web_prescans.pop(task_id, None)
@@ -1176,17 +1192,12 @@ def clear_completed_tasks():
     terminal_ids = {
         task.task_id
         for task in get_task_store().tasks()
-        if task.status
-        in {
-            TaskStatus.COMPLETED,
-            TaskStatus.COMPLETED_WITH_ERRORS,
-            TaskStatus.CANCELLED,
-            TaskStatus.FAILED,
-        }
+        if task.status in TERMINAL_TASK_STATUSES
     }
     cleared = get_task_store().clear_completed()
     for cleared_task_id in terminal_ids:
         _pending_web_prescans.pop(cleared_task_id, None)
+    _prune_orphaned_prescans()
     return jsonify({"ok": True, "cleared": cleared})
 
 

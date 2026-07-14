@@ -47,6 +47,7 @@ def _make_prescan(selected_ids=None):
 def test_packages_available_after_confirm(monkeypatch, client):
     task_id = "prescan-1"
     web._pending_web_prescans[task_id] = _make_prescan({1})
+    get_task_store().create_task(task_id, status=TaskStatus.WAITING_CONFIRMATION)
     monkeypatch.setattr(web, "_active_app", lambda: mock.Mock(hide_file_name=False))
     monkeypatch.setattr(web, "_schedule_web_coroutine", lambda app, coro: coro.close())
     monkeypatch.setattr(
@@ -72,6 +73,7 @@ def test_confirm_without_selection_returns_400_and_keeps_prescan_pending(
 ):
     task_id = "prescan-2"
     web._pending_web_prescans[task_id] = _make_prescan()
+    get_task_store().create_task(task_id, status=TaskStatus.WAITING_CONFIRMATION)
     monkeypatch.setattr(web, "_active_app", lambda: mock.Mock(hide_file_name=False))
 
     confirm = client.post(f"/api/tasks/{task_id}/confirm")
@@ -88,6 +90,7 @@ def test_confirm_rollback_on_runtime_error_keeps_prescan_cancellable(
 ):
     task_id = "prescan-3"
     web._pending_web_prescans[task_id] = _make_prescan({1})
+    get_task_store().create_task(task_id, status=TaskStatus.WAITING_CONFIRMATION)
     monkeypatch.setattr(web, "_active_app", lambda: mock.Mock(hide_file_name=False))
 
     def _boom(prescan):
@@ -158,3 +161,50 @@ def test_clear_completed_removes_confirmed_prescan(monkeypatch, client):
     assert clear_completed.status_code == 200
     assert task_id not in web._pending_web_prescans
     assert packages.status_code == 404
+
+
+def test_prune_orphaned_prescans_drops_entries_whose_task_is_gone(client):
+    """A retained prescan entry must not outlive its task in the store.
+
+    The task store LRU-evicts old completed tasks once `_completed` exceeds
+    `recent_limit`. If a confirmed prescan's task is evicted that way before
+    the user clears it, `_pending_web_prescans[task_id]` would otherwise
+    orphan forever (unbounded memory growth). `_prune_orphaned_prescans`
+    reconciles the dict against the store: entries whose task still exists
+    (active or completed) survive; entries whose task is gone are dropped.
+    """
+    live_task_id = "prescan-live"
+    orphaned_task_id = "prescan-orphaned"
+    web._pending_web_prescans[live_task_id] = _make_prescan({1})
+    web._pending_web_prescans[orphaned_task_id] = _make_prescan({1})
+    get_task_store().create_task(live_task_id, status=TaskStatus.COMPLETED)
+    get_task_store().update_task(live_task_id, status=TaskStatus.COMPLETED)
+    # orphaned_task_id has no matching task in the store: simulates eviction.
+
+    web._prune_orphaned_prescans()
+
+    assert live_task_id in web._pending_web_prescans
+    assert orphaned_task_id not in web._pending_web_prescans
+
+
+def test_confirm_prunes_orphaned_prescans_from_other_tasks(monkeypatch, client):
+    """confirm_task reconciles the whole dict, not just the task being confirmed."""
+    orphaned_task_id = "prescan-orphaned-2"
+    web._pending_web_prescans[orphaned_task_id] = _make_prescan({1})
+
+    task_id = "prescan-7"
+    web._pending_web_prescans[task_id] = _make_prescan({1})
+    monkeypatch.setattr(web, "_active_app", lambda: mock.Mock(hide_file_name=False))
+    monkeypatch.setattr(web, "_schedule_web_coroutine", lambda app, coro: coro.close())
+    monkeypatch.setattr(
+        web,
+        "_run_confirmed_prescan_download",
+        lambda prescan: mock.Mock(close=lambda: None),
+    )
+    get_task_store().create_task(task_id, status=TaskStatus.WAITING_CONFIRMATION)
+
+    confirm = client.post(f"/api/tasks/{task_id}/confirm")
+
+    assert confirm.status_code == 200
+    assert orphaned_task_id not in web._pending_web_prescans
+    assert task_id in web._pending_web_prescans
