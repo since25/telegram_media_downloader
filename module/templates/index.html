@@ -25,7 +25,120 @@
       </button>
     </nav>
     <div class="app-body">
-      <div class="tab-panel active" id="tab_tasks"><!-- T5/T6 --></div>
+      <div class="tab-panel active" id="tab_tasks">
+
+        <!-- command / submit bar -->
+        <div class="card blueprint" style="flex-direction:row;align-items:flex-end;gap:16px;padding:18px 20px">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div class="field" style="flex:1">
+            <label>粘贴 Telegram 链接</label>
+            <input class="input nums" id="web_task_link" style="font-family:ui-monospace,Menlo,monospace;font-size:13px" placeholder="https://t.me/c/xxxxxxx/xxx">
+          </div>
+          <div class="field" style="flex:none">
+            <label>模式</label>
+            <div class="seg">
+              <label class="seg-opt"><input type="radio" name="web_task_mode" value="preview" checked>预览</label>
+              <label class="seg-opt"><input type="radio" name="web_task_mode" value="prescan">预扫描</label>
+            </div>
+          </div>
+          <div class="field" id="web_task_count_field" style="flex:none;width:96px;display:none">
+            <label>消息数</label>
+            <input class="input nums" id="web_task_count" value="2000">
+          </div>
+          <button type="button" class="btn btn-primary blueprint" id="submit_task_btn" style="height:36px;padding-inline:16px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="M12 5v14"/></svg>提交任务
+          </button>
+          <span class="text-muted nums" id="task_submit_status" style="font-size:12px;white-space:nowrap"></span>
+        </div>
+
+        <!-- stat strip -->
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px">
+          <div class="card blueprint" style="gap:4px;padding:12px 14px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="card-kicker">进行中</div>
+            <div style="font-family:var(--font-heading);font-size:26px;line-height:1" class="nums" id="sum_active">0</div>
+          </div>
+          <div class="card blueprint" style="gap:4px;padding:12px 14px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="card-kicker">已完成</div>
+            <div style="font-family:var(--font-heading);font-size:26px;line-height:1" class="nums" id="sum_completed">0</div>
+          </div>
+          <div class="card blueprint" style="gap:4px;padding:12px 14px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="card-kicker">状态</div>
+            <div style="font-family:var(--font-heading);font-size:26px;line-height:1;display:flex;align-items:center;gap:8px" id="sum_state"><span class="live-dot"></span><span id="sum_state_text">—</span></div>
+          </div>
+          <div class="card blueprint" style="gap:4px;padding:12px 14px">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <div class="card-kicker">当前速度</div>
+            <div style="font-family:var(--font-heading);font-size:26px;line-height:1" class="nums" id="sum_speed">0.00B/s</div>
+          </div>
+        </div>
+
+        <!-- system monitor: upload throughput + disk / cpu / memory -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;gap:9px;padding:11px 16px;border-bottom:1px solid var(--color-divider)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>
+            <span style="font-family:var(--font-heading);font-weight:600;font-size:15px">系统监控</span>
+            <span class="text-muted" style="font-size:11.5px">每秒刷新</span>
+          </div>
+          <div style="display:flex;align-items:stretch">
+            <div style="flex:1;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:5px">
+              <span class="card-kicker" style="color:var(--color-neutral-600)">下行速度</span>
+              <span style="font-family:var(--font-heading);font-size:22px;line-height:1" class="nums" id="sys_dl">—</span>
+            </div>
+            <div style="flex:1;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:5px">
+              <span class="card-kicker" style="color:var(--color-accent)">上行速度 · 上传</span>
+              <span style="font-family:var(--font-heading);font-size:22px;line-height:1;color:var(--color-accent-700)" class="nums" id="sys_ul">—</span>
+            </div>
+            <div style="flex:1.9;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:7px">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <span class="card-kicker" style="color:var(--color-neutral-600)">磁盘</span>
+                <span class="tag tag-outline" id="sys_disk_warn" hidden style="gap:4px;padding:1px 7px"></span>
+              </div>
+              <div class="track" id="sys_disk_track" style="height:8px"><i style="width:0%"></i></div>
+              <div class="nums text-muted" id="sys_disk_text" style="font-size:11.5px">—</div>
+            </div>
+            <div style="flex:1;padding:12px 16px;border-right:1px solid var(--color-divider);display:flex;flex-direction:column;gap:6px">
+              <span class="card-kicker" style="color:var(--color-neutral-600)">CPU</span>
+              <span style="font-family:var(--font-heading);font-size:22px;line-height:1" class="nums" id="sys_cpu">—</span>
+              <div class="track" id="sys_cpu_track" style="height:5px"><i style="width:0%"></i></div>
+            </div>
+            <div style="flex:1;padding:12px 16px;display:flex;flex-direction:column;gap:6px">
+              <span class="card-kicker" style="color:var(--color-neutral-600)">内存</span>
+              <span style="font-family:var(--font-heading);font-size:22px;line-height:1" class="nums" id="sys_mem">—</span>
+              <div class="track" id="sys_mem_track" style="height:5px"><i style="width:0%"></i></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- task table -->
+        <div class="card blueprint" style="padding:0;gap:0">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
+            <div style="display:flex;align-items:baseline;gap:9px">
+              <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">下载任务</span>
+              <span class="tag tag-neutral" id="task_count">0</span>
+            </div>
+            <div style="display:flex;gap:6px">
+              <button type="button" class="btn btn-secondary" data-filter="all" style="padding:5px 11px;font-size:12px">全部</button>
+              <button type="button" class="btn btn-ghost" data-filter="active" style="padding:5px 8px;font-size:12px">进行中</button>
+              <button type="button" class="btn btn-ghost" data-filter="done" style="padding:5px 8px;font-size:12px">已完成</button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table class="table" style="font-size:13px">
+              <thead><tr>
+                <th style="padding-left:16px">任务 ID</th><th>来源</th><th>类型</th><th>状态</th><th>标题</th><th>进度</th><th>成 / 败 / 跳</th><th>当前文件</th><th style="padding-right:16px;text-align:right">操作</th>
+              </tr></thead>
+              <tbody id="task_rows"></tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
       <div class="tab-panel" id="tab_files"><!-- T7 --></div>
       <div class="tab-panel" id="tab_config"><!-- T8 --></div>
     </div>
@@ -35,6 +148,207 @@
     </div>
   </div>
   <script src="static/request/index.js"></script>
-  <script>/* T5 起填充:tab 切换 + 轮询 + 渲染 */</script>
+  <script>
+    const $ = (sel, root=document) => root.querySelector(sel);
+    const state = { selectedTaskId:null, selectedTaskType:null, lastTasksById:{},
+      prescanRows:{}, prescanSelected:new Set(), sys:null, timers:{} };
+    let taskFilter = 'all';
+
+    const ICONS = {
+      download:'<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+      upload:'<path d="M12 13V2l4 4"/><path d="M12 6 8 2"/><path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-7"/>',
+      scan:'<circle cx="11" cy="11" r="7"/><path d="m21 21-3.5-3.5"/>',
+      clock:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      check:'<path d="M20 6 9 17l-5-5"/>',
+      alert:'<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
+      plus:'<path d="M12 5v14"/><path d="M5 12h14"/>',
+      chevron:'<path d="m9 18 6-6-6-6"/>',
+    };
+    const icon = (name, sz=11, sw=1.5) =>
+      `<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]||''}</svg>`;
+
+    // status → tag (单色;告警不用红)
+    const TASK_STATUS_TAG = {
+      downloading:{cls:'tag-accent', label:'下载中', ic:'download'},
+      scanning:{cls:'tag-accent', label:'扫描中', ic:'scan'},
+      uploading:{cls:'tag-accent', label:'上传中', ic:'upload'},
+      waiting_confirmation:{cls:'tag-outline', label:'待确认', ic:'clock'},
+      queued:{cls:'tag-neutral', label:'排队中', ic:'clock'},
+      cancelled:{cls:'tag-neutral', label:'已取消', ic:null},
+      completed:{cls:'tag-accent', label:'已完成', ic:'check'},
+      completed_with_errors:{cls:'tag-outline', label:'完成·有错误', ic:'alert'},
+      failed:{cls:'tag-outline', label:'失败', ic:'alert'},
+      created:{cls:'tag-neutral', label:'新建', ic:null},
+    };
+    const statusTag = (s) => {
+      const t = TASK_STATUS_TAG[s] || {cls:'tag-neutral', label:s, ic:null};
+      return `<span class="tag ${t.cls}" style="gap:5px">${t.ic?icon(t.ic):''}${t.label}</span>`;
+    };
+
+    // operation buttons — 严格对应后端
+    function taskActions(task) {
+      const s = task.status;
+      if (task.needs_confirmation || s === 'waiting_confirmation')
+        return `<button class="btn btn-primary" data-act="confirm" data-id="${task.task_id}">开始</button>`
+             + `<button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}">取消</button>`;
+      if (s === 'scanning')
+        return `<button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}">取消</button>`;
+      if (s === 'completed' || s === 'completed_with_errors' || s === 'cancelled' || s === 'failed')
+        return `<button class="btn btn-ghost" data-act="clear" data-id="${task.task_id}">清除</button>`;
+      return '—';  // downloading / uploading / queued
+    }
+
+    // terminal statuses (used for the 已完成 filter and the 进行中 filter's complement)
+    const TERMINAL = ['completed', 'completed_with_errors', 'cancelled', 'failed'];
+
+    function currentFileCell(t) {
+      const cf = t.current_file;
+      if (!cf || !cf.filename) return '—';
+      if (t.status === 'uploading') return `↑ ${cf.filename} · ${cf.upload_progress}%`;
+      if (t.status === 'downloading') return `${cf.filename} · ${cf.download_progress}%`;
+      return cf.filename;
+    }
+
+    function progressCell(t) {
+      if (t.status === 'uploading') {
+        return `<div class="track" style="width:120px"><i style="width:100%"></i></div>`
+             + `<span class="nums text-muted" style="font-size:11px">下载 ${t.success_count}/${t.total_count} · 上传 ${t.upload_success_count||0}/${t.total_count}</span>`;
+      }
+      const prog = t.total_count ? Math.round((t.success_count + t.skipped_count) / t.total_count * 100) : 0;
+      return `<div class="track" style="width:120px"><i style="width:${prog}%"></i></div>`
+           + `<span class="nums text-muted" style="font-size:11px">${t.success_count}/${t.total_count}</span>`;
+    }
+
+    function renderTaskTable(tasks) {
+      const filtered = taskFilter === 'active' ? tasks.filter(t => !TERMINAL.includes(t.status))
+                      : taskFilter === 'done' ? tasks.filter(t => TERMINAL.includes(t.status))
+                      : tasks;
+      const tbody = $('#task_rows');
+      $('#task_count').textContent = filtered.length;
+      tbody.innerHTML = filtered.map(t => {
+        const fail = t.failed_count > 0 ? `<b>${t.failed_count}</b>` : '0';
+        const sel = t.task_id === state.selectedTaskId ? ' style="background:color-mix(in srgb,var(--color-accent) 8%,transparent)"' : '';
+        return `<tr data-id="${t.task_id}" data-type="${t.task_type}"${sel}>
+          <td class="nums" style="padding-left:16px">${t.task_id}</td><td class="text-muted">${t.source||''}</td><td>${t.task_type||''}</td>
+          <td>${statusTag(t.status)}</td><td>${t.title||''}</td>
+          <td><div style="display:flex;flex-direction:column;gap:3px;min-width:118px">${progressCell(t)}</div></td>
+          <td class="nums" style="font-size:12px"><b style="color:var(--color-accent-700)">${t.success_count}</b> · ${fail} · <span style="color:var(--color-neutral-500)">${t.skipped_count}</span></td>
+          <td class="text-muted" style="font-size:12px">${currentFileCell(t)}</td>
+          <td style="padding-right:16px;text-align:right"><div style="display:inline-flex;gap:6px">${taskActions(t)}</div></td></tr>`;
+      }).join('');
+    }
+
+    function renderSystem(sys) {
+      state.sys = sys;
+      const mb = (b) => (b/1048576).toFixed(0), gb = (b) => (b/1073741824).toFixed(0);
+      $('#sys_dl').textContent = sys.download_speed;
+      $('#sys_ul').textContent = sys.upload_speed;
+      const diskPct = sys.disk_total ? Math.round(sys.disk_used / sys.disk_total * 100) : 0;
+      $('#sys_disk_track').firstElementChild.style.width = diskPct + '%';
+      $('#sys_disk_text').textContent = `已用 ${gb(sys.disk_used)} GB / ${gb(sys.disk_total)} GB · 剩 ${gb(sys.disk_free)} GB`;
+      const warn = $('#sys_disk_warn');
+      warn.hidden = diskPct <= 80;
+      warn.innerHTML = `${icon('alert',11)} 偏满 ${diskPct}%`;
+      $('#sys_cpu_track').firstElementChild.style.width = Math.round(sys.cpu_percent) + '%';
+      $('#sys_cpu').textContent = `${sys.cpu_percent}%`;
+      const memPct = sys.mem_total ? Math.round(sys.mem_used / sys.mem_total * 100) : 0;
+      $('#sys_mem_track').firstElementChild.style.width = memPct + '%';
+      $('#sys_mem').textContent = `${mb(sys.mem_used)} / ${mb(sys.mem_total)} MB`;
+    }
+
+    async function getJSON(url){ const r = await fetch(url); return r.json(); }
+    async function postJSON(url){ const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'}}); return r.json(); }
+
+    async function pollTasks() {
+      const dash = await getJSON('/api/task-dashboard');
+      const tasks = dash.tasks || [];
+      state.lastTasksById = Object.fromEntries(tasks.map(t=>[t.task_id,t]));
+      renderTaskTable(tasks);
+      $('#sum_active').textContent = dash.active_task_count;
+      $('#sum_completed').textContent = dash.completed_task_count;
+      $('#sum_speed').textContent = dash.download_speed;
+      $('#foot_speed').textContent = '⬇ ' + dash.download_speed;
+      setStateChip(dash.download_state);
+      if (state.selectedTaskId && state.lastTasksById[state.selectedTaskId]) renderDetail(state.lastTasksById[state.selectedTaskId]); // T6
+      const sys = await getJSON('/api/system'); renderSystem(sys);
+    }
+    function renderDetail(){ /* T6 */ }
+    function pollFiles(){ /* T7 */ }
+    function loadConfig(){ /* T8 */ }
+    function setStateChip(dstate){
+      const chip = $('#download_state'), on = dstate === 'Downloading';
+      $('#download_state_text').textContent = on ? '运行中' : '已暂停';
+      chip.dataset.value = on ? 'pause' : 'continue';
+      $('#sum_state_text').textContent = on ? '运行中' : '已暂停';
+    }
+
+    function startPolling(tab){
+      stopPolling();
+      if (tab==='tasks'){ pollTasks(); state.timers.tasks = setInterval(pollTasks, 1000); }
+      else if (tab==='files'){ pollFiles(); state.timers.files = setInterval(pollFiles, 1000); }  // T7
+      else if (tab==='config'){ loadConfig(); }  // T8
+    }
+    function stopPolling(){ Object.values(state.timers).forEach(clearInterval); state.timers={}; }
+
+    // tab switching
+    document.querySelectorAll('.app-nav a[data-tab]').forEach(a => a.addEventListener('click', e => {
+      e.preventDefault();
+      const tab = a.dataset.tab;
+      document.querySelectorAll('.app-nav a[data-tab]').forEach(x=>x.removeAttribute('aria-current'));
+      a.setAttribute('aria-current','page');
+      document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+      $('#tab_'+tab).classList.add('active');
+      $('#nav_total_speed').style.display = tab==='files' ? '' : 'none';
+      startPolling(tab);
+    }));
+
+    // command bar
+    $('#web_task_link').addEventListener('keydown', e => { if (e.key==='Enter') submitTask(); });
+    $('#submit_task_btn').addEventListener('click', submitTask);
+    document.querySelectorAll('input[name="web_task_mode"]').forEach(r => r.addEventListener('change', () => {
+      const isPrescan = document.querySelector('input[name="web_task_mode"]:checked').value==='prescan';
+      $('#web_task_count_field').style.display = isPrescan ? '' : 'none';
+    }));
+    async function submitTask(){
+      const link = $('#web_task_link').value.trim();
+      const mode = document.querySelector('input[name="web_task_mode"]:checked').value;
+      const body = mode==='prescan' ? {link, mode:'prescan', max_messages:Number($('#web_task_count').value)||2000} : {link};
+      const r = await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const res = await r.json();
+      $('#task_submit_status').textContent = res.error ? res.error : '已提交';
+      if (res.task_id){ state.selectedTaskId = res.task_id; state.selectedTaskType = res.task_type||null; }
+      pollTasks();
+    }
+    // task filter buttons
+    document.querySelectorAll('button[data-filter]').forEach(btn => btn.addEventListener('click', () => {
+      taskFilter = btn.dataset.filter;
+      document.querySelectorAll('button[data-filter]').forEach(b => {
+        b.classList.toggle('btn-secondary', b===btn);
+        b.classList.toggle('btn-ghost', b!==btn);
+      });
+      renderTaskTable(Object.values(state.lastTasksById));
+    }));
+    // task action buttons (event delegation)
+    $('#task_rows').addEventListener('click', async e => {
+      const btn = e.target.closest('button[data-act]');
+      if (btn){ e.stopPropagation();
+        const id = btn.dataset.id, act = btn.dataset.act;
+        const url = act==='confirm'?`/api/tasks/${id}/confirm`:act==='cancel'?`/api/tasks/${id}/cancel`:`/api/tasks/${id}/clear`;
+        await postJSON(url); pollTasks(); return; }
+      const tr = e.target.closest('tr[data-id]');
+      if (tr) selectTask(tr.dataset.id, tr.dataset.type);
+    });
+    function selectTask(id, type){ state.selectedTaskId=id; state.selectedTaskType=type;
+      const t = state.lastTasksById[id]; if (t) renderDetail(t); pollTasks(); }
+
+    // state chip + logout
+    $('#download_state').addEventListener('click', async () => {
+      const next = $('#download_state').dataset.value;
+      await fetch('/set_download_state?state='+next, {method:'POST'}); pollTasks();
+    });
+    $('#logout_btn').addEventListener('click', async () => { await fetch('/logout',{method:'POST'}); location.href='/'; });
+
+    startPolling('tasks');
+  </script>
 </body>
 </html>
