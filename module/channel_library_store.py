@@ -66,6 +66,11 @@ DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 SQLITE_MAX_INTEGER = 2**63 - 1
 
+
+class RedownloadRequiredError(ValueError):
+    """The selected snapshot requires explicit historical-download consent."""
+
+
 ALLOWED_SCAN_TRANSITIONS = {
     "queued": {"running", "paused_user", "stopped", "failed"},
     "running": {
@@ -1459,7 +1464,9 @@ class ChannelLibraryStore:
                         package["has_successful_attempt"] == 1
                         or package["current_download_status"] == "outdated"
                     ) and not allow_redownload:
-                        raise ValueError("Explicit redownload confirmation is required")
+                        raise RedownloadRequiredError(
+                            "Explicit redownload confirmation is required"
+                        )
 
                 cursor = connection.execute(
                     """

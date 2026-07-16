@@ -680,25 +680,25 @@ git commit -m "feat: expose channel library web api"
 - Consumes Task 9 APIs.
 - Produces existing-SPA nav `data-tab="channel-library"`, split pane, filters, keyset list, selection summary, item expansion, controls, and active-tab-only polling.
 
-- [ ] **Step 1: Add DOM contract and escaping tests**
+- [x] **Step 1: Add DOM contract and escaping tests**
 
 Assert unique channel-list/workspace/filter IDs, no second route dependency, no unescaped Telegram interpolation, CSRF in shared writes, and active-tab polling guard. Add assertions for empty, queued, scanning, auto-paused, paused, partial, ready, failed, provisional, uncertain, outdated, and superseded labels.
 
-- [ ] **Step 2: Run and observe missing DOM failures**
+- [x] **Step 2: Run and observe missing DOM failures**
 
 ```bash
 .venv/bin/python -m pytest tests/module/test_channel_library_web.py -q
 ```
 
-- [ ] **Step 3: Add left-library/right-package layout**
+- [x] **Step 3: Add left-library/right-package layout**
 
 Add nav/panel, left link form/channel rows, right status/control band, all Spec filters, selection summary, select-filtered/clear/download actions, package table, and paginated item expansion. Reuse existing Industry variables/classes/icons. Do not add nested cards, marketing sections, gradients/orbs, or a frontend framework.
 
-- [ ] **Step 4: Add state-aware behavior**
+- [x] **Step 4: Add state-aware behavior**
 
 Fetch CSRF once and include it in writes. Use `next_cursor`; reset to first page with compact notice when `library_revision` changes. Read selected totals from server. Enable downloads only for terminal ready/partial and stable packages. Confirm delete, large select-filtered, and redownload. Poll status only while active; reload packages on revision/user action.
 
-- [ ] **Step 5: Browser verification**
+- [x] **Step 5: Browser verification**
 
 Use mocked endpoints and inspect 1440x900, 1024x768, and 390x844. Exercise all Step 1 states. Verify no overlap, overflow, blank table, nested card, or inaccessible mobile control. Save screenshots outside version control.
 
@@ -706,7 +706,7 @@ Use mocked endpoints and inspect 1440x900, 1024x768, and 390x844. Exercise all S
 .venv/bin/python -m pytest tests/module/test_channel_library_web.py tests/module/test_web.py -q
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add module/templates/index.html module/static/css/index.css tests/module/test_channel_library_web.py

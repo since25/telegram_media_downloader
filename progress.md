@@ -1237,3 +1237,35 @@ Changed files:
 
 Rollback:
 - Revert the review-record commit only; do not revert the approved Task 9 implementation or modify either SQLite database.
+
+## 2026-07-16 - Task: Add the channel library Web tab
+
+### What was done
+
+- Added a fourth same-SPA channel library tab with paginated channel navigation, full package filters, server-backed selection, package/item keyset pagination, scan controls, download/delete confirmations, and active-tab-only polling.
+- Added request-generation and loading guards so delayed detail/package/item responses cannot mix data after switching channels, and revision changes reset stale pages and expanded item caches.
+- Added responsive desktop/tablet/mobile layouts, keyboard tab navigation, visible download-disabled reasons, server-relative scan progress, explicit redownload classification, and escaped rendering for all Telegram metadata.
+- Completed independent adversarial review with no remaining findings and browser-tested every required library/package state.
+
+### Testing
+
+- Independent Task 10 review: approve, no remaining findings; reviewer focused suite `90 passed`; `git diff --check` passed.
+- Authoritative full suite: `/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`: `474 passed, 1 skipped in 25.41s`.
+- Automated browser verification passed at 1440x900, 1024x768, and 390x844, including delayed channel A-to-B switching, all seven cursor-paginated channel states, ArrowLeft/ArrowRight navigation, inactive-tab polling stop, visible disabled reason, XSS node absence, page overflow, and mobile internal table scrolling.
+- Fresh screenshots `/tmp/channel-library-1440x900-current.png`, `/tmp/channel-library-1024x768-current.png`, and `/tmp/channel-library-390x844-current.png` were visually inspected; no overlap, blank content, nested cards, or inaccessible primary controls were found.
+
+### Notes
+
+Changed files:
+- `module/templates/index.html`: Added the channel library SPA surface and state-aware interactions.
+- `module/static/css/index.css`: Added restrained responsive channel library layout and mobile overflow handling.
+- `module/channel_library_store.py`: Added the typed explicit-redownload conflict used by the Web workflow.
+- `module/web.py`: Added range-relative scan progress and the stable `redownload_required` response.
+- `tests/module/test_channel_library_web.py`: Added API, DOM, accessibility, state, security, and async identity contracts.
+- `docs/superpowers/plans/2026-07-16-web-full-channel-library.md`: Marked Task 10 complete.
+- `.superpowers/sdd/progress.md`: Recorded Task 10 review completion.
+- `.superpowers/sdd/task-10-report.md`: Recorded review and browser evidence.
+- `progress.md`: Appended Task 10 implementation, verification, and rollback evidence.
+
+Rollback:
+- Revert the Task 10 commit; preserve `channel_library.sqlite3` and `web_tasks.sqlite3` because the Web view rollback must not remove persisted channel indexes, selections, or download history.

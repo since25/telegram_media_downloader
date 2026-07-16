@@ -3,6 +3,8 @@
 import asyncio
 import concurrent.futures
 import os
+from pathlib import Path
+import re
 import threading
 from types import SimpleNamespace
 
@@ -13,6 +15,11 @@ from module.app import Application
 from module.channel_library_service import ChannelLibraryService, SubmitLibraryResult
 from module.channel_library_store import ChannelLibraryConfig, ChannelLibraryStore
 from module.task_state import TaskStateStore
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+INDEX_TEMPLATE = PROJECT_ROOT / "module/templates/index.html"
+INDEX_CSS = PROJECT_ROOT / "module/static/css/index.css"
 
 
 class ImmediateFuture:
@@ -1093,6 +1100,85 @@ def test_download_batch_maps_state_conflict_and_strict_redownload_type(web_env):
     assert invalid.status_code == 400
 
 
+def test_download_batch_returns_specific_redownload_required_code(web_env):
+    env = web_env
+    library, job = create_library(env)
+    package_id = insert_package(env.store, library["id"], 10)
+    insert_package_item(env.store, library["id"], package_id, 10)
+    env.store.set_package_selected(library["id"], package_id, True)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
+            (job["id"],),
+        )
+        connection.execute(
+            """
+            UPDATE channel_packages
+            SET has_successful_attempt = 1,
+                current_download_status = 'completed'
+            WHERE id = ?
+            """,
+            (package_id,),
+        )
+
+    response = env.client.post(
+        f"/api/channel-libraries/{library['id']}/download-batches",
+        json={"redownload": False},
+        headers={
+            **csrf_headers(env),
+            "Idempotency-Key": "requires-redownload",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error_code"] == "redownload_required"
+
+
+def test_scan_response_reports_kind_and_range_relative_progress(web_env):
+    env = web_env
+    library, job = create_library(env)
+    with env.store.connect() as connection:
+        connection.execute(
+            """
+            UPDATE channel_scan_jobs
+            SET kind = 'incremental', start_message_id = 14501,
+                snapshot_max_message_id = 15000,
+                fetched_through_message_id = 15000,
+                scanned_id_count = 500, status = 'completed'
+            WHERE id = ?
+            """,
+            (job["id"],),
+        )
+
+    scan = env.client.get(
+        f"/api/channel-libraries/{library['id']}"
+    ).get_json()["scan"]
+
+    assert scan["kind"] == "incremental"
+    assert scan["progress_completed_id_count"] == 500
+    assert scan["progress_total_id_count"] == 500
+
+    with env.store.connect() as connection:
+        connection.execute(
+            """
+            UPDATE channel_scan_jobs
+            SET kind = 'repair', scanned_id_count = 120
+            WHERE id = ?
+            """,
+            (job["id"],),
+        )
+    repair_scan = env.client.get(
+        f"/api/channel-libraries/{library['id']}"
+    ).get_json()["scan"]
+
+    assert repair_scan["progress_completed_id_count"] == 120
+    assert repair_scan["progress_total_id_count"] is None
+
+
 def test_service_start_schedules_each_resumable_download_batch_once(tmp_path):
     loop = asyncio.new_event_loop()
     app = SimpleNamespace(loop=loop)
@@ -1223,3 +1309,126 @@ def test_media_shutdown_clears_service_before_await_and_precedes_client_stop():
         loop.close()
 
     assert events == [("service_stop", None), ("client_stop", None)]
+
+
+def test_channel_library_tab_has_one_complete_spa_dom_contract():
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+    required_ids = {
+        "tab_channel-library",
+        "channel_library_link",
+        "channel_library_add",
+        "channel_library_rows",
+        "channel_library_more",
+        "channel_library_empty",
+        "channel_library_workspace",
+        "channel_library_status",
+        "channel_library_scan_controls",
+        "channel_library_filters",
+        "channel_library_notice",
+        "channel_library_selection",
+        "channel_download_reason",
+        "channel_library_packages",
+        "channel_library_load_more",
+        "channel_library_delete",
+    }
+
+    assert html.count('data-tab="channel-library"') == 1
+    assert 'href="/channel' not in html
+    assert '<button type="button" class="app-tab" data-tab="channel-library" role="tab"' in html
+    assert html.count('role="tabpanel"') == 4
+    assert 'aria-labelledby="app_tab_channel_library"' in html
+    assert "['ArrowLeft','ArrowRight'].includes(e.key)" in html
+    assert "next.focus(); next.click();" in html
+    for element_id in required_ids:
+        assert len(re.findall(fr'id="{re.escape(element_id)}"', html)) == 1
+
+
+def test_channel_library_script_has_security_state_and_polling_contracts():
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "async function channelApiWrite" in html
+    assert "'X-CSRF-Token': state.channel.csrfToken" in html
+    assert "function isChannelLibraryActive" in html
+    assert "if (!isChannelLibraryActive()) return" in html
+    assert "else if (tab==='channel-library')" in html
+    assert "escapeHtml(library.title" in html
+    assert "escapeHtml(pkg.title" in html
+    assert "escapeHtml(item.file_name" in html
+    assert "escapeHtml(message)" in html
+
+
+def test_channel_library_controls_resume_stopped_scans_and_offer_redownload():
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "scan.status === 'paused_user' || scan.status === 'stopped'" in html
+    assert "error.code === 'redownload_required' && !redownload" in html
+    assert "return submitChannelDownload(true,libraryId,generation)" in html
+
+
+def test_channel_library_script_guards_async_identity_and_all_keyset_pages():
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+    detail_source = html.split("async function loadChannelDetail", 1)[1].split(
+        "function readChannelFilters", 1
+    )[0]
+
+    assert "generation:0" in html
+    assert html.count("generation !== state.channel.generation") >= 4
+    assert "libraryNextCursor" in html
+    assert "data-channel-library-more" in html
+    assert "loadChannelLibraries({append:true})" in html
+    assert "refreshLoaded=true" in html
+    assert "pagesFetched < targetPages || !selectedFound()" in html
+    assert "progress_total_id_count" in html
+    assert "CHANNEL_SCAN_KIND" in html
+    assert "page.loading" in html
+    assert html.count("state.channel.expandedItems = {};\n          return loadChannelPackages({append:false});") >= 2
+    assert "catch (error)" in detail_source
+    assert "throw error" in detail_source
+
+
+def test_channel_library_download_gate_exposes_accessible_disabled_reason():
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+
+    assert 'aria-describedby="channel_download_reason"' in html
+    assert "首次全量扫描完成后可下载" in html
+    assert "请先选择稳定包" in html
+    assert "选择已失效" in html
+
+
+@pytest.mark.parametrize(
+    ("status", "label"),
+    [
+        ("empty", "尚未添加频道"),
+        ("queued", "排队中"),
+        ("running", "扫描中"),
+        ("auto_paused_download", "下载让行"),
+        ("paused_user", "已暂停"),
+        ("partial", "部分完成"),
+        ("ready", "就绪"),
+        ("failed", "失败"),
+        ("provisional", "待确认边界"),
+        ("uncertain", "边界不确定"),
+        ("outdated", "内容已更新"),
+        ("superseded", "已被替代"),
+    ],
+)
+def test_channel_library_ui_defines_required_state_labels(status, label):
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+
+    assert re.search(fr"{re.escape(status)}\s*:\s*\{{[^}}]*label:'{label}'", html)
+
+
+def test_channel_library_styles_define_responsive_split_workspace():
+    css = INDEX_CSS.read_text(encoding="utf-8")
+
+    assert ".channel-library-layout" in css
+    assert "grid-template-columns: 248px minmax(0, 1fr)" in css
+    assert ".channel-library-sidebar" in css
+    assert ".channel-library-workspace" in css
+    assert ".channel-library-workspace-empty[hidden]" in css
+    assert ".channel-library-table-footer .btn[hidden]" in css
+    assert ".channel-library-package-grid" in css
+    assert "@media (max-width: 900px)" in css
+    assert "@media (max-width: 560px)" in css
+    assert ".app-tab-list, .app-tab, .app-nav > button" in css
+    assert "flex: 0 0 auto; white-space: nowrap" in css

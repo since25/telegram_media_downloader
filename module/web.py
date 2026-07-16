@@ -20,7 +20,11 @@ from flask_login import LoginManager, UserMixin, login_required, login_user, log
 
 import utils
 from module.app import Application, TaskNode
-from module.channel_library_store import PackageFilter, SQLITE_MAX_INTEGER
+from module.channel_library_store import (
+    PackageFilter,
+    RedownloadRequiredError,
+    SQLITE_MAX_INTEGER,
+)
 from module.comment_workflow import (
     CommentNamingContext,
     NamingStrategy,
@@ -507,6 +511,18 @@ def _safe_scan(scan: Optional[dict]) -> Optional[dict]:
     if had_error or result.get("status") == "failed":
         result["error_code"] = "scan_failed"
         result["error_message"] = "The scan did not complete"
+    scanned = max(0, int(result.get("scanned_id_count") or 0))
+    if result.get("kind") in {"full", "incremental"}:
+        start = max(1, int(result.get("start_message_id") or 1))
+        snapshot = int(result.get("snapshot_max_message_id") or 0)
+        total = max(0, snapshot - start + 1)
+        fetched = int(result.get("fetched_through_message_id") or 0)
+        covered = max(0, fetched - start + 1)
+        result["progress_completed_id_count"] = min(total, max(scanned, covered))
+        result["progress_total_id_count"] = total
+    else:
+        result["progress_completed_id_count"] = scanned
+        result["progress_total_id_count"] = None
     return result
 
 
@@ -891,6 +907,12 @@ def create_channel_download_batch(library_id: int):
     try:
         batch, created = service.create_download_batch_result(
             library_id, idempotency_key, redownload=redownload
+        )
+    except RedownloadRequiredError:
+        raise _ChannelApiError(
+            409,
+            "redownload_required",
+            "Selected packages require explicit redownload confirmation",
         )
     except ValueError:
         raise _ChannelApiError(
