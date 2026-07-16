@@ -707,3 +707,27 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: harden channel scan state mutations$')"` 回滚本次 review 修复。
+
+## 2026-07-16 - Task: Guard Direct Channel Scan Claims
+
+### What was done
+
+- 修复直接调用状态迁移绕过全局单扫描约束的问题：`queued -> running` 在原有即时写事务内检查其他 running job，并在冲突时保持当前 job 为 queued。
+- 保持既有扫描状态迁移表、公开接口和 schema 不变。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py::test_direct_running_transition_respects_global_single_scan -q`：按预期未抛出状态冲突，`1 failed in 0.03s`。
+- GREEN regression：同一命令通过，`1 passed in 0.01s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py tests/module/test_task_state.py -q`：`44 passed in 0.69s`。
+- `py_compile` 与 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: 在直接进入 running 前原子检查其他运行任务。
+- `tests/module/test_channel_library_store.py`: 覆盖两频道直接状态迁移的全局互斥回归。
+- `progress.md`: 追加本次 review addendum 与验证证据。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: guard direct channel scan claims$')"` 回滚本次修复。

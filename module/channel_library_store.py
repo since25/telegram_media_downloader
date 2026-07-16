@@ -647,6 +647,17 @@ class ChannelLibraryStore:
                 raise ValueError(
                     f"Illegal scan transition: {current_status} -> {new_status}"
                 )
+            if new_status == "running":
+                other_runner = connection.execute(
+                    """
+                    SELECT id FROM channel_scan_jobs
+                    WHERE status = 'running' AND id != ?
+                    LIMIT 1
+                    """,
+                    (job_id,),
+                ).fetchone()
+                if other_runner is not None:
+                    raise ValueError("Another scan job is already running")
             deadline = job["wait_until"]
             if (
                 new_status in {"queued", "running"}

@@ -250,6 +250,18 @@ def test_create_and_claim_oldest_queued_job(store):
     assert next_claimed["id"] == second["id"]
 
 
+def test_direct_running_transition_respects_global_single_scan(store):
+    first = make_full_job(store, chat_id=-1001)
+    second = make_full_job(store, chat_id=-1002)
+    store.transition_job(first["id"], "running", now=1.0)
+
+    with pytest.raises(ValueError, match="scan job is already running"):
+        store.transition_job(second["id"], "running", now=2.0)
+
+    assert store.get_job(first["id"])["status"] == "running"
+    assert store.get_job(second["id"])["status"] == "queued"
+
+
 def test_transition_job_acquires_write_lock_before_read(store, monkeypatch):
     job = make_full_job(store)
     statements = []
