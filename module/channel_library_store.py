@@ -891,6 +891,448 @@ class ChannelLibraryStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def load_package_index_context(
+        self,
+        job_id: int,
+        library_id: int,
+        through_message_id: int,
+    ) -> dict:
+        """Load the persisted tail and unresolved failures for one index pass."""
+
+        with self.connect() as connection:
+            job = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if job is None:
+                raise KeyError(f"Scan job {job_id} does not exist")
+            if job["library_id"] != library_id:
+                raise ValueError("Scan job does not belong to the requested library")
+            if job["status"] != "running":
+                raise ValueError("Package indexing requires a running scan job")
+            if through_message_id > job["fetched_through_message_id"]:
+                raise ValueError("Index checkpoint exceeds the fetched watermark")
+            if through_message_id > job["snapshot_max_message_id"]:
+                raise ValueError("Index checkpoint exceeds the scan snapshot")
+
+            tail = connection.execute(
+                """
+                SELECT start_message_id FROM channel_packages
+                WHERE library_id = ? AND boundary_status != 'superseded'
+                  AND start_message_id <= ?
+                ORDER BY start_message_id DESC, id DESC
+                LIMIT 1
+                """,
+                (library_id, through_message_id),
+            ).fetchone()
+            failures = connection.execute(
+                """
+                SELECT * FROM channel_scan_failures
+                WHERE library_id = ? AND status != 'resolved'
+                  AND reindex_anchor_start <= ?
+                ORDER BY reindex_anchor_start, id
+                """,
+                (library_id, through_message_id),
+            ).fetchall()
+            repair_anchors = connection.execute(
+                """
+                SELECT f.reindex_anchor_start
+                FROM channel_scan_repair_targets AS t
+                JOIN channel_scan_failures AS f
+                  ON f.id = t.failure_id AND f.library_id = t.library_id
+                WHERE t.job_id = ? AND t.library_id = ?
+                  AND f.reindex_anchor_start <= ?
+                ORDER BY f.reindex_anchor_start
+                """,
+                (job_id, library_id, through_message_id),
+            ).fetchall()
+
+            anchors = []
+            if tail is not None:
+                anchors.append(int(tail["start_message_id"]))
+            anchors.extend(int(row["reindex_anchor_start"]) for row in failures)
+            anchors.extend(
+                int(row["reindex_anchor_start"]) for row in repair_anchors
+            )
+            if anchors:
+                reindex_anchor_start = min(anchors)
+            else:
+                first_media = connection.execute(
+                    """
+                    SELECT MIN(message_id) FROM channel_media_messages
+                    WHERE library_id = ? AND message_id <= ?
+                    """,
+                    (library_id, through_message_id),
+                ).fetchone()[0]
+                reindex_anchor_start = (
+                    int(first_media)
+                    if first_media is not None
+                    else max(1, int(job["start_message_id"]))
+                )
+
+            media_rows = connection.execute(
+                """
+                SELECT * FROM channel_media_messages
+                WHERE library_id = ? AND message_id BETWEEN ? AND ?
+                ORDER BY message_id
+                """,
+                (library_id, reindex_anchor_start, through_message_id),
+            ).fetchall()
+        return {
+            "job": dict(job),
+            "reindex_anchor_start": reindex_anchor_start,
+            "media_rows": [dict(row) for row in media_rows],
+            "failures": [dict(row) for row in failures],
+        }
+
+    def publish_indexed_packages(
+        self,
+        job_id: int,
+        through_message_id: int,
+        reindex_anchor_start: int,
+        packages: Sequence[Mapping[str, object]],
+        failure_updates: Sequence[Mapping[str, object]] = (),
+        now: Optional[float] = None,
+    ) -> dict:
+        """Atomically publish derived packages, items, revision, and watermark."""
+
+        now = time.time() if now is None else now
+        desired_packages = [dict(package) for package in packages]
+        desired_starts = [int(package["start_message_id"]) for package in desired_packages]
+        if len(desired_starts) != len(set(desired_starts)):
+            raise ValueError("Package start message IDs must be unique")
+        if any(
+            start < reindex_anchor_start or start > through_message_id
+            for start in desired_starts
+        ):
+            raise ValueError("Package starts outside the reindex range")
+
+        def normalize_inherited(value: object) -> bool:
+            if isinstance(value, str):
+                return value not in {"", "0", "false", "False"}
+            return bool(value)
+
+        def item_signature(item: Mapping[str, object]) -> tuple:
+            return (
+                int(item["message_id"]),
+                int(item["ordinal"]),
+                str(item["media_type"]),
+                item["caption_for_naming"],
+                item["original_caption"],
+                normalize_inherited(item["inherited_caption"]),
+            )
+
+        def package_content_signature(
+            package: Mapping[str, object], package_items: Sequence[Mapping[str, object]]
+        ) -> tuple:
+            return (
+                int(package["end_message_id"]),
+                str(package["title"]),
+                package["published_at"],
+                int(package["media_count"]),
+                int(package["known_total_size"]),
+                int(package["unknown_size_count"]),
+                tuple(item_signature(item) for item in package_items),
+            )
+
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if job is None:
+                raise KeyError(f"Scan job {job_id} does not exist")
+            if job["status"] != "running":
+                raise ValueError("Package indexing requires a running scan job")
+            if through_message_id > job["fetched_through_message_id"]:
+                raise ValueError("Index checkpoint exceeds the fetched watermark")
+            if through_message_id > job["snapshot_max_message_id"]:
+                raise ValueError("Index checkpoint exceeds the scan snapshot")
+            library_id = int(job["library_id"])
+            library = connection.execute(
+                "SELECT * FROM channel_libraries WHERE id = ?", (library_id,)
+            ).fetchone()
+
+            existing_rows = connection.execute(
+                """
+                SELECT * FROM channel_packages
+                WHERE library_id = ? AND start_message_id BETWEEN ? AND ?
+                ORDER BY start_message_id, id
+                """,
+                (library_id, reindex_anchor_start, through_message_id),
+            ).fetchall()
+            existing_by_start = {
+                int(row["start_message_id"]): row for row in existing_rows
+            }
+            existing_items = {}
+            for row in existing_rows:
+                item_rows = connection.execute(
+                    """
+                    SELECT * FROM channel_package_items
+                    WHERE library_id = ? AND package_id = ?
+                    ORDER BY ordinal
+                    """,
+                    (library_id, row["id"]),
+                ).fetchall()
+                existing_items[int(row["id"])] = item_rows
+
+            desired_by_start = {
+                int(package["start_message_id"]): package
+                for package in desired_packages
+            }
+            changed_desired = {}
+            content_changed = {}
+            for start, package in desired_by_start.items():
+                items = list(package.get("items") or ())
+                if not items:
+                    raise ValueError("Cannot publish an empty package")
+                item_ids = [int(item["message_id"]) for item in items]
+                if len(item_ids) != len(set(item_ids)):
+                    raise ValueError("Package item message IDs must be unique")
+                existing = existing_by_start.get(start)
+                if existing is None:
+                    content_changed[start] = True
+                    changed_desired[start] = True
+                    continue
+                old_content = package_content_signature(
+                    existing, existing_items[int(existing["id"])]
+                )
+                new_content = package_content_signature(package, items)
+                content_changed[start] = old_content != new_content
+                changed_desired[start] = content_changed[start] or (
+                    existing["boundary_status"] != package["boundary_status"]
+                    or existing["superseded_by_package_id"] is not None
+                )
+
+            removed_rows = [
+                row
+                for row in existing_rows
+                if row["boundary_status"] != "superseded"
+                and int(row["start_message_id"]) not in desired_by_start
+            ]
+            changed_count = sum(changed_desired.values()) + len(removed_rows)
+            old_revision = max(
+                int(job["index_revision"]), int(library["index_revision"])
+            )
+            index_revision = old_revision + 1 if changed_count else old_revision
+            invalidated_selection_count = 0
+            desired_ids = {}
+
+            for start in sorted(desired_by_start):
+                if not changed_desired[start]:
+                    desired_ids[start] = int(existing_by_start[start]["id"])
+                    continue
+                package = desired_by_start[start]
+                changed_content = content_changed[start]
+                connection.execute(
+                    """
+                    INSERT INTO channel_packages (
+                        library_id, start_message_id, end_message_id, title,
+                        published_at, boundary_status, media_count,
+                        known_total_size, unknown_size_count, index_revision,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(library_id, start_message_id) DO UPDATE SET
+                        end_message_id = excluded.end_message_id,
+                        title = excluded.title,
+                        published_at = excluded.published_at,
+                        boundary_status = excluded.boundary_status,
+                        media_count = excluded.media_count,
+                        known_total_size = excluded.known_total_size,
+                        unknown_size_count = excluded.unknown_size_count,
+                        current_download_status = CASE
+                            WHEN channel_packages.has_successful_attempt = 1
+                                 AND ? = 1
+                            THEN 'outdated'
+                            ELSE channel_packages.current_download_status
+                        END,
+                        superseded_by_package_id = NULL,
+                        index_revision = excluded.index_revision,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        library_id,
+                        start,
+                        int(package["end_message_id"]),
+                        str(package["title"]),
+                        package.get("published_at"),
+                        str(package["boundary_status"]),
+                        int(package["media_count"]),
+                        int(package["known_total_size"]),
+                        int(package["unknown_size_count"]),
+                        index_revision,
+                        now,
+                        now,
+                        int(changed_content),
+                    ),
+                )
+                package_id = connection.execute(
+                    """
+                    SELECT id FROM channel_packages
+                    WHERE library_id = ? AND start_message_id = ?
+                    """,
+                    (library_id, start),
+                ).fetchone()[0]
+                desired_ids[start] = int(package_id)
+                connection.execute(
+                    """
+                    DELETE FROM channel_package_items
+                    WHERE library_id = ? AND package_id = ?
+                    """,
+                    (library_id, package_id),
+                )
+                for item in package.get("items") or ():
+                    connection.execute(
+                        """
+                        INSERT INTO channel_package_items (
+                            library_id, package_id, message_id, ordinal,
+                            media_type, caption_for_naming, original_caption,
+                            inherited_caption
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            library_id,
+                            package_id,
+                            int(item["message_id"]),
+                            int(item["ordinal"]),
+                            str(item["media_type"]),
+                            item.get("caption_for_naming"),
+                            item.get("original_caption"),
+                            int(
+                                normalize_inherited(
+                                    item.get("inherited_caption", False)
+                                )
+                            ),
+                        ),
+                    )
+                selection = connection.execute(
+                    """
+                    UPDATE channel_package_selections
+                    SET selected = 0,
+                        invalidation_reason = 'package_revision_changed',
+                        updated_at = ?
+                    WHERE library_id = ? AND package_id = ? AND selected = 1
+                    """,
+                    (now, library_id, package_id),
+                )
+                invalidated_selection_count += selection.rowcount
+
+            desired_ranges = [
+                (
+                    int(package["start_message_id"]),
+                    int(package["end_message_id"]),
+                    desired_ids[int(package["start_message_id"])],
+                )
+                for package in desired_packages
+            ]
+            for removed in removed_rows:
+                removed_start = int(removed["start_message_id"])
+                superseded_by = next(
+                    (
+                        package_id
+                        for start, end, package_id in desired_ranges
+                        if start <= removed_start <= end
+                    ),
+                    None,
+                )
+                if superseded_by is None and desired_ranges:
+                    earlier = [
+                        row for row in desired_ranges if row[0] <= removed_start
+                    ]
+                    superseded_by = (earlier[-1] if earlier else desired_ranges[0])[2]
+                connection.execute(
+                    """
+                    UPDATE channel_packages
+                    SET boundary_status = 'superseded',
+                        superseded_by_package_id = ?, index_revision = ?,
+                        updated_at = ?
+                    WHERE id = ? AND library_id = ?
+                    """,
+                    (
+                        superseded_by,
+                        index_revision,
+                        now,
+                        removed["id"],
+                        library_id,
+                    ),
+                )
+                selection = connection.execute(
+                    """
+                    UPDATE channel_package_selections
+                    SET selected = 0,
+                        invalidation_reason = 'package_revision_changed',
+                        updated_at = ?
+                    WHERE library_id = ? AND package_id = ? AND selected = 1
+                    """,
+                    (now, library_id, removed["id"]),
+                )
+                invalidated_selection_count += selection.rowcount
+
+            for failure_update in failure_updates:
+                cursor = connection.execute(
+                    """
+                    UPDATE channel_scan_failures
+                    SET uncertain_through_message_id = ?, updated_at = ?
+                    WHERE id = ? AND library_id = ? AND status != 'resolved'
+                    """,
+                    (
+                        int(failure_update["uncertain_through_message_id"]),
+                        now,
+                        int(failure_update["failure_id"]),
+                        library_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("Failure does not belong to the indexing library")
+
+            stable_package_count = connection.execute(
+                """
+                SELECT COUNT(*) FROM channel_packages
+                WHERE library_id = ? AND boundary_status = 'stable'
+                """,
+                (library_id,),
+            ).fetchone()[0]
+            indexed = max(
+                int(job["indexed_through_message_id"]), int(through_message_id)
+            )
+            connection.execute(
+                """
+                UPDATE channel_scan_jobs
+                SET indexed_through_message_id = ?, index_revision = ?,
+                    stable_package_count = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    indexed,
+                    index_revision,
+                    stable_package_count,
+                    now,
+                    job_id,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE channel_libraries
+                SET indexed_through_message_id = MAX(
+                        indexed_through_message_id, ?
+                    ),
+                    index_revision = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (indexed, index_revision, now, library_id),
+            )
+            updated_job = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        result = dict(updated_job)
+        result.update(
+            {
+                "changed_package_count": changed_count,
+                "superseded_package_count": len(removed_rows),
+                "invalidated_selection_count": invalidated_selection_count,
+            }
+        )
+        return result
+
     def commit_indexed_revision(
         self,
         job_id: int,

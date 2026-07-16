@@ -731,3 +731,31 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: guard direct channel scan claims$')"` 回滚本次修复。
+
+## 2026-07-16 - Task: Persisted Message Adapter And Revisioned Package Indexer
+
+### What was done
+
+- 新增持久化媒体消息适配器和稳定 SHA-256 元数据摘要，使 SQLite 元数据可直接复用现有包规划、caption 继承、专辑和大小汇总规则。
+- 新增重叠尾部索引与失败不确定闭包，跨 50 条扫描批次和超过 500 条同包媒体时只由真实下一包边界或扫描快照终点稳定尾包。
+- 在单一事务中原位发布同起点 package revision、包成员、superseded 关系、选择失效、成功旧 revision 的 outdated 状态，以及 job/library 索引水位和全局 revision。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_workflow.py -q`：按预期在收集阶段失败，`ModuleNotFoundError: No module named 'module.channel_library_workflow'`，`1 error in 0.04s`。
+- GREEN Task 3：同一命令通过，`11 passed in 0.09s`。
+- GREEN planner regressions：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_workflow.py tests/module/test_comment_workflow.py tests/module/test_prescan_workflow.py -q`：`128 passed in 0.92s`。
+- GREEN state regressions：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py tests/module/test_task_state.py -q`：`44 passed in 0.56s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`275 passed, 1 skipped in 23.85s`。
+- `py_compile` 与 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_workflow.py`: 新增媒体行提取、消息适配、失败闭包和 revision 包索引器。
+- `module/channel_library_store.py`: 新增索引上下文读取与包、成员、选择、失败闭包、revision、水位的原子发布。
+- `tests/module/test_channel_library_workflow.py`: 覆盖 planner 金标准、album、跨批边界、超过 500 条、尾部、失败闭包、拆并 supersede、选择失效、outdated 和事务回滚。
+- `progress.md`: 追加 Task 3 实施、验证与回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^feat: index revisioned channel packages$')"` 回滚 Task 3 全部已跟踪改动。
