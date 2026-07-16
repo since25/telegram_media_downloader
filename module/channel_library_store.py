@@ -1,11 +1,16 @@
 """Persistent storage foundation for the Web channel library."""
 
+import base64
+import binascii
+import datetime
+import json
 import os
 import sqlite3
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Optional, Sequence, Union
+from typing import Any, Mapping, Optional, Sequence, Union
 
 
 SCHEMA_VERSION = 2
@@ -43,6 +48,8 @@ PACKAGE_DOWNLOAD_STATUSES = frozenset(
 )
 SCAN_FAILURE_STATUSES = frozenset({"open", "repairing", "resolved"})
 DOWNLOAD_DISPATCH_STATUSES = frozenset({"pending_dispatch", "dispatched"})
+DEFAULT_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 200
 
 ALLOWED_SCAN_TRANSITIONS = {
     "queued": {"running", "paused_user", "stopped", "failed"},
@@ -64,6 +71,96 @@ ALLOWED_SCAN_TRANSITIONS = {
     "partial": set(),
     "failed": set(),
 }
+
+
+@dataclass(frozen=True)
+class PackageFilter:
+    """Typed, allow-listed package query fields."""
+
+    q: Optional[str] = None
+    date_from: Optional[Union[str, datetime.date, datetime.datetime]] = None
+    date_to: Optional[Union[str, datetime.date, datetime.datetime]] = None
+    message_id_min: Optional[int] = None
+    message_id_max: Optional[int] = None
+    media_count_min: Optional[int] = None
+    media_count_max: Optional[int] = None
+    size_min: Optional[int] = None
+    size_max: Optional[int] = None
+    include_unknown_size: bool = False
+    download_status: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class QueryPage:
+    """One keyset page and the revision of its read snapshot."""
+
+    items: list[dict]
+    next_cursor: Optional[str]
+    library_revision: Optional[int] = None
+
+
+def _normalize_title(value: object) -> str:
+    if value is None:
+        return ""
+    return unicodedata.normalize("NFKC", str(value)).casefold()
+
+
+def _normalize_utc_boundary(
+    value: Union[str, datetime.date, datetime.datetime], field_name: str
+) -> str:
+    if isinstance(value, datetime.datetime):
+        parsed = value
+    elif isinstance(value, datetime.date):
+        parsed = datetime.datetime.combine(value, datetime.time.min)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError(f"{field_name} must not be empty")
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.datetime.fromisoformat(text)
+        except ValueError as error:
+            raise ValueError(f"{field_name} must be an ISO datetime") from error
+    else:
+        raise ValueError(f"{field_name} must be an ISO datetime")
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc).isoformat()
+
+
+def _encode_cursor(payload: Mapping[str, int]) -> str:
+    encoded = json.dumps(
+        dict(payload), sort_keys=True, separators=(",", ":")
+    ).encode("ascii")
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: str, required_keys: frozenset[str]) -> dict[str, int]:
+    if not isinstance(cursor, str) or not cursor or len(cursor) > 512:
+        raise ValueError("Invalid cursor")
+    try:
+        padding = "=" * (-len(cursor) % 4)
+        decoded = base64.b64decode(
+            f"{cursor}{padding}", altchars=b"-_", validate=True
+        ).decode("utf-8")
+
+        def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Invalid cursor")
+                result[key] = value
+            return result
+
+        payload = json.loads(decoded, object_pairs_hook=reject_duplicate_keys)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError("Invalid cursor") from error
+    if not isinstance(payload, dict) or frozenset(payload) != required_keys:
+        raise ValueError("Invalid cursor")
+    if any(type(payload[key]) is not int or payload[key] < 0 for key in required_keys):
+        raise ValueError("Invalid cursor")
+    return payload
 
 
 @dataclass(frozen=True)
@@ -114,6 +211,9 @@ class ChannelLibraryStore:
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5.0)
         connection.row_factory = sqlite3.Row
+        connection.create_function(
+            "unicode_nfkc_casefold", 1, _normalize_title, deterministic=True
+        )
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
         return connection
@@ -561,6 +661,522 @@ class ChannelLibraryStore:
                 "SELECT * FROM channel_libraries WHERE id = ?", (library_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+    @staticmethod
+    def _page_size(limit: int) -> int:
+        if type(limit) is not int or limit < 1:
+            raise ValueError("Page size must be a positive integer")
+        return min(limit, MAX_PAGE_SIZE)
+
+    @staticmethod
+    def _package_predicate(
+        library_id: int, package_filter: PackageFilter
+    ) -> tuple[str, list[object]]:
+        if not isinstance(package_filter, PackageFilter):
+            raise TypeError("package_filter must be a PackageFilter")
+        if package_filter.q is not None and not isinstance(package_filter.q, str):
+            raise ValueError("q must be a string")
+        if type(package_filter.include_unknown_size) is not bool:
+            raise ValueError("include_unknown_size must be a boolean")
+
+        numeric_fields = (
+            "message_id_min",
+            "message_id_max",
+            "media_count_min",
+            "media_count_max",
+            "size_min",
+            "size_max",
+        )
+        numeric_values = {}
+        for field_name in numeric_fields:
+            value = getattr(package_filter, field_name)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{field_name} must be a non-negative integer")
+            numeric_values[field_name] = value
+        for lower_name, upper_name in (
+            ("message_id_min", "message_id_max"),
+            ("media_count_min", "media_count_max"),
+            ("size_min", "size_max"),
+        ):
+            lower = numeric_values[lower_name]
+            upper = numeric_values[upper_name]
+            if lower is not None and upper is not None and lower > upper:
+                raise ValueError(f"{lower_name} must not exceed {upper_name}")
+
+        if (
+            package_filter.download_status is not None
+            and package_filter.download_status not in PACKAGE_DOWNLOAD_STATUSES
+        ):
+            raise ValueError("Unsupported package download status")
+        date_from = (
+            _normalize_utc_boundary(package_filter.date_from, "date_from")
+            if package_filter.date_from is not None
+            else None
+        )
+        date_to = (
+            _normalize_utc_boundary(package_filter.date_to, "date_to")
+            if package_filter.date_to is not None
+            else None
+        )
+        if date_from is not None and date_to is not None and date_from >= date_to:
+            raise ValueError("date_from must be before date_to")
+
+        predicates = [
+            "p.library_id = ?",
+            "p.boundary_status != 'superseded'",
+        ]
+        parameters: list[object] = [library_id]
+        if package_filter.q is not None:
+            normalized_query = _normalize_title(package_filter.q)
+            if normalized_query:
+                predicates.append(
+                    "instr(unicode_nfkc_casefold(p.title), ?) > 0"
+                )
+                parameters.append(normalized_query)
+        if date_from is not None:
+            predicates.append("p.published_at >= ?")
+            parameters.append(date_from)
+        if date_to is not None:
+            predicates.append("p.published_at < ?")
+            parameters.append(date_to)
+        if package_filter.message_id_min is not None:
+            predicates.append("p.end_message_id >= ?")
+            parameters.append(package_filter.message_id_min)
+        if package_filter.message_id_max is not None:
+            predicates.append("p.start_message_id <= ?")
+            parameters.append(package_filter.message_id_max)
+        if package_filter.media_count_min is not None:
+            predicates.append("p.media_count >= ?")
+            parameters.append(package_filter.media_count_min)
+        if package_filter.media_count_max is not None:
+            predicates.append("p.media_count <= ?")
+            parameters.append(package_filter.media_count_max)
+        size_filter_active = (
+            package_filter.size_min is not None or package_filter.size_max is not None
+        )
+        if package_filter.size_min is not None:
+            predicates.append("p.known_total_size >= ?")
+            parameters.append(package_filter.size_min)
+        if package_filter.size_max is not None:
+            predicates.append("p.known_total_size <= ?")
+            parameters.append(package_filter.size_max)
+        if size_filter_active and not package_filter.include_unknown_size:
+            predicates.append("p.unknown_size_count = 0")
+        if package_filter.download_status is not None:
+            predicates.append("p.current_download_status = ?")
+            parameters.append(package_filter.download_status)
+        return " AND ".join(predicates), parameters
+
+    def list_libraries(
+        self,
+        cursor: Optional[str] = None,
+        limit: int = DEFAULT_PAGE_SIZE,
+    ) -> QueryPage:
+        """List libraries in stable descending-ID order without offsets."""
+
+        page_size = self._page_size(limit)
+        parameters: list[object] = []
+        cursor_sql = ""
+        if cursor is not None:
+            decoded = _decode_cursor(cursor, frozenset({"id"}))
+            cursor_sql = "WHERE id < ?"
+            parameters.append(decoded["id"])
+        parameters.append(page_size + 1)
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            rows = connection.execute(
+                f"""
+                SELECT * FROM channel_libraries
+                {cursor_sql}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        has_more = len(rows) > page_size
+        page_rows = rows[:page_size]
+        next_cursor = (
+            _encode_cursor({"id": int(page_rows[-1]["id"])})
+            if has_more
+            else None
+        )
+        return QueryPage([dict(row) for row in page_rows], next_cursor)
+
+    def list_packages(
+        self,
+        library_id: int,
+        package_filter: PackageFilter,
+        cursor: Optional[str] = None,
+        limit: int = DEFAULT_PAGE_SIZE,
+    ) -> QueryPage:
+        """List filtered packages using a descending composite keyset."""
+
+        page_size = self._page_size(limit)
+        predicate, parameters = self._package_predicate(library_id, package_filter)
+        if cursor is not None:
+            decoded = _decode_cursor(
+                cursor, frozenset({"start_message_id", "id"})
+            )
+            predicate = (
+                f"{predicate} AND "
+                "(p.start_message_id < ? OR "
+                "(p.start_message_id = ? AND p.id < ?))"
+            )
+            parameters.extend(
+                [
+                    decoded["start_message_id"],
+                    decoded["start_message_id"],
+                    decoded["id"],
+                ]
+            )
+        parameters.append(page_size + 1)
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            library = connection.execute(
+                "SELECT index_revision FROM channel_libraries WHERE id = ?",
+                (library_id,),
+            ).fetchone()
+            if library is None:
+                raise KeyError(f"Channel library {library_id} does not exist")
+            rows = connection.execute(
+                f"""
+                SELECT p.*,
+                       s.package_revision AS selection_revision,
+                       s.selected AS stored_selected,
+                       s.invalidation_reason AS stored_invalidation_reason
+                FROM channel_packages AS p
+                LEFT JOIN channel_package_selections AS s
+                  ON s.library_id = p.library_id AND s.package_id = p.id
+                WHERE {predicate}
+                ORDER BY p.start_message_id DESC, p.id DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        has_more = len(rows) > page_size
+        page_rows = rows[:page_size]
+        items = []
+        for row in page_rows:
+            item = dict(row)
+            selected = (
+                item["stored_selected"] == 1
+                and item["selection_revision"] == item["index_revision"]
+                and item["boundary_status"] == "stable"
+            )
+            invalidation_reason = item.pop("stored_invalidation_reason")
+            if invalidation_reason is None and item["stored_selected"] == 1:
+                if item["selection_revision"] != item["index_revision"]:
+                    invalidation_reason = "package_revision_changed"
+                elif item["boundary_status"] != "stable":
+                    invalidation_reason = "package_not_stable"
+            item.pop("stored_selected")
+            item["selected"] = selected
+            item["selection_invalidation_reason"] = invalidation_reason
+            item["selectable"] = item["boundary_status"] == "stable"
+            item["unselectable_reason"] = (
+                None if item["selectable"] else "package_not_stable"
+            )
+            item["size_is_exact"] = item["unknown_size_count"] == 0
+            items.append(item)
+        next_cursor = (
+            _encode_cursor(
+                {
+                    "start_message_id": int(page_rows[-1]["start_message_id"]),
+                    "id": int(page_rows[-1]["id"]),
+                }
+            )
+            if has_more
+            else None
+        )
+        return QueryPage(items, next_cursor, int(library["index_revision"]))
+
+    def list_package_items(
+        self,
+        library_id: int,
+        package_id: int,
+        cursor: Optional[str] = None,
+        limit: int = DEFAULT_PAGE_SIZE,
+    ) -> QueryPage:
+        """List one package's media details using an ascending item keyset."""
+
+        page_size = self._page_size(limit)
+        cursor_sql = ""
+        parameters: list[object] = [library_id, package_id]
+        if cursor is not None:
+            decoded = _decode_cursor(
+                cursor, frozenset({"ordinal", "message_id"})
+            )
+            cursor_sql = (
+                "AND (i.ordinal > ? OR "
+                "(i.ordinal = ? AND i.message_id > ?))"
+            )
+            parameters.extend(
+                [decoded["ordinal"], decoded["ordinal"], decoded["message_id"]]
+            )
+        parameters.append(page_size + 1)
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            library = connection.execute(
+                "SELECT index_revision FROM channel_libraries WHERE id = ?",
+                (library_id,),
+            ).fetchone()
+            if library is None:
+                raise KeyError(f"Channel library {library_id} does not exist")
+            package = connection.execute(
+                """
+                SELECT id FROM channel_packages
+                WHERE library_id = ? AND id = ?
+                """,
+                (library_id, package_id),
+            ).fetchone()
+            if package is None:
+                raise KeyError(f"Channel package {package_id} does not exist")
+            rows = connection.execute(
+                f"""
+                SELECT i.*, m.message_date, m.media_group_id, m.caption,
+                       m.file_name, m.file_size, m.mime_type, m.duration,
+                       m.width, m.height
+                FROM channel_package_items AS i
+                JOIN channel_media_messages AS m
+                  ON m.library_id = i.library_id AND m.message_id = i.message_id
+                WHERE i.library_id = ? AND i.package_id = ?
+                  {cursor_sql}
+                ORDER BY i.ordinal, i.message_id
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        has_more = len(rows) > page_size
+        page_rows = rows[:page_size]
+        next_cursor = (
+            _encode_cursor(
+                {
+                    "ordinal": int(page_rows[-1]["ordinal"]),
+                    "message_id": int(page_rows[-1]["message_id"]),
+                }
+            )
+            if has_more
+            else None
+        )
+        return QueryPage(
+            [dict(row) for row in page_rows],
+            next_cursor,
+            int(library["index_revision"]),
+        )
+
+    def set_package_selected(
+        self,
+        library_id: int,
+        package_id: int,
+        selected: bool,
+        now: Optional[float] = None,
+    ) -> dict:
+        """Persist one package selection bound to its current revision."""
+
+        if type(selected) is not bool:
+            raise ValueError("selected must be a boolean")
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            package = connection.execute(
+                """
+                SELECT * FROM channel_packages
+                WHERE library_id = ? AND id = ?
+                """,
+                (library_id, package_id),
+            ).fetchone()
+            if package is None:
+                library = connection.execute(
+                    "SELECT id FROM channel_libraries WHERE id = ?", (library_id,)
+                ).fetchone()
+                if library is None:
+                    raise KeyError(f"Channel library {library_id} does not exist")
+                raise KeyError(f"Channel package {package_id} does not exist")
+            if selected and package["boundary_status"] != "stable":
+                raise ValueError("Package is not stable and cannot be selected")
+            if selected:
+                connection.execute(
+                    """
+                    INSERT INTO channel_package_selections (
+                        library_id, package_id, package_revision, selected,
+                        invalidation_reason, created_at, updated_at
+                    ) VALUES (?, ?, ?, 1, NULL, ?, ?)
+                    ON CONFLICT(library_id, package_id) DO UPDATE SET
+                        package_revision = excluded.package_revision,
+                        selected = 1, invalidation_reason = NULL,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        library_id,
+                        package_id,
+                        package["index_revision"],
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    DELETE FROM channel_package_selections
+                    WHERE library_id = ? AND package_id = ?
+                    """,
+                    (library_id, package_id),
+                )
+        return {
+            "library_id": library_id,
+            "package_id": package_id,
+            "package_revision": int(package["index_revision"]),
+            "selected": selected,
+            "invalidation_reason": None,
+        }
+
+    def select_filtered(
+        self,
+        library_id: int,
+        package_filter: PackageFilter,
+        now: Optional[float] = None,
+    ) -> dict[str, int]:
+        """Select every matching stable package with one INSERT-SELECT."""
+
+        predicate, parameters = self._package_predicate(library_id, package_filter)
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            library = connection.execute(
+                "SELECT id FROM channel_libraries WHERE id = ?", (library_id,)
+            ).fetchone()
+            if library is None:
+                raise KeyError(f"Channel library {library_id} does not exist")
+            counts = connection.execute(
+                f"""
+                SELECT COUNT(*) AS matching_count,
+                       COALESCE(SUM(
+                           CASE WHEN p.boundary_status = 'stable' THEN 1 ELSE 0 END
+                       ), 0) AS stable_count
+                FROM channel_packages AS p
+                WHERE {predicate}
+                """,
+                parameters,
+            ).fetchone()
+            connection.execute(
+                f"""
+                INSERT INTO channel_package_selections (
+                    library_id, package_id, package_revision, selected,
+                    invalidation_reason, created_at, updated_at
+                )
+                SELECT p.library_id, p.id, p.index_revision, 1, NULL, ?, ?
+                FROM channel_packages AS p
+                WHERE {predicate} AND p.boundary_status = 'stable'
+                ON CONFLICT(library_id, package_id) DO UPDATE SET
+                    package_revision = excluded.package_revision,
+                    selected = 1, invalidation_reason = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                [now, now, *parameters],
+            )
+        selected_count = int(counts["stable_count"])
+        return {
+            "selected_count": selected_count,
+            "skipped_count": int(counts["matching_count"]) - selected_count,
+        }
+
+    def clear_selection(self, library_id: int) -> int:
+        """Remove all valid and invalidated selection records for a library."""
+
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            library = connection.execute(
+                "SELECT id FROM channel_libraries WHERE id = ?", (library_id,)
+            ).fetchone()
+            if library is None:
+                raise KeyError(f"Channel library {library_id} does not exist")
+            cursor = connection.execute(
+                "DELETE FROM channel_package_selections WHERE library_id = ?",
+                (library_id,),
+            )
+        return cursor.rowcount
+
+    def selection_summary(self, library_id: int) -> dict:
+        """Summarize valid selections separately from invalidated records."""
+
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            library = connection.execute(
+                "SELECT id FROM channel_libraries WHERE id = ?", (library_id,)
+            ).fetchone()
+            if library is None:
+                raise KeyError(f"Channel library {library_id} does not exist")
+            totals = connection.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE
+                        WHEN s.selected = 1
+                         AND s.package_revision = p.index_revision
+                         AND p.boundary_status = 'stable'
+                        THEN 1 ELSE 0 END), 0) AS selected_count,
+                    COALESCE(SUM(CASE
+                        WHEN s.selected = 1
+                         AND s.package_revision = p.index_revision
+                         AND p.boundary_status = 'stable'
+                        THEN p.media_count ELSE 0 END), 0) AS media_count,
+                    COALESCE(SUM(CASE
+                        WHEN s.selected = 1
+                         AND s.package_revision = p.index_revision
+                         AND p.boundary_status = 'stable'
+                        THEN p.known_total_size ELSE 0 END), 0) AS known_total_size,
+                    COALESCE(SUM(CASE
+                        WHEN s.selected = 1
+                         AND s.package_revision = p.index_revision
+                         AND p.boundary_status = 'stable'
+                        THEN p.unknown_size_count ELSE 0 END), 0)
+                        AS unknown_size_count
+                FROM channel_package_selections AS s
+                JOIN channel_packages AS p
+                  ON p.library_id = s.library_id AND p.id = s.package_id
+                WHERE s.library_id = ?
+                """,
+                (library_id,),
+            ).fetchone()
+            invalidation_rows = connection.execute(
+                """
+                SELECT s.package_id,
+                       CASE
+                         WHEN s.invalidation_reason IS NOT NULL
+                         THEN s.invalidation_reason
+                         WHEN s.package_revision != p.index_revision
+                         THEN 'package_revision_changed'
+                         WHEN p.boundary_status != 'stable'
+                         THEN 'package_not_stable'
+                       END AS reason
+                FROM channel_package_selections AS s
+                JOIN channel_packages AS p
+                  ON p.library_id = s.library_id AND p.id = s.package_id
+                WHERE s.library_id = ?
+                  AND (
+                    s.invalidation_reason IS NOT NULL
+                    OR (s.selected = 1 AND (
+                        s.package_revision != p.index_revision
+                        OR p.boundary_status != 'stable'
+                    ))
+                  )
+                ORDER BY s.package_id
+                """,
+                (library_id,),
+            ).fetchall()
+        unknown_size_count = int(totals["unknown_size_count"])
+        invalidations = [
+            {"package_id": int(row["package_id"]), "reason": row["reason"]}
+            for row in invalidation_rows
+        ]
+        return {
+            "selected_count": int(totals["selected_count"]),
+            "media_count": int(totals["media_count"]),
+            "known_total_size": int(totals["known_total_size"]),
+            "unknown_size_count": unknown_size_count,
+            "size_is_exact": unknown_size_count == 0,
+            "invalidated_count": len(invalidations),
+            "invalidations": invalidations,
+        }
 
     @staticmethod
     def _insert_scan_job(

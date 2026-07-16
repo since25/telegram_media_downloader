@@ -979,3 +979,31 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: preserve repair uncertainty across retries$')"` 回滚本次 Critical 修复。
+
+## 2026-07-16 - Task: Filtered Queries, Keyset Pagination, And Persistent Selection
+
+### What was done
+
+- 新增 typed 包筛选、频道/包/包项 keyset 查询，固定实现 Unicode 规范化标题子串、UTC 半开时间、消息区间相交、包含式数量/大小、未知大小 opt-in 和下载状态语义。
+- 新增严格 URL-safe base64 JSON cursor 与 200 条分页上限；包页在同一 SQLite 读快照返回结果和 library revision，扫描中插入新包不会令后续页重复或漏掉原结果。
+- 新增 revision 绑定的单包选择、全筛选结果选择、清空和汇总；全选使用共享谓词和单次参数化 `INSERT-SELECT`，跳过非稳定包，汇总区分有效选择与明确失效原因。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_queries.py -q`：按预期在收集阶段报缺少 `PackageFilter`，`1 error in 0.04s`。
+- GREEN query：同命令实现后 `15 passed in 0.19s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_queries.py tests/module/test_channel_library_store.py -q`：`57 passed in 0.45s`。
+- Targeted keyset/selection：插入期间分页与跨页全选两个测试 `2 passed in 0.13s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`349 passed, 1 skipped in 24.68s`。
+- `py_compile module/channel_library_store.py tests/module/test_channel_library_queries.py` 与 `git diff --check`：通过；store mypy 与 base commit 均为既存 22 条宽泛 SQLite/Mapping 类型诊断，本轮无新增。
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: 增加 typed filters、固定 SQL 谓词、严格 cursors、三类查询和 revision 绑定选择 APIs。
+- `tests/module/test_channel_library_queries.py`: 覆盖筛选边界、SQL 字面匹配、keyset 稳定性、分页上限、明细、持久选择和 revision 失效。
+- `.superpowers/sdd/task-7-report.md`: 记录 RED/GREEN/full、filter/cursor SQL 审计及 selection/revision 审计。
+- `progress.md`: 追加 Task 7 实施、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^feat: query and select channel packages$')"` 回滚 Task 7 查询与选择改动。
