@@ -201,6 +201,22 @@ class TelegramActivityGate:
         finally:
             permit.release()
 
+    async def has_download_activity(self) -> bool:
+        """Return whether a download is queued or currently using Telegram."""
+
+        self._bind_owner_loop()
+        async with self._condition:
+            return self._waiting_downloads > 0 or self._active_downloads > 0
+
+    async def wait_until_downloads_idle(self) -> None:
+        """Wait for download activity only, independent of the scan slot."""
+
+        self._bind_owner_loop()
+        async with self._condition:
+            await self._condition.wait_for(
+                lambda: self._waiting_downloads == 0 and self._active_downloads == 0
+            )
+
     async def wait_until_idle(self) -> None:
         """Wait until no queued/active download or scan remains."""
 

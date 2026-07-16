@@ -137,6 +137,28 @@ async def test_release_and_wait_finishes_counter_transition_once():
     await gate.wait_until_idle()
 
 
+@async_test
+async def test_download_only_observation_and_wait_ignore_scan_state():
+    gate = TelegramActivityGate()
+    scan = await gate.acquire_scan()
+
+    assert await gate.has_download_activity() is False
+    await asyncio.wait_for(gate.wait_until_downloads_idle(), 1)
+
+    waiting_download = asyncio.create_task(gate.acquire_download())
+    await asyncio.sleep(0)
+    assert await gate.has_download_activity() is True
+    waiting_for_downloads = asyncio.create_task(gate.wait_until_downloads_idle())
+    await asyncio.sleep(0)
+    assert not waiting_for_downloads.done()
+
+    scan.release()
+    download = await asyncio.wait_for(waiting_download, 1)
+    await download.release_and_wait()
+    await asyncio.wait_for(waiting_for_downloads, 1)
+    await gate.wait_until_idle()
+
+
 def test_gate_rejects_acquisition_from_a_second_event_loop():
     gate = TelegramActivityGate()
 

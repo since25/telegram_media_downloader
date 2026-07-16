@@ -232,6 +232,35 @@ def test_scan_transition_table_is_exact():
     }
 
 
+def test_running_control_request_is_persisted_and_consumed_at_boundary(store):
+    job = make_full_job(store)
+    store.transition_job(job["id"], "running", now=1.0)
+
+    requested = store.request_job_control(job["id"], "pause", now=2.0)
+
+    assert requested["status"] == "running"
+    assert requested["control_requested"] == "pause"
+    consumed = store.consume_job_control(job["id"], now=3.0)
+    assert consumed["status"] == "paused_user"
+    assert consumed["control_requested"] is None
+    assert store.get_library(job["library_id"])["status"] == "paused"
+
+
+def test_stop_control_request_is_persisted_until_batch_boundary(store):
+    job = make_full_job(store)
+    store.transition_job(job["id"], "running", now=1.0)
+
+    requested = store.request_job_control(job["id"], "stop", now=2.0)
+    assert requested["status"] == "running"
+    assert requested["control_requested"] == "stop"
+
+    store.commit_fetched_batch(job["id"], [], end_id=50, now=3.0)
+    consumed = store.consume_job_control(job["id"], now=4.0)
+    assert consumed["fetched_through_message_id"] == 50
+    assert consumed["status"] == "stopped"
+    assert consumed["control_requested"] is None
+
+
 def test_create_and_claim_oldest_queued_job(store):
     first = make_full_job(store, chat_id=-1001)
     second = make_full_job(store, chat_id=-1002)

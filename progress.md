@@ -820,3 +820,37 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: release telegram gate before cloud upload$')"` 回滚本次 review 修复。
+
+## 2026-07-16 - Task: Full Scan Scheduler, Throttling, And Recovery
+
+### What was done
+
+- 新增由 `Application.loop` 持有的频道库服务与全局单扫描 scheduler，支持线程安全链接解析、频道/超级群校验、最新消息不可变快照、重复 chat ID 去重，以及幂等启动和有界停止。
+- 实现全量扫描的升序 50-ID 批次、singleton/list 响应归一化、scan permit、双 checkpoint、成功非末批限速、普通错误三次持久化重试、FloodWait 绝对截止时间、失败区间继续扫描及最终 partial。
+- 增加持久化 pause/stop 边界意图和 download-only gate 观察/等待接口，使用户控制在当前请求及事务完成后生效，下载活动触发持久化自动让行并在空闲后重新排队。
+- 覆盖权限永久错误、SQLite 写入/失败区间记录错误、包索引错误和 scheduler 取消恢复，确保数据库失败不推进 checkpoint，停止服务不取消进行中的 Telegram 请求。
+
+### Testing
+
+- RED service：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_service.py -q`：收集阶段按预期报 `ModuleNotFoundError: No module named 'module.channel_library_service'`，`1 error in 0.59s`。
+- RED store/gate：控制意图和 download-only API 的三个 targeted tests 按预期报缺少 `request_job_control` / `has_download_activity`，`3 failed in 0.06s`。
+- RED review：失败区间持久化 SQLite 错误最初从 `_run_job` 逃逸，targeted regression 为 `1 failed in 0.60s`；修复后 `1 passed in 0.47s`。
+- RED retry persistence：普通重试延迟正确但 `retry_count` 为 0，targeted regression 为 `1 failed in 0.61s`；修复后 `1 passed in 0.53s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_service.py tests/module/test_channel_library_store.py tests/module/test_channel_library_workflow.py tests/module/test_telegram_activity.py -q`：`75 passed in 1.00s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`311 passed, 1 skipped in 23.71s`。
+- `py_compile` 与 `git diff --check`：通过；新 `channel_library_service.py` 无 mypy 诊断，mypy 仍报告依赖模块已有的 24 条基线错误。
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`: 新增 owner-loop 生命周期、链接解析、全量扫描 scheduler、gate、限速、重试、FloodWait、控制和失败恢复。
+- `module/channel_library_store.py`: schema v2 增加边界控制意图，并新增原子控制消费、普通重试、rate-limit deadline 和 open failure 查询。
+- `module/telegram_activity.py`: 增加同一 Condition 下的 download-only 活动查询与空闲等待。
+- `tests/module/test_channel_library_service.py`: 覆盖 fake-client 批次、生命周期、解析、控制、限速、错误和恢复路径。
+- `tests/module/test_channel_library_store.py`: 覆盖 pause/stop 意图跨批持久化和原子消费。
+- `tests/module/test_telegram_activity.py`: 覆盖 download-only 查询/等待且不受 scan 状态误阻塞。
+- `.superpowers/sdd/task-5-report.md`: 记录 Task 5 RED/GREEN、全量结果、生命周期与错误路径审计。
+- `progress.md`: 追加 Task 5 实施、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^feat: add recoverable low-rate channel scans$')"` 回滚 Task 5 全部改动。

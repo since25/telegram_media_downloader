@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Mapping, Optional, Sequence, Union
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 LIBRARY_STATUSES = frozenset(
     {"new", "indexing", "ready", "partial", "paused", "stopped", "failed"}
@@ -176,6 +176,8 @@ class ChannelLibraryStore:
                     wait_until REAL,
                     wait_reason TEXT,
                     last_error TEXT,
+                    control_requested TEXT
+                        CHECK (control_requested IN ('pause', 'stop')),
                     created_at REAL NOT NULL,
                     started_at REAL,
                     updated_at REAL NOT NULL,
@@ -419,6 +421,18 @@ class ChannelLibraryStore:
                     ON channel_download_batches(library_id, status, created_at);
                 """
             )
+            scan_job_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(channel_scan_jobs)")
+            }
+            if "control_requested" not in scan_job_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE channel_scan_jobs
+                    ADD COLUMN control_requested TEXT
+                        CHECK (control_requested IN ('pause', 'stop'))
+                    """
+                )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, time.time()),
@@ -577,6 +591,145 @@ class ChannelLibraryStore:
             ).fetchone()
         return dict(row) if row is not None else None
 
+    def request_job_control(
+        self,
+        job_id: int,
+        action: str,
+        now: Optional[float] = None,
+    ) -> dict:
+        """Persist pause/stop intent without interrupting a running batch."""
+
+        if action not in {"pause", "stop"}:
+            raise ValueError(f"Unsupported scan control action: {action}")
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if job is None:
+                raise KeyError(f"Scan job {job_id} does not exist")
+            if job["status"] != "running":
+                raise ValueError("Boundary control requests require a running scan job")
+            requested = (
+                "stop" if action == "stop" or job["control_requested"] == "stop"
+                else "pause"
+            )
+            connection.execute(
+                """
+                UPDATE channel_scan_jobs
+                SET control_requested = ?, updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (requested, now, job_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        return dict(updated)
+
+    def consume_job_control(
+        self, job_id: int, now: Optional[float] = None
+    ) -> Optional[dict]:
+        """Atomically apply a pending control request at a batch boundary."""
+
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if job is None:
+                raise KeyError(f"Scan job {job_id} does not exist")
+            action = job["control_requested"]
+            if action is None:
+                return None
+            if job["status"] != "running":
+                raise ValueError("Boundary control can only be consumed while running")
+            new_status = "paused_user" if action == "pause" else "stopped"
+            connection.execute(
+                """
+                UPDATE channel_scan_jobs
+                SET status = ?, control_requested = NULL, updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (new_status, now, job_id),
+            )
+            connection.execute(
+                """
+                UPDATE channel_libraries
+                SET status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    "paused" if new_status == "paused_user" else "stopped",
+                    now,
+                    job["library_id"],
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        return dict(updated)
+
+    def next_rate_limit_deadline(self) -> Optional[float]:
+        """Return the earliest persisted rate-limit deadline."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT MIN(wait_until) FROM channel_scan_jobs
+                WHERE status = 'waiting_rate_limit' AND wait_until IS NOT NULL
+                """
+            ).fetchone()
+        return float(row[0]) if row[0] is not None else None
+
+    def has_open_failures(self, library_id: int) -> bool:
+        """Return whether a library still has an unresolved scan range."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM channel_scan_failures
+                WHERE library_id = ? AND status != 'resolved'
+                LIMIT 1
+                """,
+                (library_id,),
+            ).fetchone()
+        return row is not None
+
+    def record_job_retry(
+        self,
+        job_id: int,
+        last_error: str,
+        now: Optional[float] = None,
+    ) -> dict:
+        """Persist one ordinary retry without advancing scan checkpoints."""
+
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+            if job is None:
+                raise KeyError(f"Scan job {job_id} does not exist")
+            if job["status"] != "running":
+                raise ValueError("Retry updates require a running scan job")
+            connection.execute(
+                """
+                UPDATE channel_scan_jobs
+                SET retry_count = retry_count + 1,
+                    last_error = ?, updated_at = ?
+                WHERE id = ? AND status = 'running'
+                """,
+                (last_error, now, job_id),
+            )
+            updated = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        return dict(updated)
+
     def claim_next_job(self, now: Optional[float] = None) -> Optional[dict]:
         now = time.time() if now is None else now
         with self.connect() as connection:
@@ -722,7 +875,9 @@ class ChannelLibraryStore:
                 UPDATE channel_scan_jobs
                 SET status = ?, started_at = ?, updated_at = ?,
                     completed_at = ?, wait_until = ?, wait_reason = ?,
-                    last_error = ?
+                    last_error = ?,
+                    control_requested = CASE
+                        WHEN ? = 'running' THEN control_requested ELSE NULL END
                 WHERE id = ?
                 """,
                 (
@@ -733,6 +888,7 @@ class ChannelLibraryStore:
                     next_wait_until,
                     next_wait_reason,
                     job["last_error"] if last_error is None else last_error,
+                    new_status,
                     job_id,
                 ),
             )
@@ -1692,7 +1848,11 @@ class ChannelLibraryStore:
             cursor = connection.execute(
                 """
                 UPDATE channel_scan_jobs
-                SET status = 'queued',
+                SET status = CASE control_requested
+                        WHEN 'pause' THEN 'paused_user'
+                        WHEN 'stop' THEN 'stopped'
+                        ELSE 'queued' END,
+                    control_requested = NULL,
                     wait_until = CASE
                         WHEN status = 'waiting_rate_limit' THEN NULL
                         ELSE wait_until END,
@@ -1714,6 +1874,28 @@ class ChannelLibraryStore:
                 WHERE id IN (
                     SELECT library_id FROM channel_scan_jobs
                     WHERE status = 'queued'
+                )
+                """,
+                (now,),
+            )
+            connection.execute(
+                """
+                UPDATE channel_libraries
+                SET status = 'paused', updated_at = ?
+                WHERE id IN (
+                    SELECT library_id FROM channel_scan_jobs
+                    WHERE status = 'paused_user'
+                )
+                """,
+                (now,),
+            )
+            connection.execute(
+                """
+                UPDATE channel_libraries
+                SET status = 'stopped', updated_at = ?
+                WHERE id IN (
+                    SELECT library_id FROM channel_scan_jobs
+                    WHERE status = 'stopped'
                 )
                 """,
                 (now,),
