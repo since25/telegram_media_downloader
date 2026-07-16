@@ -583,3 +583,23 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^docs: plan full channel library implementation$')"` 回滚实施计划与本条记录。
+
+## 2026-07-16 - Task: 准备全频道包库隔离施工目录
+
+### What was done
+
+- 将项目本地 `.worktrees/` 加入忽略，为 subagent-driven development 创建隔离 worktree，避免直接在 `master` 施工或误提交 worktree 内容。
+
+### Testing
+
+- `git check-ignore -v .worktrees`：确认 `.worktrees/` 由根目录 `.gitignore` 忽略。
+- `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `.gitignore`: 忽略本地 Git worktree 根目录。
+- `progress.md`: 记录隔离施工准备与验证。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^chore: prepare isolated feature worktree$')"` 回滚本次准备改动。

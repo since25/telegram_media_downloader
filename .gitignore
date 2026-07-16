@@ -10,6 +10,7 @@
 .DS_Store
 .cache/
 .superpowers/
+.worktrees/
 .mypy_cache/
 .coverage
 settings.json
