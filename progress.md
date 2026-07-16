@@ -1390,3 +1390,41 @@ Changed files:
 
 Rollback:
 - Run `git revert "$(git rev-list -1 --all --grep='^fix: complete channel library acceptance evidence$')"`; preserve both SQLite databases because the review fix changes only tests and documentation.
+
+## 2026-07-16 - Task 12 (part 1): Final whole-branch review and resource fixes
+
+### What was done
+
+- Ran the two-stage final review over the full `db986e9..HEAD` diff against the design spec: one spec-compliance reviewer and one code-quality/security reviewer.
+  - Spec compliance: **PASS WITH MINOR** — every hard constraint verified in code (single global scan on `Application.loop`, download-priority gate + upload non-blocking, dual watermarks, restart recovery with preserved `wait_until`, outbox saga crash windows, >500-item non-truncation, keyset paging + `library_revision`, package-scoped completion, CSRF + escaping, separate WAL DB at 0600, no new deps). Only two P2 notes.
+  - Code quality/security: correctness/concurrency/security core verified good by both reviewers; verdict **NEEDS FIXES** driven by resource behavior against the 1 vCPU / 1 GiB target.
+- Fixed the two clearly-actionable, contract-preserving resource findings:
+  - Added `ChannelLibraryStore.list_active_download_batches()` that filters `dispatch_status='dispatched' AND status IN ('queued','downloading')` in SQL (index `idx_channel_download_batches_dispatch`), and switched `schedule_pending_download_batches` and `reconcile_download_batches` to it. Previously both loaded every historical batch (including terminal ones) fully into memory on each startup/call and filtered in Python; terminal history grows unbounded. Behaviour is unchanged — the Python guard selected exactly this subset.
+  - Widened the channel-library tab poll interval from 1s to 3s. The overview list fans out one `get_library_overview` (five COUNT aggregates, incl. `channel_media_messages`) per library each tick; scans only advance every 4-6s, so 1s polling wastes the single vCPU with no freshness benefit.
+
+### Testing
+
+- New focused test `tests/test_channel_library_download.py::test_list_active_download_batches_excludes_terminal_and_undispatched` -> `1 passed`.
+- Focused: `../../.venv/bin/python -m pytest tests/test_channel_library_download.py tests/module/test_channel_library_service.py tests/test_channel_library_e2e.py -q` -> `61 passed`.
+- Full suite: `../../.venv/bin/python -m pytest tests/ -q` -> `476 passed, 1 skipped in 25.66s`.
+- `../../.venv/bin/python -m pylint --errors-only module/channel_library_store.py module/channel_library_service.py` -> no new errors (only the pre-existing `os`/`pyrogram` E1101 false positives and the `pylintrc` W0012/R0022 header noise already recorded in the Task 11 entry).
+- `git diff --check` -> clean.
+
+### Notes
+
+Accepted findings (recorded with technical reasoning, not fixed pre-deploy — none is a correctness/security/data-loss defect):
+
+- **Large "download all" batch creation is unbounded** (`create_download_batch_result` / `get_download_batch`). Selecting many thousands of packages copies every package+item into the snapshot tables inside one `BEGIN IMMEDIATE` and materializes the whole batch in memory. Risk is user-triggered, atomic (rolls back on failure, no partial batch or data loss), and recoverable by restart. A hard selection cap would change the feature's stated "full channel" contract, so it is left as the top follow-up (chunked/streamed batch creation). Single-operator scale keeps realistic exposure low.
+- **O(n^2) reindex window when an early scan failure stays open.** An unresolved low-anchor failure forces reindex-from-anchor on every later batch until repaired. Situational (needs an unresolved early transient failure); fixing touches the indexing/repair logic both reviewers verified as correct, so deferred rather than risk a regression at deploy time.
+- **WAL/SHM sidecars are not chmod 0600** and 0600 tightening is not logged. Spec only mandates 0600 on the main `.sqlite3` file; impact limited to other local users on a single-tenant VPS.
+- **Incremental "latest message" read uses `scan_permit()` vs `download_permit()`** for the link-resolve path (spec P2-1). Both preserve the no-concurrent-API invariant; cosmetic.
+- **Deterministic-task-id conflict would strand a batch as `pending_dispatch`.** Requires a `uuid5(library_id:key)` collision with a different prior task — effectively impossible.
+
+Changed files:
+- `module/channel_library_store.py`: Added `list_active_download_batches()` (SQL-filtered active-batch materialization).
+- `module/channel_library_service.py`: `schedule_pending_download_batches`/`reconcile_download_batches` now iterate active batches only.
+- `module/templates/index.html`: Channel-library poll interval 1s -> 3s.
+- `tests/test_channel_library_download.py`: Added active-batch listing test.
+
+Rollback:
+- Run `git revert "$(git rev-list -1 --all --grep='^fix: bound channel library batch scan resource use$')"`; preserve `channel_library.sqlite3` and `web_tasks.sqlite3` (this change touches only query scoping, a poll constant, and a test).

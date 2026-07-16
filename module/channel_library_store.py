@@ -1624,6 +1624,24 @@ class ChannelLibraryStore:
             ).fetchall()
         return [self.get_download_batch(int(row["id"])) for row in rows]
 
+    def list_active_download_batches(self) -> list[dict]:
+        """Materialize only dispatched batches still queued or downloading.
+
+        Schedule and reconcile only ever act on this subset; filtering in SQL
+        keeps terminal history (which grows unbounded over time) out of memory.
+        """
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id FROM channel_download_batches
+                WHERE dispatch_status = 'dispatched'
+                  AND status IN ('queued', 'downloading')
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+        return [self.get_download_batch(int(row["id"])) for row in rows]
+
     def mark_download_batch_dispatched(
         self, batch_id: int, now: Optional[float] = None
     ) -> dict:

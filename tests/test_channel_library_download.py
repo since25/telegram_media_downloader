@@ -141,6 +141,39 @@ def test_create_download_batch_is_idempotent_and_snapshots_selected_revision(tmp
         loop.close()
 
 
+def test_list_active_download_batches_excludes_terminal_and_undispatched(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        active = service.create_download_batch(library["id"], "active-key")
+        assert [
+            batch["id"] for batch in service.store.list_active_download_batches()
+        ] == [active["id"]]
+
+        with service.store.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO channel_download_batches (
+                    library_id, task_id, idempotency_key, channel_title,
+                    dispatch_status, status, created_at, updated_at
+                ) VALUES (?, 'channel-batch-pending', 'pending-key', 'Demo',
+                          'pending_dispatch', 'queued', 2, 2)
+                """,
+                (library["id"],),
+            )
+            connection.execute(
+                "UPDATE channel_download_batches SET status = 'completed' WHERE id = ?",
+                (active["id"],),
+            )
+
+        # A dispatched batch that has reached a terminal status and an
+        # undispatched pending batch are both kept out of the active listing,
+        # while the unfiltered listing still materializes every batch.
+        assert service.store.list_active_download_batches() == []
+        assert len(service.store.list_download_batches(library["id"])) == 2
+    finally:
+        loop.close()
+
+
 def test_create_download_batch_rejects_package_in_an_active_batch(tmp_path):
     service, library, loop = make_download_service(tmp_path)
     try:

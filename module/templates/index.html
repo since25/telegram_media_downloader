@@ -1389,7 +1389,7 @@
       stopPolling();
       if (tab==='tasks'){ pollTasks(); state.timers.tasks = setInterval(pollTasks, 1000); }
       else if (tab==='files'){ pollFiles(); state.timers.files = setInterval(pollFiles, 1000); }  // T7
-      else if (tab==='channel-library'){ activateChannelLibrary(); state.timers.channelLibrary = setInterval(pollChannelLibraries, 1000); }
+      else if (tab==='channel-library'){ activateChannelLibrary(); state.timers.channelLibrary = setInterval(pollChannelLibraries, 3000); }  // scans advance at 4-6s/batch; a per-library overview fan-out every 1s wastes the single vCPU
       else if (tab==='config'){ loadConfig(); }  // T8
     }
     function stopPolling(){ Object.values(state.timers).forEach(clearInterval); state.timers={}; }

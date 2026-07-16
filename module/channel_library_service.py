@@ -247,12 +247,7 @@ class ChannelLibraryService:
         """Schedule every resumable dispatched batch once in this process."""
 
         scheduled = []
-        for batch in self.store.list_download_batches():
-            if batch["dispatch_status"] != "dispatched" or batch["status"] not in {
-                "queued",
-                "downloading",
-            }:
-                continue
+        for batch in self.store.list_active_download_batches():
             if self._schedule_download_batch_owned(int(batch["id"])):
                 scheduled.append(int(batch["id"]))
         return scheduled
@@ -330,12 +325,7 @@ class ChannelLibraryService:
         """Repair unfinished package summaries from durable Web task evidence."""
 
         reconciled: list[dict] = []
-        for batch in self.store.list_download_batches():
-            if batch["dispatch_status"] != "dispatched" or batch["status"] not in {
-                "queued",
-                "downloading",
-            }:
-                continue
+        for batch in self.store.list_active_download_batches():
             task = self.task_store.get_task(batch["task_id"])
             if task is not None and task.status not in {
                 TaskStatus.COMPLETED,
