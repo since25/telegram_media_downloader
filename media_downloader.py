@@ -794,7 +794,7 @@ async def download_task(
 
         # The following rclone phase is cloud-only and must not block scans.
         if telegram_permit is not None:
-            telegram_permit.release()
+            await telegram_permit.release_and_wait()
 
         # rclone upload (云盘上传)
         # 条件：1. 没有设置telegram转发目标 2. 下载成功 3. 有文件路径

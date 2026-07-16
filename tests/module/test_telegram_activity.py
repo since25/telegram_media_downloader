@@ -112,6 +112,31 @@ async def test_download_context_releases_after_body_cancellation():
     await gate.wait_until_idle()
 
 
+@async_test
+async def test_release_and_wait_finishes_counter_transition_once():
+    gate = TelegramActivityGate()
+    download = await gate.acquire_download()
+    acquisition_order = []
+
+    async def acquire_waiting_scan():
+        permit = await gate.acquire_scan()
+        acquisition_order.append("scan")
+        return permit
+
+    waiting_scan = asyncio.create_task(acquire_waiting_scan())
+    await asyncio.sleep(0)
+
+    download.release()
+    await download.release_and_wait()
+    acquisition_order.append("release-complete")
+    await download.release_and_wait()
+
+    assert acquisition_order == ["scan", "release-complete"]
+    scan = await asyncio.wait_for(waiting_scan, 1)
+    scan.release()
+    await gate.wait_until_idle()
+
+
 def test_gate_rejects_acquisition_from_a_second_event_loop():
     gate = TelegramActivityGate()
 

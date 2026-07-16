@@ -29,6 +29,9 @@ class DownloadIntent:
     def __init__(self, gate: "TelegramActivityGate") -> None:
         self._gate = gate
         self._state = self._WAITING
+        self._release_complete: asyncio.Future[None] = (
+            asyncio.get_running_loop().create_future()
+        )
 
     async def activate(self) -> "DownloadIntent":
         """Wait for the active scan, then convert this intent to active work."""
@@ -44,6 +47,12 @@ class DownloadIntent:
         """Release active download work, or cancel it if it never activated."""
 
         self._gate._release_download(self)
+
+    async def release_and_wait(self) -> None:
+        """Release once and wait until the gate counters are updated."""
+
+        self.release()
+        await asyncio.shield(self._release_complete)
 
 
 class TelegramActivityGate:
@@ -117,6 +126,8 @@ class TelegramActivityGate:
                     self._waiting_downloads -= 1
                     intent._state = DownloadIntent._RELEASED
                     self._condition.notify_all()
+                    if not intent._release_complete.done():
+                        intent._release_complete.set_result(None)
                 raise
 
             if intent._state != DownloadIntent._WAITING:
@@ -153,6 +164,8 @@ class TelegramActivityGate:
                 elif released_state == DownloadIntent._ACTIVE:
                     self._active_downloads -= 1
                 self._condition.notify_all()
+                if not intent._release_complete.done():
+                    intent._release_complete.set_result(None)
 
         loop.create_task(release_download())
 
@@ -176,7 +189,7 @@ class TelegramActivityGate:
         try:
             yield intent
         finally:
-            intent.release()
+            await intent.release_and_wait()
 
     @asynccontextmanager
     async def scan_permit(self) -> AsyncIterator[ActivityPermit]:

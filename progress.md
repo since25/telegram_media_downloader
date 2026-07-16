@@ -791,3 +791,32 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^feat: prioritize telegram downloads over scans$')"` 回滚 Task 4 全部改动。
+
+## 2026-07-16 - Task: Complete Telegram Gate Release Before Cloud Upload
+
+### What was done
+
+- 为 download intent 增加可等待且幂等的 release completion；保留原同步 `release()`，并让同步释放后再等待复用同一次 Condition 计数结算。
+- Telegram 下载/转发结束后先等待 active 计数扣减和 scan waiter 通知完成，再进入 rclone/Aligo/云盘上传阶段。
+- 将原布尔 fake permit 测试升级为真实 gate 顺序测试，证明已等待的 scan 在 cloud callable 启动前取得 permit。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_telegram_activity.py::test_release_and_wait_finishes_counter_transition_once tests/test_media_downloader.py::MediaDownloaderTestCase::test_cloud_upload_starts_after_telegram_permit_is_released -q`：按预期报缺少 `release_and_wait()` 且云上传早于 scan，`2 failed in 0.94s`。
+- GREEN targeted：同一命令通过，`2 passed in 0.73s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_telegram_activity.py tests/test_media_downloader.py tests/module/test_web.py -q`：`63 passed in 23.38s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`290 passed, 1 skipped in 23.81s`。
+- `py_compile` 与 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `module/telegram_activity.py`: 增加每 intent 的 release completion future 和可等待幂等释放。
+- `media_downloader.py`: 云上传边界等待 gate 计数与通知结算完成。
+- `tests/module/test_telegram_activity.py`: 覆盖同步释放后等待、重复等待和 scan 先行顺序。
+- `tests/test_media_downloader.py`: 用真实 gate 验证 cloud callable 不早于等待中的 scan。
+- `.superpowers/sdd/task-4-report.md`: 追加 review RED/GREEN、取消审计和自审。
+- `progress.md`: 追加本轮 review 修复、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: release telegram gate before cloud upload$')"` 回滚本次 review 修复。

@@ -1894,21 +1894,26 @@ class MediaDownloaderTestCase(unittest.TestCase):
 
     def test_cloud_upload_starts_after_telegram_permit_is_released(self):
         import media_downloader
-
-        class TrackingPermit:
-            def __init__(self):
-                self.released = False
-
-            def release(self):
-                self.released = True
+        from module.telegram_activity import TelegramActivityGate
 
         async def scenario():
             rest_app(MOCK_CONF)
             app.cloud_drive_config.enable_upload_file = True
-            permit = TrackingPermit()
+            gate = TelegramActivityGate()
+            permit = await gate.acquire_download()
+            scan_acquired = asyncio.Event()
+            cloud_upload_called = False
+            cloud_started_before_scan = False
             message = MockMessage(id=706, media=True)
             node = TaskNode(chat_id=-1001)
-            cloud_upload_called = False
+
+            async def acquire_waiting_scan():
+                scan = await gate.acquire_scan()
+                scan_acquired.set()
+                scan.release()
+
+            scan_task = asyncio.create_task(acquire_waiting_scan())
+            await asyncio.sleep(0)
 
             async def fake_download_media(*_args, **_kwargs):
                 return DownloadStatus.SuccessDownload, "/tmp/telegram-media.bin"
@@ -1917,8 +1922,8 @@ class MediaDownloaderTestCase(unittest.TestCase):
                 return None
 
             async def fake_cloud_upload(*_args, **_kwargs):
-                nonlocal cloud_upload_called
-                self.assertTrue(permit.released)
+                nonlocal cloud_upload_called, cloud_started_before_scan
+                cloud_started_before_scan = not scan_acquired.is_set()
                 cloud_upload_called = True
                 return True
 
@@ -1944,7 +1949,10 @@ class MediaDownloaderTestCase(unittest.TestCase):
                     MockClient(), message, node, telegram_permit=permit
                 )
 
+            await asyncio.wait_for(scan_task, 1)
+            await gate.wait_until_idle()
             self.assertTrue(cloud_upload_called)
+            self.assertFalse(cloud_started_before_scan)
 
         self.loop.run_until_complete(scenario())
 
