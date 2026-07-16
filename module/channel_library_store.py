@@ -257,7 +257,7 @@ class ChannelLibraryStore:
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     resolved_at REAL,
-                    UNIQUE (id, job_id),
+                    UNIQUE (id, library_id),
                     FOREIGN KEY (job_id, library_id)
                         REFERENCES channel_scan_jobs(id, library_id)
                         ON DELETE CASCADE,
@@ -269,15 +269,18 @@ class ChannelLibraryStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     job_id INTEGER NOT NULL,
                     failure_id INTEGER NOT NULL,
+                    library_id INTEGER NOT NULL,
                     next_message_id INTEGER NOT NULL,
                     status TEXT NOT NULL DEFAULT 'queued',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     completed_at REAL,
                     UNIQUE (job_id, failure_id),
-                    FOREIGN KEY (job_id) REFERENCES channel_scan_jobs(id)
+                    FOREIGN KEY (job_id, library_id)
+                        REFERENCES channel_scan_jobs(id, library_id)
                         ON DELETE CASCADE,
-                    FOREIGN KEY (failure_id) REFERENCES channel_scan_failures(id)
+                    FOREIGN KEY (failure_id, library_id)
+                        REFERENCES channel_scan_failures(id, library_id)
                         ON DELETE CASCADE
                 );
 

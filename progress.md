@@ -631,3 +631,27 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^feat: add channel library storage foundation$')"` 回滚 Task 1 全部已跟踪改动。
+
+## 2026-07-16 - Task: 修复 repair target 跨频道关联约束
+
+### What was done
+
+- 为补扫 target 持久记录增加所属频道库 ID，并同时用复合外键绑定 scan job 与 scan failure 的频道归属。
+- 保留同一 job/failure 组合唯一性，阻止频道 A 的 repair job 关联频道 B 的 failure，同时允许同频道合法关联。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py::test_repair_target_enforces_library_ownership -q`：`1 failed in 0.02s`，按预期报 `sqlite3.OperationalError: table channel_scan_repair_targets has no column named library_id`。
+- GREEN regression：同一节点命令通过，`1 passed in 0.01s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py tests/module/test_app.py -q`：`6 passed in 0.06s`。
+- Schema 自检：`library_id` 非空、2 个复合外键共 4 个列映射、`PRAGMA foreign_key_check` 0 条违规；`py_compile` 与 `git diff --check` 通过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: 以 `library_id` 和复合外键隔离 repair target 的 job/failure 归属。
+- `tests/module/test_channel_library_store.py`: 新增同库成功、跨库触发完整性错误的回归测试。
+- `progress.md`: 追加本轮 review 修复、验证与回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: enforce repair target library isolation$')"` 回滚本次 review 修复。
