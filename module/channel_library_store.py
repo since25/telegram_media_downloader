@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Union
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 LIBRARY_STATUSES = frozenset(
     {"new", "indexing", "ready", "partial", "paused", "stopped", "failed"}
@@ -464,6 +464,7 @@ class ChannelLibraryStore:
                     library_id INTEGER NOT NULL,
                     task_id TEXT NOT NULL UNIQUE,
                     idempotency_key TEXT NOT NULL,
+                    channel_title TEXT NOT NULL,
                     dispatch_status TEXT NOT NULL DEFAULT 'pending_dispatch'
                         CHECK (dispatch_status IN (
                             'pending_dispatch', 'dispatched'
@@ -569,6 +570,34 @@ class ChannelLibraryStore:
                     ADD COLUMN control_requested TEXT
                         CHECK (control_requested IN ('pause', 'stop'))
                     """
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (2, ?)",
+                    (time.time(),),
+                )
+            download_batch_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(channel_download_batches)"
+                )
+            }
+            if "channel_title" not in download_batch_columns:
+                connection.execute(
+                    "ALTER TABLE channel_download_batches ADD COLUMN channel_title TEXT"
+                )
+                connection.execute(
+                    """
+                    UPDATE channel_download_batches
+                    SET channel_title = (
+                        SELECT title FROM channel_libraries
+                        WHERE channel_libraries.id = channel_download_batches.library_id
+                    )
+                    WHERE channel_title IS NULL
+                    """
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (3, ?)",
+                    (time.time(),),
                 )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (?, ?)",
@@ -1300,14 +1329,15 @@ class ChannelLibraryStore:
                 cursor = connection.execute(
                     """
                     INSERT INTO channel_download_batches (
-                        library_id, task_id, idempotency_key, allow_redownload,
-                        created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        library_id, task_id, idempotency_key, channel_title,
+                        allow_redownload, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         library_id,
                         task_id,
                         key,
+                        library["title"],
                         1 if allow_redownload else 0,
                         now,
                         now,
@@ -1493,7 +1523,22 @@ class ChannelLibraryStore:
                 """,
                 (now, batch_id, package_id),
             )
-            if cursor.rowcount not in {0, 1}:
+            if cursor.rowcount == 0:
+                attempt = connection.execute(
+                    """
+                    SELECT status FROM channel_download_batch_packages
+                    WHERE batch_id = ? AND package_id = ?
+                    """,
+                    (batch_id, package_id),
+                ).fetchone()
+                if attempt is None:
+                    raise KeyError(
+                        f"Package {package_id} is not in download batch {batch_id}"
+                    )
+                raise ValueError(
+                    f"Package download attempt is not queued: {attempt['status']}"
+                )
+            if cursor.rowcount != 1:
                 raise RuntimeError("Unexpected package attempt update count")
             connection.execute(
                 """
@@ -1507,6 +1552,53 @@ class ChannelLibraryStore:
                 """
                 UPDATE channel_download_batches
                 SET status = 'downloading', updated_at = ? WHERE id = ?
+                """,
+                (now, batch_id),
+            )
+        return self.get_download_batch(batch_id)
+
+    def prepare_download_batch_for_run(
+        self, batch_id: int, now: Optional[float] = None
+    ) -> dict:
+        """Normalize stale single-process work before a fresh runner claims it."""
+
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch = connection.execute(
+                "SELECT * FROM channel_download_batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+            if batch is None:
+                raise KeyError(f"Download batch {batch_id} does not exist")
+            if batch["status"] not in {"queued", "downloading"}:
+                raise ValueError(
+                    f"Download batch is not resumable: {batch['status']}"
+                )
+            connection.execute(
+                """
+                UPDATE channel_packages
+                SET current_download_status = 'queued', updated_at = ?
+                WHERE library_id = ? AND last_download_task_id = ?
+                  AND id IN (
+                      SELECT package_id FROM channel_download_batch_packages
+                      WHERE batch_id = ? AND status = 'downloading'
+                  )
+                """,
+                (now, batch["library_id"], batch["task_id"], batch_id),
+            )
+            connection.execute(
+                """
+                UPDATE channel_download_batch_packages
+                SET status = 'queued', updated_at = ?
+                WHERE batch_id = ? AND status = 'downloading'
+                """,
+                (now, batch_id),
+            )
+            connection.execute(
+                """
+                UPDATE channel_download_batches
+                SET status = 'queued', updated_at = ?
+                WHERE id = ? AND status = 'downloading'
                 """,
                 (now, batch_id),
             )

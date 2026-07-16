@@ -133,6 +133,9 @@ def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
         connection.execute(
             "ALTER TABLE channel_scan_jobs DROP COLUMN control_requested"
         )
+        connection.execute(
+            "ALTER TABLE channel_download_batches DROP COLUMN channel_title"
+        )
         connection.execute("DELETE FROM schema_meta")
         connection.execute(
             "INSERT INTO schema_meta (version, applied_at) VALUES (1, 1.0)"
@@ -153,6 +156,12 @@ def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
             row[1]
             for row in connection.execute("PRAGMA table_info(channel_scan_jobs)")
         }
+        batch_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(channel_download_batches)"
+            )
+        }
         library_count = connection.execute(
             "SELECT COUNT(*) FROM channel_libraries WHERE id = ?",
             (library["id"],),
@@ -162,9 +171,10 @@ def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
             (job["id"],),
         ).fetchone()[0]
 
-    assert SCHEMA_VERSION == 2
-    assert versions == [1, 2]
+    assert SCHEMA_VERSION == 3
+    assert versions == [1, 2, 3]
     assert "control_requested" in columns
+    assert "channel_title" in batch_columns
     assert library_count == 1
     assert job_count == 1
 

@@ -15,7 +15,9 @@ treated as one atomic transaction.
    batch-package attempt rows inside the same write transaction, not from the mutable
    package summary updated by later indexing.
 3. The same transaction writes the batch, package title/boundary/revision snapshots,
-   ordered message/caption snapshots, and current package `queued` summaries.
+   the channel title used for task display and recommended-C naming, ordered
+   message/caption snapshots, and current package `queued` summaries. Later channel
+   renames cannot change the batch task identity or download naming context.
 4. Only after that transaction commits, the service idempotently ensures the
    deterministic `channel-batch-<uuid>` task in `web_tasks.sqlite3`.
 5. After the Web task write succeeds, the channel batch is marked `dispatched`.
@@ -27,6 +29,10 @@ run at startup. An existing deterministic task must match the expected source, t
 chat, title, and total count whether it is active or terminal. An identity mismatch
 leaves the batch `pending_dispatch`, records only `task_identity_conflict`, and never
 marks the batch dispatched.
+
+Schema version 3 adds the immutable batch `channel_title`. Existing databases add the
+column idempotently and backfill older batches from the current library title once;
+new batches always capture it inside their creation transaction.
 
 ## Download And Result Semantics
 
@@ -49,6 +55,9 @@ distinguish:
 Historical `has_successful_attempt` is only promoted on success and is never cleared by
 a failed explicit redownload. A user stop that returns normally still overrides the
 parent Web task to `cancelled` and cancels current or unstarted package attempts.
+Cancellation while waiting for the Telegram gate or inside the exact-ID refetch follows
+the same cleanup path after the gate intent is released, so no task or package remains
+queued/downloading.
 
 Persisted download errors are allow-listed stable codes such as
 `telegram_refetch_failed`, `download_failed`, `callback_failed`, `upload_failed`, and
@@ -64,3 +73,16 @@ failed conservatively. Both `completed` and `completed_with_errors` parent tasks
 evaluated package by package, so proven packages stay completed while sibling packages
 fail. Cancelled Web tasks cancel unfinished packages. Missing or failed Web tasks fail
 unfinished packages. Already completed package attempts are not regressed.
+
+## Runner Ownership And Restart
+
+One process-local runner claim keyed by channel database path and batch ID covers the
+entire preparation, refetch, callback, and download lifecycle. A concurrent runner in
+another service instance in the same process fails before Telegram refetch or package
+callbacks. This is deliberately not a multi-process lease.
+
+After process restart the in-memory claim set is empty. Before rescheduling, startup
+reconciliation consumes terminal Web task evidence; a new runner then atomically resets
+any remaining stale `downloading` batch/package attempts and current package summaries
+to `queued`. A package-start transition only accepts `queued`; zero updated rows are a
+state conflict rather than an idempotent success.

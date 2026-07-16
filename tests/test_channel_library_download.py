@@ -289,16 +289,25 @@ def test_restart_replays_crash_after_web_task_before_dispatched_mark(tmp_path):
 
         pending = service.store.list_pending_download_batches()
         task_id = pending[0]["task_id"]
-        assert service.task_store.get_task(task_id) is not None
+        task = service.task_store.get_task(task_id)
+        assert task.title == "Demo Channel / 2 packages"
+
+        with service.store.connect() as connection:
+            connection.execute(
+                "UPDATE channel_libraries SET title = 'Renamed Channel' WHERE id = ?",
+                (library["id"],),
+            )
 
         with service.store.connect() as connection:
             connection.execute("DROP TRIGGER abort_dispatch_mark")
-        service.dispatch_pending_batches()
+        dispatched = service.dispatch_pending_batches()
 
+        assert [batch["id"] for batch in dispatched] == [pending[0]["id"]]
         assert service.store.get_download_batch(pending[0]["id"])[
             "dispatch_status"
         ] == "dispatched"
         assert [task.task_id for task in service.task_store.tasks()] == [task_id]
+        assert service.task_store.get_task(task_id).title == "Demo Channel / 2 packages"
     finally:
         loop.close()
 
@@ -456,6 +465,11 @@ def test_run_download_batch_refetches_exact_snapshot_and_writes_package_results(
     service, library, loop = make_download_service(tmp_path, client=client)
     try:
         batch = service.create_download_batch(library["id"], "run-exact-snapshot")
+        with service.store.connect() as connection:
+            connection.execute(
+                "UPDATE channel_libraries SET title = 'Renamed Channel' WHERE id = ?",
+                (library["id"],),
+            )
         captured = []
 
         async def fake_download_prescan_packages(
@@ -535,6 +549,7 @@ def test_run_download_batch_refetches_exact_snapshot_and_writes_package_results(
             "completed",
         ]
         assert stored["status"] == "failed"
+        assert stored["channel_title"] == "Demo Channel"
     finally:
         loop.close()
 
@@ -808,6 +823,231 @@ def test_run_download_batch_marks_unfinished_packages_cancelled(tmp_path):
         assert stored["status"] == "cancelled"
         assert all(
             package["status"] == "cancelled" for package in stored["packages"]
+        )
+    finally:
+        loop.close()
+
+
+def test_cancel_while_waiting_for_refetch_gate_cancels_batch_without_leaks(tmp_path):
+    from module.download_stat import get_active_task_nodes
+    from module.telegram_activity import TelegramActivityGate
+
+    service, library, loop = make_download_service(tmp_path, client=SimpleNamespace())
+    service.gate = TelegramActivityGate()
+    try:
+        batch = service.create_download_batch(library["id"], "cancel-gate-wait")
+
+        async def scenario():
+            scan = await service.gate.acquire_scan()
+            task = asyncio.create_task(service.run_download_batch(batch["id"]))
+            while service.gate._waiting_downloads == 0:
+                await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            scan.release()
+            await asyncio.sleep(0)
+            await service.gate.wait_until_downloads_idle()
+
+        loop.run_until_complete(scenario())
+
+        stored = service.store.get_download_batch(batch["id"])
+        assert stored["status"] == "cancelled"
+        assert all(
+            package["status"] == "cancelled" for package in stored["packages"]
+        )
+        assert service.task_store.get_task(batch["task_id"]).status == TaskStatus.CANCELLED
+        assert batch["task_id"] not in get_active_task_nodes()
+        assert service._running_download_batch_ids == set()
+    finally:
+        loop.close()
+
+
+def test_cancel_during_blocking_refetch_cancels_batch_and_releases_permit(tmp_path):
+    from module.download_stat import get_active_task_nodes
+    from module.telegram_activity import TelegramActivityGate
+
+    class BlockingClient:
+        def __init__(self):
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def get_messages(self, _chat_id, _message_ids):
+            self.entered.set()
+            await self.release.wait()
+
+    client = BlockingClient()
+    service, library, loop = make_download_service(tmp_path, client=client)
+    service.gate = TelegramActivityGate()
+    try:
+        batch = service.create_download_batch(library["id"], "cancel-refetch")
+
+        async def scenario():
+            task = asyncio.create_task(service.run_download_batch(batch["id"]))
+            await client.entered.wait()
+            assert await service.gate.has_download_activity() is True
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            await service.gate.wait_until_downloads_idle()
+
+        loop.run_until_complete(scenario())
+
+        stored = service.store.get_download_batch(batch["id"])
+        assert stored["status"] == "cancelled"
+        assert all(
+            package["status"] == "cancelled" for package in stored["packages"]
+        )
+        assert service.task_store.get_task(batch["task_id"]).status == TaskStatus.CANCELLED
+        assert batch["task_id"] not in get_active_task_nodes()
+        assert service._running_download_batch_ids == set()
+    finally:
+        loop.close()
+
+
+def test_same_batch_concurrent_runner_is_rejected_before_second_refetch(tmp_path):
+    class FirstCallBlockingClient:
+        def __init__(self):
+            self.calls = 0
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def get_messages(self, _chat_id, message_ids):
+            self.calls += 1
+            if self.calls == 1:
+                self.entered.set()
+                await self.release.wait()
+            return [
+                SimpleNamespace(id=message_id, empty=False) for message_id in message_ids
+            ]
+
+    client = FirstCallBlockingClient()
+    service, library, loop = make_download_service(tmp_path, client=client)
+    try:
+        batch = service.create_download_batch(library["id"], "single-runner")
+        competing = ChannelLibraryService(
+            SimpleNamespace(loop=loop),
+            client,
+            ChannelLibraryStore(service.store.path),
+            ChannelLibraryConfig(),
+            task_store=TaskStateStore(storage_path=service.task_store.storage_path),
+        )
+
+        async def no_download(**_kwargs):
+            return []
+
+        async def scenario():
+            first = asyncio.create_task(service.run_download_batch(batch["id"]))
+            await client.entered.wait()
+            try:
+                with pytest.raises(RuntimeError, match="already running"):
+                    await competing.run_download_batch(batch["id"])
+            finally:
+                first.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await first
+
+        with patch(
+            "media_downloader.download_prescan_packages", new=no_download
+        ):
+            loop.run_until_complete(scenario())
+
+        assert client.calls == 1
+        assert service._running_download_batch_ids == set()
+        assert competing._running_download_batch_ids == set()
+        stored = service.store.get_download_batch(batch["id"])
+        assert stored["status"] == "cancelled"
+    finally:
+        loop.close()
+
+
+def test_mark_package_started_rejects_nonqueued_attempt_state(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "started-conflict")
+        service.store.mark_download_batch_package_started(batch["id"], 10)
+
+        with pytest.raises(ValueError, match="not queued"):
+            service.store.mark_download_batch_package_started(batch["id"], 10)
+    finally:
+        loop.close()
+
+
+def test_restart_normalizes_stale_downloading_attempt_before_resume(tmp_path):
+    class CompleteClient:
+        async def get_messages(self, _chat_id, message_ids):
+            return [
+                SimpleNamespace(
+                    id=message_id,
+                    empty=False,
+                    caption=f"live-{message_id}",
+                    media="video",
+                    media_group_id=None,
+                    video=SimpleNamespace(
+                        file_name=f"{message_id}.mp4",
+                        file_size=100,
+                        mime_type="video/mp4",
+                    ),
+                )
+                for message_id in message_ids
+            ]
+
+    service, library, loop = make_download_service(tmp_path, client=CompleteClient())
+    try:
+        batch = service.create_download_batch(library["id"], "restart-resume")
+        service.store.mark_download_batch_package_started(batch["id"], 10)
+        restarted = ChannelLibraryService(
+            SimpleNamespace(loop=loop),
+            CompleteClient(),
+            ChannelLibraryStore(service.store.path),
+            ChannelLibraryConfig(),
+            task_store=TaskStateStore(storage_path=service.task_store.storage_path),
+        )
+        statuses_before_callbacks = []
+
+        async def complete_download(
+            packages,
+            on_package_started=None,
+            on_package_finished=None,
+            **_kwargs,
+        ):
+            from media_downloader import PackageDownloadResult, PackageMessageResult
+
+            statuses_before_callbacks.extend(
+                package["status"]
+                for package in restarted.store.get_download_batch(batch["id"])[
+                    "packages"
+                ]
+            )
+            results = []
+            for package in packages:
+                await on_package_started(package.attempt_id, package)
+                message_results = {
+                    message_id: PackageMessageResult(message_id, "completed")
+                    for message_id in package.expected_message_ids
+                }
+                await on_package_finished(package.attempt_id, message_results)
+                results.append(
+                    PackageDownloadResult(
+                        package.attempt_id,
+                        package.package_id,
+                        "completed",
+                        tuple(message_results),
+                        message_results,
+                    )
+                )
+            return results
+
+        with patch(
+            "media_downloader.download_prescan_packages", new=complete_download
+        ):
+            loop.run_until_complete(restarted.run_download_batch(batch["id"]))
+
+        assert statuses_before_callbacks == ["queued", "queued"]
+        stored = restarted.store.get_download_batch(batch["id"])
+        assert stored["status"] == "completed"
+        assert all(
+            package["status"] == "completed" for package in stored["packages"]
         )
     finally:
         loop.close()

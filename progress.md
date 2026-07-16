@@ -1108,3 +1108,36 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: harden channel download saga consistency$')"` 回滚本次复审修复；不删除两个 SQLite 文件。
+
+## 2026-07-16 - Task: Snapshot Channel Batch Execution Identity
+
+### What was done
+
+- 将频道标题作为不可变 `channel_title` 在 batch 创建事务内保存；Web task identity 和 recommended-C channel naming 只读取 batch 快照，频道后续改名不影响 crash replay 或执行命名。
+- 将频道库 schema 升至 v3；新库使用非空标题列，旧库幂等新增并一次性回填，v1/v2 迁移记录和既有数据保持。
+- 将取消处理提升到完整 runner 生命周期，覆盖等待 Telegram gate、阻塞 refetch 和 downloader；取消后稳定释放 permit、清理 active node，并将父任务和所有非终态包落为 cancelled。
+- 增加以 `(channel DB path, batch_id)` 为键的单进程 runner claim；跨 service 同批并发在 refetch 前拒绝，started 的零行更新报状态冲突，进程重启重新调度前原子归一化 stale downloading attempts。
+
+### Testing
+
+- Re-review RED：标题迁移/replay/runner、两个 pre-refetch 取消点、同批并发、started 冲突和 restart resume 组合为 `8 failed in 2.59s`；跨 service process-local claim 强化用例另为 `1 failed in 1.00s`。
+- Re-review GREEN：最终 8 个边界用例 `8 passed in 0.83s`。
+- Task 8 focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/test_channel_library_download.py tests/test_media_downloader.py tests/module/test_task_state.py -q`：`66 passed in 23.95s`。
+- Upload-inclusive：在 focused 命令追加 `tests/test_web_upload_progress.py`：`75 passed in 23.77s`。
+- Channel regressions：store/service/workflow/query `108 passed in 1.62s`。
+- Authoritative full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`381 passed, 1 skipped in 25.05s`。
+- `py_compile` 与 `git diff --check`：通过。Mypy 仍在完整项目分析前被 `markupsafe` stub 解析错误和 3 个第三方包缺少 typing marker 阻断；Black check 报本轮 4 个大文件会被全文件重排，未自动格式化。
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: schema v3 标题快照迁移、batch 创建快照、started 冲突和 stale runner 归一化。
+- `module/channel_library_service.py`: batch 标题消费、全阶段取消清理和跨 service 单进程 runner claim。
+- `tests/module/test_channel_library_store.py`: 覆盖 v1→v3 幂等迁移和列保留。
+- `tests/test_channel_library_download.py`: 覆盖 rename crash replay、命名快照、gate/refetch 取消、并发 claim、状态冲突和 restart resume。
+- `docs/channel-library-download-outbox.md`: 补充 v3 标题快照、全阶段取消和 runner ownership/restart 契约。
+- `.superpowers/sdd/task-8-report.md`: 追加二次复审 RED/GREEN 与三项边界审计。
+- `progress.md`: 追加本轮改动、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: snapshot channel batch execution identity$')"` 回滚代码；SQLite v3 新增列保留为空闲兼容字段，不执行破坏性降级或删列。

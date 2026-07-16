@@ -29,6 +29,8 @@ from module.task_state import (
 LOGGER = logging.getLogger(__name__)
 _SERVICE_OWNER_LOCK = threading.Lock()
 _SERVICE_OWNERS: dict[str, Any] = {}
+_DOWNLOAD_BATCH_RUNNER_LOCK = threading.Lock()
+_DOWNLOAD_BATCH_RUNNERS: set[tuple[str, int]] = set()
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,7 @@ class ChannelLibraryService:
         self._telegram_request_finished: Optional[asyncio.Event] = None
         self._ownership_key: Optional[str] = None
         self._shutdown_task: Optional[asyncio.Task[None]] = None
+        self._running_download_batch_ids: set[int] = set()
 
     async def start(self) -> None:
         """Initialize recovery and start exactly one scheduler task."""
@@ -213,7 +216,7 @@ class ChannelLibraryService:
                 source="web",
                 task_type="channel_library",
                 chat_id=int(library["chat_id"]),
-                title=f"{library['title']} / {len(batch['packages'])} packages",
+                title=f"{batch['channel_title']} / {len(batch['packages'])} packages",
                 status=TaskStatus.QUEUED,
                 total_count=total_count,
             )
@@ -287,6 +290,43 @@ class ChannelLibraryService:
         return reconciled
 
     async def run_download_batch(self, batch_id: int) -> list[Any]:
+        """Claim and run one batch exactly once on this service owner loop."""
+
+        batch_id = int(batch_id)
+        runner_key = (str(self.store.path.resolve()), batch_id)
+        with _DOWNLOAD_BATCH_RUNNER_LOCK:
+            if runner_key in _DOWNLOAD_BATCH_RUNNERS:
+                raise RuntimeError(f"Download batch {batch_id} is already running")
+            _DOWNLOAD_BATCH_RUNNERS.add(runner_key)
+        self._running_download_batch_ids.add(batch_id)
+        try:
+            self.store.prepare_download_batch_for_run(batch_id)
+            return await self._run_download_batch_owned(batch_id)
+        except asyncio.CancelledError:
+            self._cancel_unfinished_download_batch(batch_id)
+            raise
+        finally:
+            self._running_download_batch_ids.discard(batch_id)
+            with _DOWNLOAD_BATCH_RUNNER_LOCK:
+                _DOWNLOAD_BATCH_RUNNERS.discard(runner_key)
+
+    def _cancel_unfinished_download_batch(self, batch_id: int) -> None:
+        batch = self.store.get_download_batch(batch_id)
+        if batch is None:
+            return
+        for package in batch["packages"]:
+            if package["status"] in {"queued", "downloading"}:
+                self.store.finish_download_batch_package(
+                    batch_id,
+                    int(package["package_id"]),
+                    "cancelled",
+                    last_error="cancelled",
+                )
+        self.task_store.update_task(
+            batch["task_id"], status=TaskStatus.CANCELLED, error="cancelled"
+        )
+
+    async def _run_download_batch_owned(self, batch_id: int) -> list[Any]:
         """Refetch and serially download one committed immutable batch snapshot."""
 
         from media_downloader import PackageCallbackError, download_prescan_packages
@@ -422,25 +462,12 @@ class ChannelLibraryService:
         try:
             results = await download_prescan_packages(
                 packages,
-                channel=library["title"],
+                channel=batch["channel_title"],
                 parent_node=node,
                 selected_package_ids={package.package_id for package in packages},
                 on_package_started=on_package_started,
                 on_package_finished=on_package_finished,
             )
-        except asyncio.CancelledError:
-            for package in self.store.get_download_batch(batch_id)["packages"]:
-                if package["status"] in {"queued", "downloading"}:
-                    self.store.finish_download_batch_package(
-                        batch_id,
-                        int(package["package_id"]),
-                        "cancelled",
-                        last_error="cancelled",
-                    )
-            self.task_store.update_task(
-                batch["task_id"], status=TaskStatus.CANCELLED, error="cancelled"
-            )
-            raise
         except Exception as error:
             error_code = (
                 "callback_failed"
