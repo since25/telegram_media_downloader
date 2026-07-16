@@ -20,6 +20,31 @@ Prescan mode scans a bounded message window, writes package summaries to the Web
 
 Confirming a prescan keeps its package list in Web state instead of discarding it, so `GET /api/prescans/<task_id>/packages` keeps returning `200` (with each package's `selected` flag as of confirmation time) while the download is in progress, which is what backs the prescan download detail view. Cancelling a prescan, or clearing/clear-completing its task once it reaches a terminal state, drops the retained package list so it does not linger in memory.
 
+## Channel Library Workflow
+
+Open the Channel Library tab after login and submit any accessible message link from a channel or supergroup. The link identifies the conversation; the initial scan snapshots the latest visible message ID and indexes the complete visible ID range. Submitting another link for the same Telegram `chat_id` opens the existing library and its persisted checkpoint.
+
+The initial full scan requests 50 consecutive message IDs per batch and waits a randomized 4-6 seconds between successful batches. Deleted or unavailable IDs are normal gaps, so elapsed time follows the highest snapshotted ID rather than the number of visible messages. Incremental and repair scans also use 50-ID batches with 1-2 second delays. These are validated server settings loaded from `config.yaml`; changing them requires a restart.
+
+The scheduler runs one channel scan at a time. A queued or active Telegram media download takes priority: the current scan finishes its API call, moves to `auto_paused_download` at the batch boundary, and returns to the queue when Telegram download activity is idle. Upload-only work does not hold the Telegram activity gate. User pause and stop also take effect at a committed batch boundary, preserving metadata and the next-message checkpoint.
+
+Scan states shown by the page are:
+
+- `queued`, `running`, and `waiting_rate_limit`: waiting, scanning, or honoring a persisted Telegram deadline
+- `auto_paused_download` and `paused_user`: download-priority pause or explicit user pause
+- `stopped`: checkpoint retained until the same job is resumed
+- `completed` / library `ready`: the snapshot and package index are complete
+- `partial`: the snapshot endpoint was reached with one or more recorded failure ranges
+- `failed`: the scan stopped on a permission, database, or indexing failure and can be retried after the cause is fixed
+
+Stable packages are selectable. `provisional` is the current unproven tail, `uncertain` intersects a failed boundary closure, and `superseded` is retained history after a split or merge; these are not selectable. Package download summaries use `never`, `queued`, `downloading`, `completed`, `outdated`, `failed`, and `cancelled`.
+
+Filters cover normalized title substring, UTC publication range, intersecting message-ID range, inclusive media-count and known-size bounds, unknown-size inclusion, and download status. Package and item lists use keyset cursors. “Select all filtered” is evaluated by the server across every matching page, while prior selections survive filter changes and page reloads.
+
+A `partial` library remains browseable. Stable packages outside uncertain closures can be selected and downloaded; use Repair for all open failure ranges or selected failure IDs. A successful repair rebuilds the complete affected closure before publishing stable packages. After the first full scan finishes, Incremental snapshots and scans only the new ID tail.
+
+Duplicate protection applies at three levels: channel links deduplicate by Telegram `chat_id`, selections bind to a package revision, and every download submission requires an `Idempotency-Key`. A package with any successful attempt, or a changed package marked `outdated`, requires explicit `redownload=true`. A later failed redownload does not erase the successful-download history.
+
 ## Channel Library API
 
 The channel library uses the existing Web login session. Call `GET /api/csrf-token` after login and send its `csrf_token` value in `X-CSRF-Token` on every mutating channel-library request. The token is bound to that browser session. Only this authenticated GET mints a token; missing, wrong, and cross-session mutation attempts return `403` without creating or rotating session state. Read and write channel routes return `503 service_unavailable` until Telegram has started and the single channel-library service is running.
@@ -46,9 +71,22 @@ Package, selection, and download routes:
 
 Every route rejects undocumented query keys, JSON fields, and request bodies with `400 invalid_request`; pause/resume/stop and selection-clear accept either no body or an empty JSON object only. Flask performs synchronous validation, store reads, and persisted store commands only. Telegram link resolution, incremental snapshots, scan scheduling, and package downloads are submitted to the existing `Application.loop`; Flask never starts or awaits a second event loop. Link resolution waits at most 30 seconds, and a timeout returns `503` without cancelling persisted or in-flight owner-loop work. The service closes command admission before shutdown, drains every already-accepted owner-loop command, then stops scheduler/download tasks. The application clears its service reference before that drain so new Web requests immediately receive `503`; Telegram client stop occurs only afterward.
 
+## Channel Library Operations
+
+`channel_library.sqlite3` is created in the runtime directory with SQLite WAL, foreign keys, and file mode `0600`; startup tightens an existing file if its permissions are wider. It contains channel metadata, checkpoints, package revisions, selections, failure ranges, and immutable download-batch snapshots. `web_tasks.sqlite3` separately contains the dispatched Web task and file evidence. Telegram session files, credentials, downloaded media, and configuration secrets do not belong in either database.
+
+Before an upgrade or rollback that could affect these stores:
+
+1. Stop the service so no scan, dispatch, or task update is in flight.
+2. Create consistent backups of both SQLite databases with the SQLite backup API or `sqlite3 <db> ".backup '<backup>'"`. Do not copy only the main database file while WAL is active.
+3. Verify each backup opens and returns `ok` from `PRAGMA integrity_check`; back up `config.yaml` and the Telegram session separately with restricted permissions.
+4. Upgrade and restart, then verify service status, Web login, the channel list/detail APIs, one scheduler instance, and existing task APIs. Do not submit an uncontrolled channel merely as a smoke test.
+
+For code rollback, revert the relevant commit and restart the service. Preserve `channel_library.sqlite3` and `web_tasks.sqlite3`; code rollback must not delete indexed channels, checkpoints, selections, or task history. Restore a database backup only for confirmed data corruption or an incompatible schema rollback, with the service stopped and the current database retained as an additional rollback point.
+
 ## Resource Boundaries
 
-The Web console persists task and file snapshots to `web_tasks.sqlite3` using SQLite WAL mode. Runtime Telegram sessions, auth files, and downloaded media are not stored in this database.
+The Web console persists task and file snapshots to `web_tasks.sqlite3` using SQLite WAL mode. The channel library persists its index in the separate `channel_library.sqlite3` described above. Runtime Telegram sessions, auth files, and downloaded media are not stored in these databases.
 
 To keep small 1 vCPU / 1 GiB servers responsive:
 

@@ -1269,3 +1269,33 @@ Changed files:
 
 Rollback:
 - Revert the Task 10 commit; preserve `channel_library.sqlite3` and `web_tasks.sqlite3` because the Web view rollback must not remove persisted channel indexes, selections, or download history.
+
+## 2026-07-16 - Task: Verify the full channel library workflow
+
+### What was done
+
+- Added a no-network, no-wait 15,000-ID acceptance workflow that runs exactly 300 batches, simulates process loss after a committed fetch/index checkpoint, rebuilds the store and service, resumes from the next ID, and proves 300 stable packages have unique package/item keys.
+- Verified keyset filtering, cross-page selection persistence across another store reconstruction, immutable sorted batch snapshots, idempotent fake Web-task dispatch, and one task identity per persisted batch.
+- Audited the existing automated evidence for outbox crash windows, Telegram gate races, fetch/index recovery, FloodWait deadlines, packages over 500 media, failure closure/repair, revisions and supersede/outdated states, selection invalidation, keyset publication, CSRF/delete/0600 safety, and parent download lifecycle.
+- Documented channel-library links, conservative timing, automatic download priority, statuses, filters, partial repair, duplicate protection, manual incrementals, API contracts, database security, consistent backup, and rollback.
+
+### Testing
+
+- Worktree-local brief command: `.venv/bin/python -m pytest tests/test_channel_library_e2e.py -q` -> exit 127, `zsh:1: no such file or directory: .venv/bin/python`; the existing repository environment at `../../.venv` was used instead.
+- Final E2E: `../../.venv/bin/python -m pytest tests/test_channel_library_e2e.py -q` -> `1 passed in 1.13s`.
+- Focused channel/downloader fault contracts: `../../.venv/bin/python -m pytest tests/test_channel_library_e2e.py tests/module/test_channel_library_store.py tests/module/test_channel_library_workflow.py tests/module/test_channel_library_service.py tests/module/test_channel_library_queries.py tests/test_channel_library_download.py tests/module/test_channel_library_web.py tests/module/test_telegram_activity.py tests/test_media_downloader.py -q` -> `265 passed in 28.04s`.
+- Final full suite: `../../.venv/bin/python -m pytest tests/ -q` -> `475 passed, 1 skipped in 26.10s`.
+- Pylint: `../../.venv/bin/python -m pylint --errors-only module/channel_library_store.py module/channel_library_workflow.py module/channel_library_service.py module/telegram_activity.py module/web.py media_downloader.py` -> exit 14 from existing pylintrc option drift, `os`/Pyrogram no-member inference findings, and `media_downloader.py:2952` undefined `STARTUP_SCAN_WINDOW_SEC`; Task 11 changed no production Python and does not claim this command passed.
+- Mypy: `../../.venv/bin/python -m mypy module/channel_library_store.py module/channel_library_workflow.py module/channel_library_service.py module/telegram_activity.py` -> exit 2 with four blocking errors: missing type markers/stubs for `psutil`, `flask_login`, and `ply`, plus `markupsafe/_speedups.pyi:1` reporting positional-only parameters unsupported; checking stopped before completion and is not claimed as passed.
+- `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `tests/test_channel_library_e2e.py`: Added the 15,000-ID restart, query, selection, and fake download-bridge acceptance workflow.
+- `README_CN.md`: Added concise Channel Library usage, pacing, status, repair, incremental, and duplicate-protection guidance.
+- `docs/web-control-console.md`: Added complete user workflow and secure database backup/rollback operations.
+- `progress.md`: Appended Task 11 implementation and exact verification evidence.
+
+Rollback:
+- Run `git revert "$(git rev-list -1 --all --grep='^test: verify full channel library workflow$')"`; preserve `channel_library.sqlite3` and `web_tasks.sqlite3` because reverting tests/docs must not delete persisted channel or task data.
