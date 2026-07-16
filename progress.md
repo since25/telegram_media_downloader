@@ -1428,3 +1428,32 @@ Changed files:
 
 Rollback:
 - Run `git revert "$(git rev-list -1 --all --grep='^fix: bound channel library batch scan resource use$')"`; preserve `channel_library.sqlite3` and `web_tasks.sqlite3` (this change touches only query scoping, a poll constant, and a test).
+
+## 2026-07-16 - Task 12 (part 2): Production deployment of full channel library
+
+### What was done
+
+- Fast-forwarded `master` to the reviewed feature tip and pushed to origin, then deployed to the RackNerd production host and smoke-tested the live service.
+- Deployed commit: `d417479` (pushed `644aef3..d417479 master -> master`; `origin/master` and server `HEAD` both at `d417479`).
+- Rollback point recorded before deploy: server was at `339efc1`.
+
+### Testing
+
+- Pre-push local verification on `master`: `.venv/bin/python -m pytest tests/ -q` -> `476 passed, 1 skipped`; `git diff --check` clean; only `.omx/` untracked.
+- Consistent backup (service stopped, WAL-safe `sqlite3.Connection.backup`, `sqlite3` CLI absent so Python fallback used): `backups/web_tasks-20260716-103434.sqlite3` integrity `ok`; `backups/config-20260716-103434.yaml`; service returned `active`. (No `channel_library.sqlite3` existed pre-deploy; no `*.session` at repo root to copy.)
+- Deploy: `git pull --ff-only origin master` -> `d417479`; `systemctl restart tg-downloader.service` -> `active`.
+- Smoke test:
+  - `curl -I https://tgdn.wyichuan.cc/` -> `HTTP/2 302`, `location: /login?next=%2F`.
+  - `curl -I https://tgdn.wyichuan.cc/api/channel-libraries` -> `HTTP/2 302`, `location: /login?next=%2Fapi%2Fchannel-libraries` (route present, login enforced).
+  - `channel_library.sqlite3` created on first startup: mode `600`, `PRAGMA integrity_check=ok`, `PRAGMA journal_mode=wal`, 13 tables.
+  - `journalctl -u tg-downloader.service -n 80`: no exception/traceback/high-rate/secret lines; only benign INFO performance stats.
+
+### Notes
+
+Residual risks carried into production (documented in the Task 12 part-1 entry, none a correctness/security/data-loss defect): unbounded "download all" batch creation (top follow-up: chunked/streamed batch build), situational O(n^2) reindex on an unresolved early scan failure, WAL/SHM sidecars not chmod 0600, incremental link-resolve gate-priority parity, and the effectively-impossible deterministic-task-id conflict.
+
+Changed files:
+- `progress.md`: Appended this deployment record.
+
+Rollback:
+- `git revert --no-commit c388685..HEAD && git commit -m "revert: roll back full channel library" && git push origin master`, then on the server `git pull --ff-only origin master && systemctl restart tg-downloader.service`. Preserve `channel_library.sqlite3` and `web_tasks.sqlite3`; never delete them during rollback. Server rollback reference commit: `339efc1`.
