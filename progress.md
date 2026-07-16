@@ -1071,3 +1071,40 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^feat: dispatch channel package download batches$')"` 回滚 Task 8；保留两个 SQLite 文件，避免误删既有任务和频道库历史。
+
+## 2026-07-16 - Task: Harden Channel Download Saga Consistency
+
+### What was done
+
+- 将 active package 排他判断改为事务内查询非终态 batch-package attempt，索引发布即使改写 package 摘要也不能让另一 idempotency key 重复圈入同一包。
+- 为确定性 Web task 增加不可变身份校验；匹配的 active/terminal task 原样保留，冲突任务保持 batch `pending_dispatch` 并只记录稳定错误码。
+- 修正混合终态逐包文件证据对账、正常返回的用户停止、缺失消息快照顺序及 TEXT 布尔重建；父任务、当前包和未启动包得到一致终态。
+- 将频道下载 saga、包 callback 和上传异常的持久错误收口为 allow-listed 稳定码；原始异常仅写服务端日志，不进入频道下载行或 Web task/file error。
+
+### Testing
+
+- Review RED：11 个新增控制/回归用例首次组合执行为 `9 failed, 2 passed in 0.99s`；失败分别证明 active summary 绕过、task identity 冲突未拦截、mixed reconciliation 回退、raw refetch/callback error、正常 stop 父任务误终态、`"0"` 布尔误判和中间缺失 ID 顺序丢失。
+- Review GREEN：同 11 个用例 `11 passed in 0.89s`。
+- Task 8 focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/test_channel_library_download.py tests/test_media_downloader.py tests/module/test_task_state.py -q`：`61 passed in 24.18s`。
+- Upload-inclusive：在 focused 命令追加 `tests/test_web_upload_progress.py`：`70 passed in 23.62s`。
+- Channel regressions：store/service/workflow/query `108 passed in 1.70s`。
+- Authoritative full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`376 passed, 1 skipped in 25.12s`。
+- `py_compile` 与 `git diff --check`：通过。Mypy 仍在项目完整分析前被 `markupsafe/_speedups.pyi` 解析错误及 3 个第三方包缺少 typing marker 阻断；Black check 报 6 个既有大文件会被全文件重排，未自动格式化以避免超范围 churn。
+
+### Notes
+
+Changed files:
+- `media_downloader.py`: 保留不可变消息顺序、包装 callback 异常并用稳定上传错误码。
+- `module/channel_library_service.py`: 身份冲突 pending 语义、mixed reconciliation、stop 覆盖、显式布尔解析和 saga 错误脱敏。
+- `module/channel_library_store.py`: attempt 表 active 排他、dispatch error 落盘及下载错误 allow-list。
+- `module/prescan_workflow.py`: 向包结果适配器传递可选原始消息 ID 顺序。
+- `module/task_state.py`: 确定性任务身份冲突和下载生命周期中的身份保持。
+- `tests/test_channel_library_download.py`: 覆盖复审的排他、派发、对账、取消、安全和布尔问题。
+- `tests/test_media_downloader.py`: 覆盖中间消息缺失时的结果/callback 快照顺序。
+- `tests/module/test_task_state.py`: 覆盖匹配 terminal task 保留和 corrupt identity 拒绝。
+- `docs/channel-library-download-outbox.md`: 补充身份、错误、取消和混合终态契约。
+- `.superpowers/sdd/task-8-report.md`: 追加复审 RED/GREEN、故障窗口、生命周期和安全审计。
+- `progress.md`: 追加本次复审修复、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: harden channel download saga consistency$')"` 回滚本次复审修复；不删除两个 SQLite 文件。

@@ -18,7 +18,12 @@ from module.channel_library_store import ChannelLibraryConfig, ChannelLibrarySto
 from module.channel_library_workflow import ChannelPackageIndexer, extract_media_row
 from module.comment_workflow import build_message_package_workflow_request
 from module.telegram_activity import get_telegram_activity_gate
-from module.task_state import FileStatus, TaskStatus, get_task_store
+from module.task_state import (
+    FileStatus,
+    TaskIdentityConflictError,
+    TaskStatus,
+    get_task_store,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -47,6 +52,20 @@ def normalize_messages(messages: Any) -> list[Any]:
     if isinstance(messages, (list, tuple)):
         return list(messages)
     return [messages]
+
+
+def _snapshot_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _package_error_code(status: str) -> Optional[str]:
+    if status == "completed":
+        return None
+    if status in {"upload_failed", "not_found", "cancelled"}:
+        return status
+    return "download_failed"
 
 
 class ChannelLibraryService:
@@ -175,25 +194,34 @@ class ChannelLibraryService:
     def dispatch_pending_batches(self) -> list[dict]:
         """Replay committed outbox rows into the persistent Web task store."""
 
-        return [
-            self._dispatch_download_batch_task(batch)
-            for batch in self.store.list_pending_download_batches()
-        ]
+        dispatched = []
+        for batch in self.store.list_pending_download_batches():
+            try:
+                dispatched.append(self._dispatch_download_batch_task(batch))
+            except TaskIdentityConflictError:
+                continue
+        return dispatched
 
     def _dispatch_download_batch_task(self, batch: dict) -> dict:
         library = self.store.get_library(int(batch["library_id"]))
         if library is None:
             raise KeyError(f"Channel library {batch['library_id']} does not exist")
         total_count = sum(len(package["items"]) for package in batch["packages"])
-        self.task_store.ensure_task(
-            batch["task_id"],
-            source="web",
-            task_type="channel_library",
-            chat_id=int(library["chat_id"]),
-            title=f"{library['title']} / {len(batch['packages'])} packages",
-            status=TaskStatus.QUEUED,
-            total_count=total_count,
-        )
+        try:
+            self.task_store.ensure_task(
+                batch["task_id"],
+                source="web",
+                task_type="channel_library",
+                chat_id=int(library["chat_id"]),
+                title=f"{library['title']} / {len(batch['packages'])} packages",
+                status=TaskStatus.QUEUED,
+                total_count=total_count,
+            )
+        except TaskIdentityConflictError:
+            self.store.mark_download_batch_dispatch_error(
+                int(batch["id"]), "task_identity_conflict"
+            )
+            raise
         return self.store.mark_download_batch_dispatched(int(batch["id"]))
 
     def reconcile_download_batches(self) -> list[dict]:
@@ -218,11 +246,14 @@ class ChannelLibraryService:
                 if package["status"] not in {"queued", "downloading"}:
                     continue
                 status = "failed"
-                error = "Web task missing during reconciliation"
+                error = "download_failed"
                 if task is not None and task.status == TaskStatus.CANCELLED:
                     status = "cancelled"
-                    error = "Web task was cancelled"
-                elif task is not None and task.status == TaskStatus.COMPLETED:
+                    error = "cancelled"
+                elif task is not None and task.status in {
+                    TaskStatus.COMPLETED,
+                    TaskStatus.COMPLETED_WITH_ERRORS,
+                }:
                     item_files = [
                         task.files.get(str(item["message_id"]))
                         for item in package["items"]
@@ -239,11 +270,11 @@ class ChannelLibraryService:
                         error = None
                     elif FileStatus.UPLOAD_FAILED in file_statuses:
                         status = "upload_failed"
-                        error = "A package file upload failed"
+                        error = "upload_failed"
                     else:
-                        error = "Package completion could not be proven"
+                        error = "download_failed"
                 elif task is not None:
-                    error = task.error or f"Web task ended as {task.status}"
+                    error = "download_failed"
                 self.store.finish_download_batch_package(
                     int(batch["id"]),
                     int(package["package_id"]),
@@ -258,7 +289,7 @@ class ChannelLibraryService:
     async def run_download_batch(self, batch_id: int) -> list[Any]:
         """Refetch and serially download one committed immutable batch snapshot."""
 
-        from media_downloader import download_prescan_packages
+        from media_downloader import PackageCallbackError, download_prescan_packages
         from module.app import TaskNode
         from module.comment_workflow import (
             MessagePackagePlan,
@@ -276,6 +307,7 @@ class ChannelLibraryService:
             raise KeyError(f"Channel library {batch['library_id']} does not exist")
         packages = []
         attempt_packages = {}
+        attempt_errors = {}
         for package_snapshot in batch["packages"]:
             if package_snapshot["status"] not in {"queued", "downloading"}:
                 continue
@@ -290,7 +322,11 @@ class ChannelLibraryService:
                     )
             except Exception as error:
                 raw_messages = []
-                fetch_error = str(error)
+                fetch_error = "telegram_refetch_failed"
+                LOGGER.exception(
+                    "Telegram refetch failed for channel package %s",
+                    package_snapshot["package_id"],
+                )
             found_by_id = {
                 int(message.id): message
                 for message in normalize_messages(raw_messages)
@@ -310,7 +346,9 @@ class ChannelLibraryService:
                         media_type=item_snapshot["media_type"],
                         caption_for_naming=item_snapshot["caption_for_naming"],
                         original_caption=item_snapshot["original_caption"],
-                        inherited_caption=bool(item_snapshot["inherited_caption"]),
+                        inherited_caption=_snapshot_bool(
+                            item_snapshot["inherited_caption"]
+                        ),
                     )
                 )
             messages = [item.message for item in media_items]
@@ -329,6 +367,7 @@ class ChannelLibraryService:
                 package_plan=package_plan,
                 messages=messages,
                 failed_message_ids=failed_message_ids,
+                expected_message_ids=message_ids,
             )
             package.package_revision = int(package_snapshot["package_revision"])
             package.attempt_id = f"{batch_id}:{package.package_id}"
@@ -338,6 +377,7 @@ class ChannelLibraryService:
             package.fetch_error = fetch_error
             packages.append(package)
             attempt_packages[package.attempt_id] = package.package_id
+            attempt_errors[package.attempt_id] = fetch_error
 
         node = TaskNode(
             chat_id=int(library["chat_id"]),
@@ -345,6 +385,7 @@ class ChannelLibraryService:
             task_id=batch["task_id"],
         )
         node.client = self.client
+        node.preserve_task_identity = True
 
         async def on_package_started(attempt_id: Any, _package: Any) -> None:
             self.store.mark_download_batch_package_started(
@@ -367,12 +408,15 @@ class ChannelLibraryService:
                 status = "cancelled"
             else:
                 status = "failed"
-            errors = [result.error for result in message_results.values() if result.error]
             self.store.finish_download_batch_package(
                 batch_id,
                 attempt_packages[attempt_id],
                 status,
-                last_error="; ".join(errors) or None,
+                last_error=(
+                    "telegram_refetch_failed"
+                    if attempt_errors[attempt_id]
+                    else _package_error_code(status)
+                ),
             )
 
         try:
@@ -391,21 +435,29 @@ class ChannelLibraryService:
                         batch_id,
                         int(package["package_id"]),
                         "cancelled",
-                        last_error="Batch download was cancelled",
+                        last_error="cancelled",
                     )
-            self.task_store.update_task(batch["task_id"], status=TaskStatus.CANCELLED)
+            self.task_store.update_task(
+                batch["task_id"], status=TaskStatus.CANCELLED, error="cancelled"
+            )
             raise
         except Exception as error:
+            error_code = (
+                "callback_failed"
+                if isinstance(error, PackageCallbackError)
+                else "download_failed"
+            )
+            LOGGER.exception("Channel package batch download failed")
             for package in self.store.get_download_batch(batch_id)["packages"]:
                 if package["status"] in {"queued", "downloading"}:
                     self.store.finish_download_batch_package(
                         batch_id,
                         int(package["package_id"]),
                         "failed",
-                        last_error=str(error),
+                        last_error=error_code,
                     )
             self.task_store.update_task(
-                batch["task_id"], status=TaskStatus.FAILED, error=str(error)
+                batch["task_id"], status=TaskStatus.FAILED, error=error_code
             )
             raise
         completed_package_ids = {result.package_id for result in results}
@@ -418,10 +470,12 @@ class ChannelLibraryService:
                 package.package_id,
                 remaining_status,
                 last_error=(
-                    "Parent task was cancelled"
-                    if remaining_status == "cancelled"
-                    else "Package did not produce a terminal result"
+                    "cancelled" if remaining_status == "cancelled" else "download_failed"
                 ),
+            )
+        if node.is_stop_transmission:
+            self.task_store.update_task(
+                batch["task_id"], status=TaskStatus.CANCELLED, error="cancelled"
             )
         return results
 

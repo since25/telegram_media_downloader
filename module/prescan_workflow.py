@@ -42,6 +42,7 @@ class PrescanPackage:
     package_plan: MessagePackagePlan
     messages: List[Any]
     failed_message_ids: List[int] = field(default_factory=list)
+    expected_message_ids: List[int] = field(default_factory=list)
 
     @property
     def media_count(self) -> int:

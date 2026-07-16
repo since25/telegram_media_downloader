@@ -2135,6 +2135,84 @@ class MediaDownloaderTestCase(unittest.TestCase):
                 real_store.get_task(node.task_id).status, TaskStatus.COMPLETED
             )
 
+    def test_download_prescan_packages_preserves_snapshot_result_order_with_missing_middle(self):
+        import media_downloader
+        import module.task_state as task_state_module
+
+        from module.comment_workflow import plan_message_package
+        from module.download_stat import get_active_task_nodes
+        from module.prescan_workflow import PrescanPackage
+        from module.task_state import FileStatus, TaskStateStore
+
+        messages = [
+            MockMessage(
+                id=message_id,
+                media="video",
+                caption=f"Lesson {message_id}",
+                video=MockVideo(file_name=f"{message_id}.mp4", mime_type="video/mp4"),
+            )
+            for message_id in (1, 3)
+        ]
+        plan = plan_message_package(messages, 1)
+        package = PrescanPackage(
+            10,
+            "Ordered",
+            1,
+            3,
+            plan.items,
+            plan,
+            messages,
+            failed_message_ids=[2],
+            expected_message_ids=[1, 2, 3],
+        )
+        package.not_found_message_ids = {2}
+        callbacks = []
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            real_store = TaskStateStore(storage_path=Path(tmp_dir) / "tasks.sqlite3")
+            node = TaskNode(chat_id=-1001, bot=None, task_id="ordered-snapshot")
+
+            async def fake_download(messages_to_download, _filter, package_node, **_kwargs):
+                for message in messages_to_download:
+                    real_store.upsert_file(
+                        package_node.task_id,
+                        message.id,
+                        status=FileStatus.DOWNLOADED,
+                    )
+
+            async def fake_report(*_args, **_kwargs):
+                return None
+
+            async def on_finished(_attempt_id, message_results):
+                callbacks.append(tuple(message_results))
+
+            old_store = task_state_module._TASK_STORE
+            task_state_module._TASK_STORE = real_store
+            try:
+                with mock.patch.object(
+                    media_downloader,
+                    "download_prepared_messages",
+                    new=fake_download,
+                ), mock.patch(
+                    "module.pyrogram_extension.report_bot_status", new=fake_report
+                ):
+                    results = self.loop.run_until_complete(
+                        media_downloader.download_prescan_packages(
+                            [package],
+                            channel="Course",
+                            parent_node=node,
+                            selected_package_ids={10},
+                            on_package_finished=on_finished,
+                        )
+                    )
+            finally:
+                task_state_module._TASK_STORE = old_store
+                get_active_task_nodes().pop(node.task_id, None)
+
+        self.assertEqual(results[0].expected_message_ids, (1, 2, 3))
+        self.assertEqual(tuple(results[0].message_results), (1, 2, 3))
+        self.assertEqual(callbacks, [(1, 2, 3)])
+
     def test_download_prescan_packages_classifies_package_scoped_outcomes(self):
         import media_downloader
         import module.task_state as task_state_module

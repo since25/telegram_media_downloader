@@ -120,6 +120,13 @@ PackageStartedCallback = Callable[[Any, Any], Any]
 PackageFinishedCallback = Callable[[Any, dict[int, PackageMessageResult]], Any]
 
 
+class PackageCallbackError(RuntimeError):
+    """A package lifecycle callback failed; raw details remain in server logs."""
+
+    def __init__(self):
+        super().__init__("callback_failed")
+
+
 def _record_message_marker(node: TaskNode, attribute: str, message_id: Any) -> None:
     if not isinstance(message_id, int):
         return
@@ -905,7 +912,7 @@ async def download_task(
                             status=FileStatus.UPLOAD_FAILED,
                             filename=file_name,
                             save_path=file_name,
-                            error=str(e),
+                            error="upload_failed",
                         )
                     logger.error(
                         f"download_task: 文件上传异常 - file_name={file_name}, error={e}",
@@ -2308,17 +2315,29 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+async def _run_package_callback(callback: Callable[..., Any], *args: Any) -> None:
+    try:
+        await _maybe_await(callback(*args))
+    except Exception as error:
+        logger.exception("Package lifecycle callback failed")
+        raise PackageCallbackError() from error
+
+
 def _package_download_result(package: Any, parent_node: TaskNode) -> PackageDownloadResult:
-    expected_ids = tuple(
-        dict.fromkeys(
-            [
-                int(item.message.id)
-                for item in package.items
-                if getattr(getattr(item, "message", None), "id", None) is not None
-            ]
-            + [int(message_id) for message_id in package.failed_message_ids]
+    snapshot_ids = getattr(package, "expected_message_ids", None)
+    if snapshot_ids:
+        expected_ids = tuple(dict.fromkeys(int(value) for value in snapshot_ids))
+    else:
+        expected_ids = tuple(
+            dict.fromkeys(
+                [
+                    int(item.message.id)
+                    for item in package.items
+                    if getattr(getattr(item, "message", None), "id", None) is not None
+                ]
+                + [int(message_id) for message_id in package.failed_message_ids]
+            )
         )
-    )
     task = get_task_store().get_task(parent_node.task_id)
     files = task.files if task is not None else {}
     not_found_ids = set(
@@ -2444,7 +2463,7 @@ async def download_prescan_packages(
             )
             attempt_id = getattr(package, "attempt_id", package.package_id)
             if on_package_started is not None:
-                await _maybe_await(on_package_started(attempt_id, package))
+                await _run_package_callback(on_package_started, attempt_id, package)
             await download_prepared_messages(
                 package.messages,
                 None,
@@ -2454,8 +2473,8 @@ async def download_prescan_packages(
             result = _package_download_result(package, parent_node)
             results.append(result)
             if on_package_finished is not None:
-                await _maybe_await(
-                    on_package_finished(attempt_id, result.message_results)
+                await _run_package_callback(
+                    on_package_finished, attempt_id, result.message_results
                 )
     finally:
         parent_node.prescan_batch_in_progress = False

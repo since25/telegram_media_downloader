@@ -195,6 +195,67 @@ class TaskStateStoreTestCase(unittest.TestCase):
             self.assertEqual(replayed.status, TaskStatus.DOWNLOADING)
             self.assertEqual(len(TaskStateStore(storage_path=db_path).tasks()), 1)
 
+    def test_ensure_task_preserves_matching_terminal_identity(self):
+        from module.task_state import TaskStateStore, TaskStatus
+
+        store = TaskStateStore()
+        created = store.ensure_task(
+            "channel-batch-terminal",
+            source="web",
+            task_type="channel_library",
+            chat_id=-1001,
+            title="Immutable batch",
+            status=TaskStatus.QUEUED,
+            total_count=4,
+        )
+        store.update_task(created.task_id, status=TaskStatus.COMPLETED)
+
+        replayed = store.ensure_task(
+            created.task_id,
+            source="web",
+            task_type="channel_library",
+            chat_id=-1001,
+            title="Immutable batch",
+            status=TaskStatus.QUEUED,
+            total_count=4,
+        )
+
+        self.assertIs(replayed, created)
+        self.assertEqual(replayed.status, TaskStatus.COMPLETED)
+
+    def test_ensure_task_rejects_deterministic_identity_mismatch(self):
+        from module.task_state import (
+            TaskIdentityConflictError,
+            TaskStateStore,
+            TaskStatus,
+        )
+
+        store = TaskStateStore()
+        store.ensure_task(
+            "channel-batch-conflict",
+            source="web",
+            task_type="channel_library",
+            chat_id=-1001,
+            title="Immutable batch",
+            status=TaskStatus.QUEUED,
+            total_count=4,
+        )
+
+        with self.assertRaises(TaskIdentityConflictError):
+            store.ensure_task(
+                "channel-batch-conflict",
+                source="web",
+                task_type="channel_library",
+                chat_id=-1001,
+                title="Corrupt replacement",
+                status=TaskStatus.QUEUED,
+                total_count=99,
+            )
+
+        existing = store.get_task("channel-batch-conflict")
+        self.assertEqual(existing.title, "Immutable batch")
+        self.assertEqual(existing.total_count, 4)
+
     def test_paginate_files_bounds_page_size(self):
         from module.task_state import FileStatus, TaskStateStore, TaskStatus
 

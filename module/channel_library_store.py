@@ -51,6 +51,17 @@ DOWNLOAD_DISPATCH_STATUSES = frozenset({"pending_dispatch", "dispatched"})
 DOWNLOAD_ATTEMPT_TERMINAL_STATUSES = frozenset(
     {"completed", "failed", "upload_failed", "cancelled", "not_found"}
 )
+DOWNLOAD_ERROR_CODES = frozenset(
+    {
+        "telegram_refetch_failed",
+        "download_failed",
+        "callback_failed",
+        "task_identity_conflict",
+        "cancelled",
+        "upload_failed",
+        "not_found",
+    }
+)
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 SQLITE_MAX_INTEGER = 2**63 - 1
@@ -107,6 +118,23 @@ def _normalize_title(value: object) -> str:
     if value is None:
         return ""
     return unicodedata.normalize("NFKC", str(value)).casefold()
+
+
+def _safe_download_error_code(
+    value: Optional[str], status: Optional[str] = None
+) -> Optional[str]:
+    if value is None:
+        return None
+    code = str(value)
+    if code in DOWNLOAD_ERROR_CODES:
+        return code
+    if status == "cancelled":
+        return "cancelled"
+    if status == "upload_failed":
+        return "upload_failed"
+    if status == "not_found":
+        return "not_found"
+    return "download_failed"
 
 
 def _normalize_utc_boundary(
@@ -1241,6 +1269,23 @@ class ChannelLibraryStore:
                         raise ValueError("Selected package revision changed")
                     if package["boundary_status"] != "stable":
                         raise ValueError("Selected package is not stable")
+                    active_attempt = connection.execute(
+                        """
+                        SELECT 1
+                        FROM channel_download_batch_packages AS attempt
+                        JOIN channel_download_batches AS batch
+                          ON batch.id = attempt.batch_id
+                         AND batch.library_id = attempt.library_id
+                        WHERE attempt.library_id = ?
+                          AND attempt.package_id = ?
+                          AND attempt.status IN ('queued', 'downloading')
+                          AND batch.status IN ('queued', 'downloading')
+                        LIMIT 1
+                        """,
+                        (library_id, int(package["id"])),
+                    ).fetchone()
+                    if active_attempt is not None:
+                        raise ValueError("Selected package is in an active download batch")
                     if package["current_download_status"] in {
                         "queued",
                         "downloading",
@@ -1410,6 +1455,24 @@ class ChannelLibraryStore:
                 raise KeyError(f"Download batch {batch_id} does not exist")
         return self.get_download_batch(batch_id)
 
+    def mark_download_batch_dispatch_error(
+        self, batch_id: int, error_code: str, now: Optional[float] = None
+    ) -> dict:
+        now = time.time() if now is None else now
+        safe_code = _safe_download_error_code(error_code)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE channel_download_batches
+                SET last_error = ?, updated_at = ?
+                WHERE id = ? AND dispatch_status = 'pending_dispatch'
+                """,
+                (safe_code, now, batch_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"Pending download batch {batch_id} does not exist")
+        return self.get_download_batch(batch_id)
+
     def mark_download_batch_package_started(
         self, batch_id: int, package_id: int, now: Optional[float] = None
     ) -> dict:
@@ -1459,6 +1522,7 @@ class ChannelLibraryStore:
     ) -> dict:
         if status not in DOWNLOAD_ATTEMPT_TERMINAL_STATUSES:
             raise ValueError(f"Invalid package download status: {status}")
+        last_error = _safe_download_error_code(last_error, status)
         now = time.time() if now is None else now
         summary_status = (
             "completed"
