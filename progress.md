@@ -886,3 +886,29 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: harden channel scan recovery invariants$')"` 回滚本次 review 修复。
+
+## 2026-07-16 - Task: Retain Scan Ownership Through Cancelled Stop
+
+### What was done
+
+- 将 service shutdown 从公共 `stop()` 调用方中分离为单个可复用的内部清理任务；调用方取消仍向外传播，但不会取消进行中的 Telegram 请求或 scheduler 清理。
+- 所有权保持到请求完成 checkpoint、scheduler 进入终态后才释放；清理期间同 canonical 数据库路径的第二个 service 仍会被拒绝，完成后可正常接管并恢复 queued job。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_service.py::test_cancelled_stop_retains_ownership_until_internal_cleanup_finishes -q`：按预期报缺少 `_shutdown_task`，`1 failed in 0.58s`。
+- GREEN targeted：同一命令通过，`1 passed in 0.47s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_service.py tests/module/test_channel_library_store.py tests/module/test_channel_library_workflow.py tests/module/test_telegram_activity.py -q`：`84 passed in 1.01s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`320 passed, 1 skipped in 24.08s`。
+- `py_compile` 与 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`: 增加可复用、shielded 的内部 shutdown task，并仅在 scheduler 终态后释放 store ownership。
+- `tests/module/test_channel_library_service.py`: 增加取消公共 stop 后仍保持清理、checkpoint 与所有权的确定性回归测试。
+- `.superpowers/sdd/task-5-report.md`: 追加取消路径 RED/GREEN 与 ownership 审计。
+- `progress.md`: 追加本轮修复、验证与回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: retain scan ownership through cancelled stop$')"` 回滚本次修复。

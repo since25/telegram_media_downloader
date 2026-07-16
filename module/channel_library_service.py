@@ -75,6 +75,7 @@ class ChannelLibraryService:
         self._telegram_request_active = False
         self._telegram_request_finished: Optional[asyncio.Event] = None
         self._ownership_key: Optional[str] = None
+        self._shutdown_task: Optional[asyncio.Task[None]] = None
 
     async def start(self) -> None:
         """Initialize recovery and start exactly one scheduler task."""
@@ -94,6 +95,7 @@ class ChannelLibraryService:
             self._telegram_request_finished = asyncio.Event()
             self._telegram_request_finished.set()
             self._stopping = False
+            self._shutdown_task = None
             self.scheduler_task = loop.create_task(
                 self._run_scheduler(), name="channel-library-scheduler"
             )
@@ -104,29 +106,37 @@ class ChannelLibraryService:
     async def stop(self) -> None:
         """Stop the scheduler without cancelling an active Telegram request."""
 
-        try:
-            task = self.scheduler_task
-            if task is None or task.done():
-                if task is not None:
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                return
+        cleanup = self._shutdown_task
+        if cleanup is None:
             self._stopping = True
             await self.wake()
-            if (
-                self._telegram_request_active
-                and self._telegram_request_finished is not None
-            ):
-                await self._telegram_request_finished.wait()
-            task.cancel()
+            cleanup = asyncio.get_running_loop().create_task(
+                self._finish_shutdown(), name="channel-library-shutdown"
+            )
+            self._shutdown_task = cleanup
+        await asyncio.shield(cleanup)
+
+    async def _finish_shutdown(self) -> None:
+        """Finish scheduler shutdown independently of public stop waiters."""
+
+        task = self.scheduler_task
+        try:
+            if task is None:
+                return
+            if not task.done():
+                if (
+                    self._telegram_request_active
+                    and self._telegram_request_finished is not None
+                ):
+                    await self._telegram_request_finished.wait()
+                task.cancel()
             try:
                 await task
             except asyncio.CancelledError:
                 pass
         finally:
-            self._release_store_ownership()
+            if task is None or task.done():
+                self._release_store_ownership()
 
     async def wake(self) -> None:
         """Wake the owner-loop scheduler after a persisted command."""

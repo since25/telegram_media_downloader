@@ -507,6 +507,50 @@ async def test_stop_waits_for_active_request_and_checkpoint_boundary(tmp_path):
 
 
 @async_test
+async def test_cancelled_stop_retains_ownership_until_internal_cleanup_finishes(
+    tmp_path
+):
+    client = BlockingClient()
+    service, library, _sleep = make_service(tmp_path, client=client)
+    job = service.store.create_scan_job(library["id"], "full", 1, 50)
+    await service.start()
+    await asyncio.wait_for(client.request_started.wait(), 1)
+
+    stopping = asyncio.create_task(service.stop())
+    await asyncio.sleep(0)
+    cleanup = service._shutdown_task
+    assert cleanup is not None and not cleanup.done()
+
+    stopping.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stopping
+
+    successor, _library, _sleep = make_service(tmp_path)
+    with pytest.raises(RuntimeError, match="already owned"):
+        await successor.start()
+    assert client.was_cancelled is False
+    assert service.scheduler_task is not None and not service.scheduler_task.done()
+    assert cleanup.cancelled() is False
+
+    client.release_request.set()
+    await service.stop()
+
+    current = service.store.get_job(job["id"])
+    assert service._shutdown_task is cleanup
+    assert cleanup.done() and not cleanup.cancelled()
+    assert service.scheduler_task.done()
+    assert client.was_cancelled is False
+    assert current["fetched_through_message_id"] == 50
+    assert current["indexed_through_message_id"] == 50
+    assert current["status"] == "queued"
+
+    service.store.transition_job(job["id"], "running")
+    await successor.start()
+    assert successor.store.get_job(job["id"])["status"] == "queued"
+    await successor.stop()
+
+
+@async_test
 async def test_scheduler_runs_multiple_libraries_strictly_serially(tmp_path):
     service, first, _sleep = make_service(tmp_path)
     second, _ = service.store.create_or_get_library(
