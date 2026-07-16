@@ -655,3 +655,29 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: enforce repair target library isolation$')"` 回滚本次 review 修复。
+
+## 2026-07-16 - Task: Scan State, Checkpoints, Failures, And Restart Recovery
+
+### What was done
+
+- 新增频道扫描任务创建、原子领取和精确状态迁移，禁止未到期的限流任务提前恢复，并要求停止任务复用原 job。
+- 新增媒体/抓取水位与索引水位/revision 的独立事务提交，终态前同时校验两条水位已追上不可变扫描快照。
+- 新增相邻失败区间合并、多失败区间补扫 target 独立游标与完成状态持久化，以及重启后运行中、自动暂停和到期限流任务的恢复。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py -q`：按预期在收集阶段失败，`ImportError: cannot import name 'ALLOWED_SCAN_TRANSITIONS'`，`1 error in 0.04s`。
+- GREEN store：同一命令通过，`26 passed in 0.13s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py tests/module/test_task_state.py -q`：`34 passed in 0.64s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`254 passed, 1 skipped in 23.66s`。
+- `py_compile` 与 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: 新增扫描状态机、双检查点、失败区间、补扫游标和重启恢复存储接口。
+- `tests/module/test_channel_library_store.py`: 新增扫描状态、事务原子性、失败补扫与重启恢复覆盖。
+- `progress.md`: 追加 Task 2 实施与验证证据。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^feat: persist channel scan recovery state$')"` 回滚 Task 2 全部改动。
