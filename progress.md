@@ -603,3 +603,31 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^chore: prepare isolated feature worktree$')"` 回滚本次准备改动。
+
+## 2026-07-16 - Task: Validated Configuration And SQLite Foundation
+
+### What was done
+
+- 新增不可变的频道库运行配置及上下限校验，并在 Application 配置加载路径接入，保留后续服务接线属性。
+- 新增独立频道库 SQLite v1 基础，覆盖频道、扫描任务、媒体、revision 包、失败补扫、持久选择和下载 outbox 全部表与索引；连接启用 WAL、外键、5000 ms busy timeout，数据库文件设为 `0600`。
+- 重复提交同一 Telegram `chat_id` 时复用原频道库并刷新展示与审计字段，不重置已有扫描状态。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py tests/module/test_app.py::test_channel_library_config_is_clamped -q`：按预期失败，`ModuleNotFoundError: No module named 'module.channel_library_store'`，`1 error in 0.06s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py tests/module/test_app.py -q`：`5 passed in 0.06s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`230 passed, 1 skipped in 23.56s`。
+- Schema 自检：schema version 1、外键启用、busy timeout 5000 ms、30 个索引、`PRAGMA foreign_key_check` 0 条违规；`py_compile` 与 `git diff --check` 均通过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: 新增配置对象、状态常量、SQLite v1 schema/索引与频道库创建/读取接口。
+- `module/app.py`: 接入频道库配置并新增运行期 service 属性。
+- `config.example.yaml`: 增加已确认的频道库保守默认值。
+- `tests/module/test_channel_library_store.py`: 覆盖安全 WAL schema 和 `chat_id` 唯一复用行为。
+- `tests/module/test_app.py`: 覆盖批大小与扫描延迟下限夹断。
+- `progress.md`: 追加本轮实施、验证与回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^feat: add channel library storage foundation$')"` 回滚 Task 1 全部已跟踪改动。

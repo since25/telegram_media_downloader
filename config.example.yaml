@@ -24,6 +24,14 @@ enable_web: false
 web_host: 0.0.0.0
 web_port: 5000
 # web_login_secret: change-me
+channel_library:
+  full_scan_batch_size: 50
+  full_scan_delay_min_sec: 4
+  full_scan_delay_max_sec: 6
+  incremental_scan_batch_size: 50
+  incremental_scan_delay_min_sec: 1
+  incremental_scan_delay_max_sec: 2
+  transient_retry_delays_sec: [5, 15, 45]
 # in linux please use /
 # save_path: E:\github\telegram_media_downloader
 # 新增监控配置

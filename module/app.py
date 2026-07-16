@@ -12,6 +12,7 @@ from typing import Callable, List, Optional, Union
 from loguru import logger
 from ruamel import yaml
 
+from module.channel_library_store import ChannelLibraryConfig
 from module.cloud_drive import CloudDrive, CloudDriveConfig
 from module.filter import Filter
 from module.language import Language, set_language
@@ -425,6 +426,8 @@ class Application:
         self.log_file_path = os.path.join(os.path.abspath("."), "log")
         self.session_file_path = os.path.join(os.path.abspath("."), "sessions")
         self.cloud_drive_config = CloudDriveConfig()
+        self.channel_library_config = ChannelLibraryConfig()
+        self.channel_library_service = None
         self.hide_file_name = False
         self.caption_name_dict: dict = {}
         self.caption_entities_dict: dict = {}
@@ -476,6 +479,9 @@ class Application:
         self.api_id = _config["api_id"]
         self.api_hash = _config["api_hash"]
         self.bot_token = _config.get("bot_token", "")
+        self.channel_library_config = ChannelLibraryConfig.from_mapping(
+            _config.get("channel_library")
+        )
 
         self.media_types = _config["media_types"]
         self.file_formats = _config["file_formats"]

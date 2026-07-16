@@ -11,6 +11,27 @@ from module.app import Application, ChatDownloadConfig, DownloadStatus
 sys.path.append("..")  # Adds higher directory to python modules path.
 
 
+def test_channel_library_config_is_clamped():
+    app = Application("", "")
+    app.assign_config(
+        {
+            "api_id": "",
+            "api_hash": "",
+            "media_types": [],
+            "file_formats": {},
+            "channel_library": {
+                "full_scan_batch_size": 999,
+                "full_scan_delay_min_sec": 0,
+                "incremental_scan_delay_min_sec": 0,
+            },
+        }
+    )
+
+    assert app.channel_library_config.full_scan_batch_size == 100
+    assert app.channel_library_config.full_scan_delay_min_sec == 2.0
+    assert app.channel_library_config.incremental_scan_delay_min_sec == 0.5
+
+
 class AppTestCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
