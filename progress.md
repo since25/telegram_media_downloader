@@ -561,4 +561,25 @@ Changed files:
 - `progress.md`: 记录本轮设计、审查和验证证据。
 
 Rollback:
-- 在设计提交创建后执行 `git revert <web-full-channel-library-design-commit>`。
+- 执行 `git revert c388685` 回滚设计文档、审查记录和视觉草稿忽略规则。
+
+## 2026-07-16 - Task: 编写 Web 全频道包库实施计划
+
+### What was done
+
+- 将经对抗性审查的 Spec 拆分为 12 个可独立验证和提交的实施任务，覆盖存储、双水位恢复、包 revision、Telegram 活动门、全量/增量/补扫、筛选选择、下载 outbox、Web API、前端、端到端验证和生产部署。
+- 固定了模块责任、跨任务接口、TDD 验证命令、提交边界、最终两阶段审查和一致性备份/回滚步骤。
+
+### Testing
+
+- `rg -n "TBD|TODO|\\.\\.\\." docs/superpowers/plans/2026-07-16-web-full-channel-library.md`：无占位内容。
+- 校验 Task 1-12 标题、关键 Spec 约束映射和 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `docs/superpowers/plans/2026-07-16-web-full-channel-library.md`: 新增完整实施与部署计划。
+- `progress.md`: 记录计划产出与自检证据。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^docs: plan full channel library implementation$')"` 回滚实施计划与本条记录。
