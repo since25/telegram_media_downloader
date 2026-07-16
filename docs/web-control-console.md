@@ -22,7 +22,7 @@ Confirming a prescan keeps its package list in Web state instead of discarding i
 
 ## Channel Library API
 
-The channel library uses the existing Web login session. Call `GET /api/csrf-token` after login and send its `csrf_token` value in `X-CSRF-Token` on every mutating channel-library request. The token is bound to that browser session. Read and write channel routes return `503 service_unavailable` until Telegram has started and the single channel-library service is running.
+The channel library uses the existing Web login session. Call `GET /api/csrf-token` after login and send its `csrf_token` value in `X-CSRF-Token` on every mutating channel-library request. The token is bound to that browser session. Only this authenticated GET mints a token; missing, wrong, and cross-session mutation attempts return `403` without creating or rotating session state. Read and write channel routes return `503 service_unavailable` until Telegram has started and the single channel-library service is running.
 
 Errors use one JSON envelope: `{"error_code": "<stable_code>", "message": "<safe summary>"}`. Supported status classes are `400 invalid_request` or `invalid_link`, `403 csrf_failed`, `404 not_found`, `409 state_conflict`, and `503 service_unavailable` or `service_timeout`. Raw exceptions, Telegram session details, tokens, and configuration secrets are not returned.
 
@@ -31,7 +31,7 @@ Channel and scan routes:
 - `GET /api/channel-libraries?cursor=&page_size=50`: keyset page with latest scan/count summary.
 - `POST /api/channel-libraries`: `{"link": "https://t.me/..."}`; returns `202` when created and `200` for the existing library.
 - `GET /api/channel-libraries/<library_id>`: library, opaque `library_version`, latest scan, counts, and safe failure summaries.
-- `DELETE /api/channel-libraries/<library_id>`: `{"confirm_library_id": <id>, "library_version": "<version>"}`; atomically rejects version changes and active scan/download work with `409`.
+- `DELETE /api/channel-libraries/<library_id>`: `{"confirm_library_id": <id>, "library_version": "<version>"}`; atomically rejects version changes, active scans, and queued/downloading child attempts even if a parent batch summary is terminal.
 - `POST /api/channel-libraries/<library_id>/scans`: `{"mode": "incremental"}`, `{"mode": "repair", "failure_ids": [<id>]}`, or `{"mode": "retry", "failed_job_id": <id>}`; returns `202`.
 - `POST /api/channel-scans/<job_id>/pause`, `/resume`, or `/stop`: persists control at the next safe scan boundary.
 
@@ -42,9 +42,9 @@ Package, selection, and download routes:
 - `PUT /api/channel-libraries/<library_id>/selection/packages/<package_id>`: `{"selected": true|false}`.
 - `POST /api/channel-libraries/<library_id>/selection/select-filtered`: a JSON object containing the same package filters.
 - `POST /api/channel-libraries/<library_id>/selection/clear` and `GET /api/channel-libraries/<library_id>/selection`: clear or summarize the persistent cross-page selection.
-- `POST /api/channel-libraries/<library_id>/download-batches`: optional `{"redownload": true|false}` plus required `Idempotency-Key`. A new persisted batch returns `202`; replaying the same library/key returns the same batch with `200`.
+- `POST /api/channel-libraries/<library_id>/download-batches`: optional `{"redownload": true|false}` plus required `Idempotency-Key`. Creation/replay is decided in one SQLite write transaction: the true creator returns `202`, concurrent or later replay returns the same batch with `200`, and replay repairs a still-pending dispatch before returning.
 
-Flask performs synchronous validation, store reads, and persisted store commands only. Telegram link resolution, incremental snapshots, scan scheduling, and package downloads are submitted to the existing `Application.loop`; Flask never starts or awaits a second event loop. Link resolution waits at most 30 seconds, and a timeout returns `503` without cancelling persisted or in-flight owner-loop work. Startup initializes recovery, outbox replay, reconciliation, the single scan scheduler, and resumable download runners. Shutdown awaits the channel service before stopping Telegram or cancelling general application tasks.
+Every route rejects undocumented query keys, JSON fields, and request bodies with `400 invalid_request`; pause/resume/stop and selection-clear accept either no body or an empty JSON object only. Flask performs synchronous validation, store reads, and persisted store commands only. Telegram link resolution, incremental snapshots, scan scheduling, and package downloads are submitted to the existing `Application.loop`; Flask never starts or awaits a second event loop. Link resolution waits at most 30 seconds, and a timeout returns `503` without cancelling persisted or in-flight owner-loop work. The service closes command admission before shutdown, drains every already-accepted owner-loop command, then stops scheduler/download tasks. The application clears its service reference before that drain so new Web requests immediately receive `503`; Telegram client stop occurs only afterward.
 
 ## Resource Boundaries
 

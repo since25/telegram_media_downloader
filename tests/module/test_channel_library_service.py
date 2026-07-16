@@ -128,6 +128,35 @@ class BlockingClient(FakeClient):
         return [fake_media(message_id) for message_id in message_ids]
 
 
+class BlockingLinkClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.latest_message_id = 3
+        self.link_started = asyncio.Event()
+        self.release_link = asyncio.Event()
+
+    async def get_chat(self, source_chat):
+        self.call_loops.append(asyncio.get_running_loop())
+        self.link_started.set()
+        await self.release_link.wait()
+        return self.chat
+
+
+class BlockingHistoryClient(FakeClient):
+    def __init__(self):
+        super().__init__()
+        self.latest_message_id = 5
+        self.history_started = asyncio.Event()
+        self.release_history = asyncio.Event()
+
+    async def get_chat_history(self, chat_id, limit=1):
+        assert limit == 1
+        self.call_loops.append(asyncio.get_running_loop())
+        self.history_started.set()
+        await self.release_history.wait()
+        yield SimpleNamespace(id=self.latest_message_id)
+
+
 def make_service(tmp_path, *, client=None, config=None, sleep=None, random_value=None):
     store = ChannelLibraryStore(tmp_path / "channel-library.sqlite3")
     store.initialize()
@@ -1020,6 +1049,75 @@ async def test_threadsafe_submit_runs_resolution_on_owner_loop(tmp_path):
     assert client.call_loops and set(client.call_loops) == {service.owner_loop}
     assert threading.current_thread() is threading.main_thread()
     await service.stop()
+
+
+@async_test
+async def test_stop_drains_blocking_link_command_before_returning(tmp_path):
+    client = BlockingLinkClient()
+    service, _library, _sleep = make_service(tmp_path, client=client)
+    with service.store.connect() as connection:
+        connection.execute("DELETE FROM channel_scan_jobs")
+        connection.execute("DELETE FROM channel_libraries")
+    await service.start()
+
+    submitted = await asyncio.to_thread(
+        service.submit_library_link_threadsafe, "https://t.me/demo/1"
+    )
+    await asyncio.wait_for(client.link_started.wait(), 1)
+    stopping = asyncio.create_task(service.stop())
+    await asyncio.sleep(0)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(stopping), 0.05)
+    client.release_link.set()
+    result = await asyncio.wrap_future(submitted)
+    await asyncio.wait_for(stopping, 1)
+    calls_after_stop = len(client.call_loops)
+    with pytest.raises(RuntimeError, match="not accepting"):
+        service.submit_library_link_threadsafe("https://t.me/demo/2")
+    with pytest.raises(RuntimeError, match="not accepting"):
+        service.schedule_download_batch_threadsafe(999)
+    await asyncio.sleep(0)
+    assert result.created is True
+    assert len(client.call_loops) == calls_after_stop
+
+
+@async_test
+async def test_stop_rejects_command_while_scheduler_request_is_draining(tmp_path):
+    client = BlockingClient()
+    service, library, _sleep = make_service(tmp_path, client=client)
+    service.store.create_scan_job(library["id"], "full", 1, 50)
+    await service.start()
+    await asyncio.wait_for(client.request_started.wait(), 1)
+
+    stopping = asyncio.create_task(service.stop())
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="not accepting"):
+        service.submit_library_link_threadsafe("https://t.me/demo/2")
+    client.release_request.set()
+    await asyncio.wait_for(stopping, 1)
+
+
+@async_test
+async def test_stop_tracks_incremental_scheduled_before_coroutine_starts(tmp_path):
+    client = BlockingHistoryClient()
+    service, library, _sleep = make_service(tmp_path, client=client)
+    full = service.store.create_scan_job(library["id"], "full", 1, 0)
+    service.store.transition_job(full["id"], "running")
+    service.store.transition_job(full["id"], "completed")
+    await service.start()
+
+    submitted = service.submit_incremental_threadsafe(library["id"])
+    stopping = asyncio.create_task(service.stop())
+    await asyncio.wait_for(client.history_started.wait(), 1)
+
+    assert not stopping.done()
+    client.release_history.set()
+    incremental = await asyncio.wrap_future(submitted)
+    await asyncio.wait_for(stopping, 1)
+    assert incremental["kind"] == "incremental"
+    assert service.store.get_job(incremental["id"])["status"] == "queued"
 
 
 @async_test

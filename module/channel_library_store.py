@@ -830,7 +830,7 @@ class ChannelLibraryStore:
                 raise ValueError("Channel library has active scan work")
             active_download = connection.execute(
                 """
-                SELECT 1 FROM channel_download_batches
+                SELECT 1 FROM channel_download_batch_packages
                 WHERE library_id = ? AND status IN ('queued', 'downloading')
                 LIMIT 1
                 """,
@@ -1367,6 +1367,25 @@ class ChannelLibraryStore:
         allow_redownload: bool = False,
         now: Optional[float] = None,
     ) -> dict:
+        """Return the created or replayed immutable outbox batch."""
+
+        batch, _created = self.create_download_batch_result(
+            library_id,
+            idempotency_key,
+            task_id,
+            allow_redownload=allow_redownload,
+            now=now,
+        )
+        return batch
+
+    def create_download_batch_result(
+        self,
+        library_id: int,
+        idempotency_key: str,
+        task_id: str,
+        allow_redownload: bool = False,
+        now: Optional[float] = None,
+    ) -> tuple[dict, bool]:
         """Atomically validate selections and persist one immutable outbox batch."""
 
         key = str(idempotency_key or "").strip()
@@ -1382,6 +1401,7 @@ class ChannelLibraryStore:
                 """,
                 (library_id, key),
             ).fetchone()
+            created = existing is None
             if existing is not None:
                 batch_id = int(existing["id"])
             else:
@@ -1524,7 +1544,7 @@ class ChannelLibraryStore:
                         """,
                         (task_id, now, library_id, package_id),
                     )
-        return self.get_download_batch(batch_id)
+        return self.get_download_batch(batch_id), created
 
     def get_download_batch(self, batch_id: int) -> Optional[dict]:
         with self.connect() as connection:

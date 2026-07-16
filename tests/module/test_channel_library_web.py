@@ -3,6 +3,7 @@
 import asyncio
 import concurrent.futures
 import os
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -180,6 +181,15 @@ def csrf_headers(env):
     return {"X-CSRF-Token": response.get_json()["csrf_token"]}
 
 
+def session_cookie(env, client=None):
+    client = client or env.client
+    name = env.web._flask_app.config.get("SESSION_COOKIE_NAME", "session")
+    for cookie in client.cookie_jar:
+        if cookie.name == name:
+            return cookie.value
+    return None
+
+
 def create_library(env, chat_id=-1001, title="Demo"):
     library, job, _ = env.store.create_or_get_library_with_full_job(
         chat_id,
@@ -190,6 +200,14 @@ def create_library(env, chat_id=-1001, title="Demo"):
         10,
     )
     return library, job
+
+
+def strict_route_context(env):
+    library, job = create_library(env)
+    package_id = insert_package(env.store, library["id"], 10)
+    insert_package_item(env.store, library["id"], package_id, 10)
+    detail = env.client.get(f"/api/channel-libraries/{library['id']}").get_json()
+    return library, job, package_id, detail["library_version"]
 
 
 def test_all_channel_routes_require_existing_login(web_env):
@@ -247,11 +265,43 @@ def test_mutating_routes_require_session_bound_csrf(web_env):
         assert missing.get_json()["error_code"] == "csrf_failed"
 
 
+@pytest.mark.parametrize("supplied", [None, "wrong-token"])
+def test_csrf_failure_without_token_does_not_create_session_cookie(web_env, supplied):
+    env = web_env
+    headers = {} if supplied is None else {"X-CSRF-Token": supplied}
+
+    response = env.client.post(
+        "/api/channel-libraries/1/selection/clear", headers=headers
+    )
+
+    assert response.status_code == 403
+    assert response.get_json()["error_code"] == "csrf_failed"
+    assert response.headers.getlist("Set-Cookie") == []
+    assert session_cookie(env) is None
+
+
+def test_wrong_csrf_does_not_rotate_existing_token_or_cookie(web_env):
+    env = web_env
+    token = env.client.get("/api/csrf-token").get_json()["csrf_token"]
+    cookie = session_cookie(env)
+
+    response = env.client.post(
+        "/api/channel-libraries/1/selection/clear",
+        headers={"X-CSRF-Token": "wrong-token"},
+    )
+
+    assert response.status_code == 403
+    assert response.headers.getlist("Set-Cookie") == []
+    assert session_cookie(env) == cookie
+    assert env.client.get("/api/csrf-token").get_json()["csrf_token"] == token
+
+
 def test_csrf_token_is_bound_to_one_session(web_env):
     env = web_env
     first_token = env.client.get("/api/csrf-token").get_json()["csrf_token"]
     with env.web.get_flask_app().test_client() as other_client:
         second_token = other_client.get("/api/csrf-token").get_json()["csrf_token"]
+        second_cookie = session_cookie(env, other_client)
         response = other_client.post(
             "/api/channel-libraries",
             json={"link": "https://t.me/demo/1"},
@@ -260,6 +310,8 @@ def test_csrf_token_is_bound_to_one_session(web_env):
 
     assert first_token != second_token
     assert response.status_code == 403
+    assert response.headers.getlist("Set-Cookie") == []
+    assert session_cookie(env, other_client) == second_cookie
 
 
 def test_channel_routes_return_safe_503_until_service_is_available(web_env):
@@ -397,6 +449,213 @@ def test_library_list_strictly_validates_keyset_page_inputs(web_env):
         assert response.get_json()["error_code"] == "invalid_request"
 
 
+@pytest.mark.parametrize(
+    ("method", "route_name"),
+    [
+        ("GET", "csrf"),
+        ("GET", "libraries"),
+        ("POST", "create"),
+        ("GET", "detail"),
+        ("DELETE", "delete"),
+        ("POST", "scans"),
+        ("POST", "pause"),
+        ("POST", "resume"),
+        ("POST", "stop"),
+        ("GET", "packages"),
+        ("GET", "items"),
+        ("PUT", "select-one"),
+        ("POST", "select-filtered"),
+        ("POST", "clear-selection"),
+        ("GET", "selection"),
+        ("POST", "download-batch"),
+    ],
+)
+def test_task9_route_matrix_rejects_undocumented_query_keys(
+    web_env, method, route_name
+):
+    env = web_env
+    library, job, package_id, version = strict_route_context(env)
+    routes = {
+        "csrf": "/api/csrf-token",
+        "libraries": "/api/channel-libraries",
+        "create": "/api/channel-libraries",
+        "detail": f"/api/channel-libraries/{library['id']}",
+        "delete": f"/api/channel-libraries/{library['id']}",
+        "scans": f"/api/channel-libraries/{library['id']}/scans",
+        "pause": f"/api/channel-scans/{job['id']}/pause",
+        "resume": f"/api/channel-scans/{job['id']}/resume",
+        "stop": f"/api/channel-scans/{job['id']}/stop",
+        "packages": f"/api/channel-libraries/{library['id']}/packages",
+        "items": (
+            f"/api/channel-libraries/{library['id']}/packages/{package_id}/items"
+        ),
+        "select-one": (
+            f"/api/channel-libraries/{library['id']}/selection/packages/{package_id}"
+        ),
+        "select-filtered": (
+            f"/api/channel-libraries/{library['id']}/selection/select-filtered"
+        ),
+        "clear-selection": (
+            f"/api/channel-libraries/{library['id']}/selection/clear"
+        ),
+        "selection": f"/api/channel-libraries/{library['id']}/selection",
+        "download-batch": (
+            f"/api/channel-libraries/{library['id']}/download-batches"
+        ),
+    }
+    payloads = {
+        "create": {"link": "https://t.me/demo/1"},
+        "delete": {
+            "confirm_library_id": library["id"],
+            "library_version": version,
+        },
+        "scans": {"mode": "incremental"},
+        "select-one": {"selected": True},
+        "select-filtered": {},
+        "download-batch": {"redownload": False},
+    }
+    headers = {}
+    if method in {"POST", "PUT", "DELETE"}:
+        headers.update(csrf_headers(env))
+    if route_name == "download-batch":
+        headers["Idempotency-Key"] = "strict-query"
+    kwargs = {
+        "method": method,
+        "query_string": {"unexpected": "1"},
+        "headers": headers,
+    }
+    if route_name in payloads:
+        kwargs["json"] = payloads[route_name]
+
+    response = env.client.open(routes[route_name], **kwargs)
+
+    assert response.status_code == 400
+    assert response.get_json()["error_code"] == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    ("method", "route_name"),
+    [
+        ("GET", "csrf"),
+        ("GET", "libraries"),
+        ("GET", "detail"),
+        ("POST", "pause"),
+        ("POST", "resume"),
+        ("POST", "stop"),
+        ("GET", "packages"),
+        ("GET", "items"),
+        ("POST", "clear-selection"),
+        ("GET", "selection"),
+    ],
+)
+def test_bodyless_task9_routes_reject_unexpected_json(web_env, method, route_name):
+    env = web_env
+    library, job, package_id, _version = strict_route_context(env)
+    routes = {
+        "csrf": "/api/csrf-token",
+        "libraries": "/api/channel-libraries",
+        "detail": f"/api/channel-libraries/{library['id']}",
+        "pause": f"/api/channel-scans/{job['id']}/pause",
+        "resume": f"/api/channel-scans/{job['id']}/resume",
+        "stop": f"/api/channel-scans/{job['id']}/stop",
+        "packages": f"/api/channel-libraries/{library['id']}/packages",
+        "items": (
+            f"/api/channel-libraries/{library['id']}/packages/{package_id}/items"
+        ),
+        "clear-selection": (
+            f"/api/channel-libraries/{library['id']}/selection/clear"
+        ),
+        "selection": f"/api/channel-libraries/{library['id']}/selection",
+    }
+    headers = csrf_headers(env) if method == "POST" else {}
+
+    response = env.client.open(
+        routes[route_name],
+        method=method,
+        json={"unexpected": 1},
+        headers=headers,
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error_code"] == "invalid_request"
+
+
+def test_bodyless_commands_accept_empty_body_and_empty_json(web_env):
+    env = web_env
+    library, job, _package_id, _version = strict_route_context(env)
+    headers = csrf_headers(env)
+
+    paused = env.client.post(f"/api/channel-scans/{job['id']}/pause", headers=headers)
+    resumed = env.client.post(
+        f"/api/channel-scans/{job['id']}/resume", json={}, headers=headers
+    )
+    stopped = env.client.post(f"/api/channel-scans/{job['id']}/stop", headers=headers)
+    cleared = env.client.post(
+        f"/api/channel-libraries/{library['id']}/selection/clear",
+        json={},
+        headers=headers,
+    )
+
+    assert [response.status_code for response in (paused, resumed, stopped, cleared)] == [
+        200,
+        200,
+        200,
+        200,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "route_name"),
+    [
+        ("POST", "create"),
+        ("DELETE", "delete"),
+        ("POST", "scans"),
+        ("PUT", "select-one"),
+        ("POST", "select-filtered"),
+        ("POST", "download-batch"),
+    ],
+)
+def test_json_task9_routes_reject_undocumented_fields(web_env, method, route_name):
+    env = web_env
+    library, _job, package_id, version = strict_route_context(env)
+    routes = {
+        "create": "/api/channel-libraries",
+        "delete": f"/api/channel-libraries/{library['id']}",
+        "scans": f"/api/channel-libraries/{library['id']}/scans",
+        "select-one": (
+            f"/api/channel-libraries/{library['id']}/selection/packages/{package_id}"
+        ),
+        "select-filtered": (
+            f"/api/channel-libraries/{library['id']}/selection/select-filtered"
+        ),
+        "download-batch": (
+            f"/api/channel-libraries/{library['id']}/download-batches"
+        ),
+    }
+    payloads = {
+        "create": {"link": "https://t.me/demo/1", "unexpected": 1},
+        "delete": {
+            "confirm_library_id": library["id"],
+            "library_version": version,
+            "unexpected": 1,
+        },
+        "scans": {"mode": "incremental", "unexpected": 1},
+        "select-one": {"selected": True, "unexpected": 1},
+        "select-filtered": {"unexpected": 1},
+        "download-batch": {"redownload": False, "unexpected": 1},
+    }
+    headers = csrf_headers(env)
+    if route_name == "download-batch":
+        headers["Idempotency-Key"] = "strict-json"
+
+    response = env.client.open(
+        routes[route_name], method=method, json=payloads[route_name], headers=headers
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error_code"] == "invalid_request"
+
+
 def test_versioned_delete_checks_confirmation_version_and_active_work(web_env):
     env = web_env
     library, job = create_library(env)
@@ -448,6 +707,41 @@ def test_versioned_delete_checks_confirmation_version_and_active_work(web_env):
     assert wrong_confirm.status_code == 400
     assert deleted.status_code == 200
     assert env.client.get(f"/api/channel-libraries/{library['id']}").status_code == 404
+
+
+def test_versioned_delete_rejects_terminal_parent_with_active_child_attempt(web_env):
+    env = web_env
+    library, job = create_library(env)
+    env.service.stop_job(job["id"])
+    package_id = insert_package(env.store, library["id"], 10)
+    insert_package_item(env.store, library["id"], package_id, 10)
+    env.store.set_package_selected(library["id"], package_id, True)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+    batch = env.service.create_download_batch(library["id"], "divergent-attempt")
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_download_batches SET status = 'completed' WHERE id = ?",
+            (batch["id"],),
+        )
+    detail = env.client.get(f"/api/channel-libraries/{library['id']}").get_json()
+
+    response = env.client.delete(
+        f"/api/channel-libraries/{library['id']}",
+        json={
+            "confirm_library_id": library["id"],
+            "library_version": detail["library_version"],
+        },
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error_code"] == "state_conflict"
+    assert env.store.get_library(library["id"]) is not None
+    assert env.store.get_download_batch(batch["id"])["packages"][0]["status"] == "queued"
 
 
 def test_scan_create_and_controls_map_statuses(web_env):
@@ -605,8 +899,8 @@ def test_download_batch_requires_key_is_idempotent_and_schedules_once(web_env):
             "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
             (job["id"],),
         )
-    scheduled = []
-    env.service.schedule_download_batch_threadsafe = scheduled.append
+    scheduled = set()
+    env.service.schedule_download_batch_threadsafe = scheduled.add
     headers = csrf_headers(env)
 
     missing_key = env.client.post(
@@ -629,7 +923,150 @@ def test_download_batch_requires_key_is_idempotent_and_schedules_once(web_env):
     assert first.status_code == 202
     assert duplicate.status_code == 200
     assert first.get_json()["batch"]["id"] == duplicate.get_json()["batch"]["id"]
-    assert scheduled == [first.get_json()["batch"]["id"]]
+    assert scheduled == {first.get_json()["batch"]["id"]}
+
+
+def test_download_batch_result_preserves_dict_api_and_reports_atomic_creation(web_env):
+    env = web_env
+    library, job = create_library(env)
+    package_id = insert_package(env.store, library["id"], 10)
+    insert_package_item(env.store, library["id"], package_id, 10)
+    env.store.set_package_selected(library["id"], package_id, True)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
+            (job["id"],),
+        )
+
+    first, first_created = env.service.create_download_batch_result(
+        library["id"], "atomic-result"
+    )
+    replay, replay_created = env.service.create_download_batch_result(
+        library["id"], "atomic-result"
+    )
+    legacy = env.service.create_download_batch(library["id"], "atomic-result")
+
+    assert first_created is True
+    assert replay_created is False
+    assert first["id"] == replay["id"] == legacy["id"]
+    assert isinstance(legacy, dict)
+
+
+def test_concurrent_download_requests_return_one_creator_and_one_replay(
+    web_env, monkeypatch
+):
+    env = web_env
+    library, job = create_library(env)
+    package_id = insert_package(env.store, library["id"], 10)
+    insert_package_item(env.store, library["id"], package_id, 10)
+    env.store.set_package_selected(library["id"], package_id, True)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
+            (job["id"],),
+        )
+    env.service.schedule_download_batch_threadsafe = lambda _batch_id: None
+    original_lookup = env.store.get_download_batch_by_idempotency_key
+    lookup_barrier = threading.Barrier(2)
+
+    def synchronized_lookup(*args):
+        result = original_lookup(*args)
+        lookup_barrier.wait(timeout=2)
+        return result
+
+    monkeypatch.setattr(
+        env.store, "get_download_batch_by_idempotency_key", synchronized_lookup
+    )
+    first_client = env.web.get_flask_app().test_client()
+    second_client = env.web.get_flask_app().test_client()
+    first_headers = {
+        **csrf_headers(SimpleNamespace(client=first_client)),
+        "Idempotency-Key": "concurrent-key",
+    }
+    second_headers = {
+        **csrf_headers(SimpleNamespace(client=second_client)),
+        "Idempotency-Key": "concurrent-key",
+    }
+
+    def submit(client, headers):
+        return client.post(
+            f"/api/channel-libraries/{library['id']}/download-batches",
+            json={"redownload": False},
+            headers=headers,
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(
+            executor.map(
+                lambda args: submit(*args),
+                ((first_client, first_headers), (second_client, second_headers)),
+            )
+        )
+
+    assert sorted(response.status_code for response in responses) == [200, 202]
+    assert len({response.get_json()["batch"]["id"] for response in responses}) == 1
+    assert len(env.store.list_download_batches(library["id"])) == 1
+
+
+def test_replaying_pending_batch_repairs_dispatch_after_failure(web_env, monkeypatch):
+    env = web_env
+    library, job = create_library(env)
+    package_id = insert_package(env.store, library["id"], 10)
+    insert_package_item(env.store, library["id"], package_id, 10)
+    env.store.set_package_selected(library["id"], package_id, True)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
+            (job["id"],),
+        )
+    original_ensure = env.task_store.ensure_task
+    attempts = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("dispatch unavailable")
+        return original_ensure(*args, **kwargs)
+
+    monkeypatch.setattr(env.task_store, "ensure_task", fail_once)
+    scheduled = []
+    env.service.schedule_download_batch_threadsafe = scheduled.append
+    headers = {
+        **csrf_headers(env),
+        "Idempotency-Key": "repair-pending",
+    }
+
+    failed = env.client.post(
+        f"/api/channel-libraries/{library['id']}/download-batches",
+        json={"redownload": False},
+        headers=headers,
+    )
+    pending = env.store.list_pending_download_batches()[0]
+    replay = env.client.post(
+        f"/api/channel-libraries/{library['id']}/download-batches",
+        json={"redownload": False},
+        headers=headers,
+    )
+
+    assert failed.status_code == 503
+    assert replay.status_code == 200
+    assert replay.get_json()["created"] is False
+    assert replay.get_json()["batch"]["id"] == pending["id"]
+    assert env.store.get_download_batch(pending["id"])["dispatch_status"] == "dispatched"
+    assert scheduled == [pending["id"]]
 
 
 def test_download_batch_maps_state_conflict_and_strict_redownload_type(web_env):
@@ -762,3 +1199,27 @@ def test_media_lifecycle_assigns_after_start_stops_and_survives_init_failure(
         if app.channel_library_service is not None:
             loop.run_until_complete(app.channel_library_service.stop())
         loop.close()
+
+
+def test_media_shutdown_clears_service_before_await_and_precedes_client_stop():
+    loop = asyncio.new_event_loop()
+    events = []
+    app = SimpleNamespace(loop=loop, channel_library_service=None)
+
+    class RecordingService:
+        async def stop(self):
+            events.append(("service_stop", app.channel_library_service))
+
+    class RecordingClient:
+        async def stop(self):
+            events.append(("client_stop", None))
+
+    service = RecordingService()
+    app.channel_library_service = service
+    try:
+        media_downloader._stop_channel_library_service(app)
+        loop.run_until_complete(media_downloader.stop_server(RecordingClient()))
+    finally:
+        loop.close()
+
+    assert events == [("service_stop", None), ("client_stop", None)]

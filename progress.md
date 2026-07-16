@@ -1176,3 +1176,41 @@ Changed files:
 
 Rollback:
 - Run `git revert "$(git rev-list -1 --all --grep='^feat: expose channel library web api$')"`; preserve `channel_library.sqlite3` because rollback must not delete persisted channel indexes or download history.
+
+## 2026-07-16 - Task: Harden channel Web API races after review
+
+### What was done
+
+- Made CSRF rejection read-only so only the authenticated token GET can create session state.
+- Moved download-batch create/replay classification into the atomic store transaction and made same-key replay repair pending dispatch before returning.
+- Added lock-protected owner-loop command admission/tracking so shutdown rejects new work and drains every accepted link, incremental, and batch-scheduling command before cleanup.
+- Hardened versioned deletion against divergent terminal-parent/active-child download state and made every Task 9 route reject undocumented query/body inputs.
+
+### Testing
+
+- CSRF RED/GREEN: `2 failed, 2 passed` -> `4 passed` after corrected cookie-jar assertions.
+- Idempotency RED/GREEN: `3 failed` -> `3 passed` for atomic creation, concurrent 202/200, and pending-dispatch repair.
+- Lifecycle RED/GREEN: `4 failed` -> `4 passed` for command drain/rejection/scheduled-not-started and client-stop ordering.
+- Delete RED/GREEN: divergent parent/child case `1 failed` -> delete group `2 passed`.
+- Strict-input RED/GREEN: `24 failed, 3 passed` -> `27 passed`; complete channel Web contract `70 passed in 1.33s`.
+- Route/lifecycle: `106 passed in 2.14s`.
+- Requested Web/cancel/retention: `108 passed in 1.74s`.
+- Expanded channel/download regressions: `162 passed in 24.25s`.
+- Full suite: `454 passed, 1 skipped in 25.25s`.
+- Touched-file `python -m py_compile` and `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/web.py`: Read-only CSRF rejection, no Web idempotency pre-check, and complete strict-input validation.
+- `module/channel_library_store.py`: Atomic batch creation result and direct active child-attempt delete guard.
+- `module/channel_library_service.py`: Atomic batch result adapter and thread-safe accepted-command lifecycle tracking.
+- `media_downloader.py`: Clears the published service before awaiting shutdown.
+- `tests/module/test_channel_library_web.py`: Adds cookie, concurrency, dispatch repair, delete divergence, route matrix, and shutdown-order regressions.
+- `tests/module/test_channel_library_service.py`: Adds blocking command drain/rejection and scheduled-not-started coverage.
+- `docs/web-control-console.md`: Documents the hardened CSRF, idempotency, validation, delete, and shutdown contracts.
+- `.superpowers/sdd/task-9-report.md`: Appends review RED/GREEN and updated security/race audits.
+- `progress.md`: Appends review-fix evidence and rollback guidance.
+
+Rollback:
+- Run `git revert "$(git rev-list -1 --all --grep='^fix: harden channel web api races$')"`; preserve both SQLite databases and do not delete persisted channel or Web task state.

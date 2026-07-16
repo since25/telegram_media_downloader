@@ -102,6 +102,9 @@ class ChannelLibraryService:
         self._shutdown_task: Optional[asyncio.Task[None]] = None
         self._running_download_batch_ids: set[int] = set()
         self._download_batch_tasks: dict[int, asyncio.Task[Any]] = {}
+        self._command_lock = threading.Lock()
+        self._accepting_commands = False
+        self._command_futures: set[concurrent.futures.Future[Any]] = set()
 
     async def start(self) -> None:
         """Initialize recovery and start exactly one scheduler task."""
@@ -128,7 +131,11 @@ class ChannelLibraryService:
                 self._run_scheduler(), name="channel-library-scheduler"
             )
             self.schedule_pending_download_batches()
+            with self._command_lock:
+                self._accepting_commands = True
         except BaseException:
+            with self._command_lock:
+                self._accepting_commands = False
             owned_tasks = list(self._download_batch_tasks.values())
             if self.scheduler_task is not None:
                 owned_tasks.append(self.scheduler_task)
@@ -144,19 +151,30 @@ class ChannelLibraryService:
     async def stop(self) -> None:
         """Stop the scheduler without cancelling an active Telegram request."""
 
+        with self._command_lock:
+            self._accepting_commands = False
+            command_futures = tuple(self._command_futures)
         cleanup = self._shutdown_task
         if cleanup is None:
             self._stopping = True
             await self.wake()
             cleanup = asyncio.get_running_loop().create_task(
-                self._finish_shutdown(), name="channel-library-shutdown"
+                self._finish_shutdown(command_futures),
+                name="channel-library-shutdown",
             )
             self._shutdown_task = cleanup
         await asyncio.shield(cleanup)
 
-    async def _finish_shutdown(self) -> None:
+    async def _finish_shutdown(
+        self, command_futures: Sequence[concurrent.futures.Future[Any]]
+    ) -> None:
         """Finish scheduler shutdown independently of public stop waiters."""
 
+        if command_futures:
+            await asyncio.gather(
+                *(asyncio.wrap_future(future) for future in command_futures),
+                return_exceptions=True,
+            )
         task = self.scheduler_task
         try:
             if task is None:
@@ -197,6 +215,19 @@ class ChannelLibraryService:
     ) -> dict:
         """Commit a channel snapshot before idempotently creating its Web task."""
 
+        batch, _created = self.create_download_batch_result(
+            library_id, idempotency_key, redownload=redownload
+        )
+        return batch
+
+    def create_download_batch_result(
+        self,
+        library_id: int,
+        idempotency_key: str,
+        redownload: bool = False,
+    ) -> tuple[dict, bool]:
+        """Return dispatched batch plus atomic channel-transaction creation state."""
+
         key = str(idempotency_key or "").strip()
         if not key:
             raise ValueError("Idempotency key is required")
@@ -204,13 +235,13 @@ class ChannelLibraryService:
             uuid.NAMESPACE_URL,
             f"telegram-media-downloader:channel-library:{library_id}:{key}",
         )
-        batch = self.store.create_download_batch(
+        batch, created = self.store.create_download_batch_result(
             library_id,
             key,
             f"channel-batch-{deterministic_uuid}",
             allow_redownload=redownload,
         )
-        return self._dispatch_download_batch_task(batch)
+        return self._dispatch_download_batch_task(batch), created
 
     def schedule_pending_download_batches(self) -> list[int]:
         """Schedule every resumable dispatched batch once in this process."""
@@ -226,14 +257,17 @@ class ChannelLibraryService:
                 scheduled.append(int(batch["id"]))
         return scheduled
 
-    def schedule_download_batch_threadsafe(self, batch_id: int) -> None:
+    def schedule_download_batch_threadsafe(
+        self, batch_id: int
+    ) -> concurrent.futures.Future[bool]:
         """Wake the owner loop to run one persisted download batch."""
 
-        if self.owner_loop is None or not self.owner_loop.is_running():
-            raise RuntimeError("ChannelLibraryService is not running")
-        self.owner_loop.call_soon_threadsafe(
-            self._schedule_download_batch_owned, int(batch_id)
+        return self._submit_owner_command(
+            lambda: self._schedule_download_batch_command(int(batch_id))
         )
+
+    async def _schedule_download_batch_command(self, batch_id: int) -> bool:
+        return self._schedule_download_batch_owned(batch_id)
 
     def _schedule_download_batch_owned(self, batch_id: int) -> bool:
         existing = self._download_batch_tasks.get(batch_id)
@@ -704,10 +738,8 @@ class ChannelLibraryService:
     ) -> concurrent.futures.Future[SubmitLibraryResult]:
         """Schedule link resolution from Flask without calling Pyrogram there."""
 
-        if self.owner_loop is None or not self.owner_loop.is_running():
-            raise RuntimeError("ChannelLibraryService is not running")
-        return asyncio.run_coroutine_threadsafe(
-            self.resolve_and_create_library(link), self.owner_loop
+        return self._submit_owner_command(
+            lambda: self.resolve_and_create_library(link)
         )
 
     def submit_incremental_threadsafe(
@@ -715,11 +747,36 @@ class ChannelLibraryService:
     ) -> concurrent.futures.Future[dict]:
         """Schedule an incremental snapshot on the service owner loop."""
 
-        if self.owner_loop is None or not self.owner_loop.is_running():
-            raise RuntimeError("ChannelLibraryService is not running")
-        return asyncio.run_coroutine_threadsafe(
-            self.queue_incremental(library_id), self.owner_loop
+        return self._submit_owner_command(
+            lambda: self.queue_incremental(library_id)
         )
+
+    def _submit_owner_command(
+        self, coroutine_factory: Callable[[], Any]
+    ) -> concurrent.futures.Future[Any]:
+        """Atomically accept and track one owner-loop command through completion."""
+
+        with self._command_lock:
+            if not self._accepting_commands:
+                raise RuntimeError("ChannelLibraryService is not accepting commands")
+            loop = self.owner_loop
+            if loop is None or not loop.is_running():
+                raise RuntimeError("ChannelLibraryService is not running")
+            coroutine = coroutine_factory()
+            try:
+                future = asyncio.run_coroutine_threadsafe(coroutine, loop)
+            except BaseException:
+                coroutine.close()
+                raise
+            self._command_futures.add(future)
+        future.add_done_callback(self._discard_command_future)
+        return future
+
+    def _discard_command_future(
+        self, future: concurrent.futures.Future[Any]
+    ) -> None:
+        with self._command_lock:
+            self._command_futures.discard(future)
 
     def pause(self, job_id: int) -> dict:
         """Persist a user pause, deferring it when a batch is running."""

@@ -2686,12 +2686,11 @@ def _stop_channel_library_service(application: Application) -> None:
     service = getattr(application, "channel_library_service", None)
     if service is None:
         return
+    application.channel_library_service = None
     try:
         application.loop.run_until_complete(service.stop())
     except Exception:
         logger.exception("Channel library service shutdown failed")
-    finally:
-        application.channel_library_service = None
 
 
 def _sanitize_monitor_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
