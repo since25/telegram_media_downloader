@@ -9,6 +9,7 @@
 *.env
 .DS_Store
 .cache/
+.superpowers/
 .mypy_cache/
 .coverage
 settings.json

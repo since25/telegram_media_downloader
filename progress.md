@@ -538,3 +538,27 @@ Changed files:
 
 Rollback:
 - `git revert -m 1 339efc1` 后 push，服务器 `git pull --ff-only && systemctl restart tg-downloader.service`。
+
+## 2026-07-16 - Task: 设计 Web 全频道包库与低频可恢复扫描
+
+### What was done
+
+- 完成 Web 全频道包库 Spec，明确全历史低频扫描、重启续扫、稳定包渐进展示、包级筛选/选择、增量扫描和现有串行下载接入。
+- 通过三路独立对抗性审查，修复跨库一致性、扫描/下载竞态、双检查点、包 revision、失败闭包、长包窗口、包级下载回调、状态机、分页和安全/部署证据等设计缺口。
+- 将 Visual Companion 草稿目录加入忽略，避免设计画布进入版本控制。
+
+### Testing
+
+- `rg -n "TBD|TODO|待定" docs/superpowers/specs/2026-07-16-web-full-channel-library-design.md`：无占位符。
+- 对抗性审查：数据/恢复、产品/运维/安全、现有代码适配三路只读审查完成，所有高风险和中风险发现已写入 Spec 的明确契约与验收项。
+- `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-07-16-web-full-channel-library-design.md`: 新增经对抗性审查修订的全频道包库设计。
+- `.gitignore`: 忽略 `.superpowers/` 视觉设计草稿。
+- `progress.md`: 记录本轮设计、审查和验证证据。
+
+Rollback:
+- 在设计提交创建后执行 `git revert <web-full-channel-library-design-commit>`。
