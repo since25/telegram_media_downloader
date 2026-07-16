@@ -1214,3 +1214,26 @@ Changed files:
 
 Rollback:
 - Run `git revert "$(git rev-list -1 --all --grep='^fix: harden channel web api races$')"`; preserve both SQLite databases and do not delete persisted channel or Web task state.
+
+## 2026-07-16 - Task: Approve channel Web API review
+
+### What was done
+
+- Recorded independent approval of the complete Task 9 API, CSRF, idempotency, deletion, strict-input, and shutdown lifecycle implementation after all five Important review findings were closed.
+- Marked Task 9 complete in the implementation plan and SDD ledger, and corrected stale internal report wording for the tracked owner-loop command path.
+
+### Testing
+
+- Read-only independent review of `e3cf66a..4ed6770` found no Critical or Important issues; the reviewer did not rerun tests and relied on the recorded `454 passed, 1 skipped` verification.
+- `git diff --check` will be rerun before committing this review record.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/plans/2026-07-16-web-full-channel-library.md`: Marked all Task 9 implementation steps complete.
+- `.superpowers/sdd/progress.md`: Marked Task 9 review clean.
+- `.superpowers/sdd/task-9-report.md`: Corrected the owner-loop scheduling description.
+- `progress.md`: Appended Task 9 review approval evidence.
+
+Rollback:
+- Revert the review-record commit only; do not revert the approved Task 9 implementation or modify either SQLite database.

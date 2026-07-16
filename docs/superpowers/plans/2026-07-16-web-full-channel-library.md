@@ -605,11 +605,11 @@ git commit -m "feat: dispatch channel package download batches"
 - Produces `GET /api/csrf-token` with a logged-in session token.
 - Channel APIs return 503 until startup assigns `app.channel_library_service`; Flask reads store/calls service commands and never calls Pyrogram directly.
 
-- [ ] **Step 1: Add endpoint contract tests**
+- [x] **Step 1: Add endpoint contract tests**
 
 Cover login on all routes; missing/wrong CSRF 403; new create 202 and duplicate 200; invalid link/type 400; state 409; missing 404; keyset/filter/item paging; scan controls; versioned delete; selection/summary; required idempotency key; duplicate-key same batch; and safe `error_code` responses.
 
-- [ ] **Step 2: Run and observe route failures**
+- [x] **Step 2: Run and observe route failures**
 
 ```bash
 .venv/bin/python -m pytest tests/module/test_channel_library_web.py -q
@@ -617,7 +617,7 @@ Cover login on all routes; missing/wrong CSRF 403; new create 202 and duplicate 
 
 Expected: new routes return 404.
 
-- [ ] **Step 3: Implement session-bound CSRF and thin adapters**
+- [x] **Step 3: Implement session-bound CSRF and thin adapters**
 
 ```python
 def _csrf_token() -> str:
@@ -635,7 +635,7 @@ def _require_csrf() -> None:
 
 Validate JSON/query primitives, call store for reads, and call persisted service commands for writes. Link creation calls `submit_library_link_threadsafe`, waits at most 30 seconds for its result, and maps timeout to 503 without cancelling persisted work. Map domain exceptions to exact 400/404/409/503 errors. Do not put scan logic in `module/web.py`.
 
-- [ ] **Step 4: Wire service startup/shutdown on `Application.loop`**
+- [x] **Step 4: Wire service startup/shutdown on `Application.loop`**
 
 After Telegram start succeeds:
 
@@ -654,13 +654,13 @@ if app.channel_library_service is not None:
 
 If store initialization fails, Web stays available but channel APIs return safe 503.
 
-- [ ] **Step 5: Run Web/lifecycle regressions**
+- [x] **Step 5: Run Web/lifecycle regressions**
 
 ```bash
 .venv/bin/python -m pytest tests/module/test_channel_library_web.py tests/module/test_web.py tests/test_web_cancel_task.py tests/test_web_prescan_retention.py -q
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add module/web.py media_downloader.py tests/module/test_channel_library_web.py tests/module/test_web.py
