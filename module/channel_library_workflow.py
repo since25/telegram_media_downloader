@@ -119,6 +119,7 @@ class IndexResult:
     changed_package_count: int
     superseded_package_count: int
     invalidated_selection_count: int
+    publication_deferred: bool
 
 
 class ChannelPackageIndexer:
@@ -129,6 +130,7 @@ class ChannelPackageIndexer:
         store: ChannelLibraryStore,
         job: Mapping[str, Any],
         through_message_id: int,
+        resolve_failure_id: Optional[int] = None,
     ) -> IndexResult:
         context = store.load_package_index_context(
             int(job["id"]),
@@ -156,7 +158,13 @@ class ChannelPackageIndexer:
         uncertain_intervals = []
         failure_updates = []
         package_starts = [plan.items[0].message.id for plan in package_plans]
-        for failure in context["failures"]:
+        failures = [
+            failure
+            for failure in context["failures"]
+            if resolve_failure_id is None
+            or int(failure["id"]) != int(resolve_failure_id)
+        ]
+        for failure in failures:
             starts_after_failure = [
                 start
                 for start in package_starts
@@ -225,6 +233,9 @@ class ChannelPackageIndexer:
             reindex_anchor_start=int(context["reindex_anchor_start"]),
             packages=packages,
             failure_updates=failure_updates,
+            resolved_failure_ids=(
+                () if resolve_failure_id is None else (int(resolve_failure_id),)
+            ),
         )
         return IndexResult(
             index_revision=publication["index_revision"],
@@ -233,4 +244,5 @@ class ChannelPackageIndexer:
             changed_package_count=publication["changed_package_count"],
             superseded_package_count=publication["superseded_package_count"],
             invalidated_selection_count=publication["invalidated_selection_count"],
+            publication_deferred=publication["publication_deferred"],
         )

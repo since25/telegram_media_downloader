@@ -6,7 +6,6 @@ import asyncio
 import concurrent.futures
 import logging
 import random
-import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -214,6 +213,64 @@ class ChannelLibraryService:
             await self.wake()
         return SubmitLibraryResult(library=library, created=created, job=job)
 
+    async def queue_incremental(self, library_id: int) -> dict:
+        """Snapshot and queue the new tail of a finished channel library."""
+
+        self._require_owner_loop()
+        library = self.store.get_library(library_id)
+        if library is None:
+            raise KeyError(f"Channel library {library_id} does not exist")
+        if not self.store.has_finished_full_scan(library_id):
+            raise ValueError("Incremental scan requires a finished full scan")
+
+        snapshot_max = 0
+        async with self.gate.scan_permit():
+            async for message in self.client.get_chat_history(
+                library["chat_id"], limit=1
+            ):
+                if message is not None and getattr(message, "id", None) is not None:
+                    snapshot_max = int(message.id)
+                    break
+        start_message_id = int(library["fetched_through_message_id"]) + 1
+        snapshot_max = max(snapshot_max, start_message_id - 1)
+        job = self.store.create_scan_job(
+            library_id,
+            "incremental",
+            start_message_id,
+            snapshot_max,
+        )
+        await self.wake()
+        return job
+
+    def queue_repair(
+        self, library_id: int, failure_ids: Optional[Sequence[int]] = None
+    ) -> dict:
+        """Queue all or selected unresolved ranges for one partial library."""
+
+        job = self.store.create_repair_job(library_id, failure_ids)
+        self._wake_threadsafe()
+        return job
+
+    def retry_failed_job(self, library_id: int, failed_job_id: int) -> dict:
+        """Create a new same-kind job from a failed job's durable checkpoint."""
+
+        failed = self._get_required_job(failed_job_id)
+        if failed["library_id"] != library_id:
+            raise ValueError("Failed scan does not belong to the requested library")
+        if failed["status"] != "failed":
+            raise ValueError("Only failed scans can be retried")
+        if failed["kind"] == "repair":
+            retried = self.store.retry_failed_repair_job(failed_job_id)
+        else:
+            retried = self.store.create_scan_job(
+                library_id,
+                failed["kind"],
+                int(failed["start_message_id"]),
+                int(failed["snapshot_max_message_id"]),
+            )
+        self._wake_threadsafe()
+        return retried
+
     def submit_library_link_threadsafe(
         self, link: str
     ) -> concurrent.futures.Future[SubmitLibraryResult]:
@@ -262,129 +319,56 @@ class ChannelLibraryService:
         return result
 
     async def _run_job(self, job: dict) -> None:
-        """Run one full scan from its durable checkpoint to immutable snapshot."""
+        """Dispatch full, incremental, and repair work through one range runner."""
 
         current = self._get_required_job(job["id"])
-        if current["kind"] != "full":
-            raise ValueError("Task 5 only executes full scan jobs")
         if current["status"] == "queued":
             current = self.store.transition_job(current["id"], "running")
         if current["status"] != "running":
             return
 
         try:
-            while int(current["next_message_id"]) <= int(
-                current["snapshot_max_message_id"]
-            ):
-                controlled = self.store.consume_job_control(current["id"])
-                if controlled is not None:
-                    return
-                if await self.gate.has_download_activity():
-                    self.store.transition_job(current["id"], "auto_paused_download")
-                    await self.gate.wait_until_downloads_idle()
-                    paused = self.store.get_job(current["id"])
-                    if paused is not None and paused["status"] == "auto_paused_download":
-                        self.store.transition_job(current["id"], "queued")
-                        await self.wake()
-                    return
-
-                batch_ids = list(
-                    range(
-                        int(current["next_message_id"]),
-                        min(
-                            int(current["next_message_id"])
-                            + self.config.full_scan_batch_size,
-                            int(current["snapshot_max_message_id"]) + 1,
-                        ),
+            if current["kind"] == "repair":
+                for target in self.store.list_repair_targets(current["id"]):
+                    if target["status"] == "completed":
+                        continue
+                    repair_job = dict(current)
+                    repair_job["repair_failure_id"] = int(target["failure_id"])
+                    finished = await self._scan_range(
+                        repair_job,
+                        int(target["next_message_id"]),
+                        int(target["end_message_id"]),
+                        self._incremental_delay_range(),
                     )
-                )
-                batch_succeeded = True
-                try:
-                    messages = await self._fetch_batch(
-                        int(current["id"]),
-                        int(current["library_id"]),
-                        batch_ids,
-                    )
-                    rows = [
-                        row
-                        for item in normalize_messages(messages)
-                        if (row := extract_media_row(item)) is not None
-                    ]
-                    current = self.store.commit_fetched_batch(
-                        current["id"], rows, end_id=batch_ids[-1]
-                    )
-                    self.indexer.index_through(
-                        self.store,
-                        self._get_required_job(current["id"]),
-                        batch_ids[-1],
-                    )
-                except errors.FloodWait as error:
-                    wait_seconds = float(error.value or 0) + self.random_uniform(1, 3)
-                    self.store.transition_job(
-                        current["id"],
-                        "waiting_rate_limit",
-                        wait_until=time.time() + wait_seconds,
-                        wait_reason="FloodWait",
-                        last_error=str(error),
-                    )
-                    return
-                except self._permanent_errors() as error:
-                    self.store.transition_job(
-                        current["id"], "failed", last_error=str(error)
-                    )
-                    return
-                except _TransientBatchFailure as error:
-                    batch_succeeded = False
-                    try:
-                        self.store.record_failed_range(
-                            current["id"],
-                            batch_ids[0],
-                            batch_ids[-1],
-                            str(error),
-                            reindex_anchor_start=1,
-                            uncertain_through_message_id=batch_ids[-1],
-                        )
-                        current = self.store.commit_fetched_batch(
-                            current["id"], [], end_id=batch_ids[-1]
-                        )
-                        self.indexer.index_through(
-                            self.store,
-                            self._get_required_job(current["id"]),
-                            batch_ids[-1],
-                        )
-                    except Exception as persistence_error:
-                        self.store.transition_job(
-                            current["id"],
-                            "failed",
-                            last_error=str(persistence_error),
-                        )
+                    if not finished:
                         return
-                except sqlite3.Error as error:
-                    self.store.transition_job(
-                        current["id"], "failed", last_error=str(error)
+                    await self._index_until_published(
+                        self._get_required_job(current["id"]),
+                        int(target["uncertain_through_message_id"]),
+                        resolve_failure_id=int(target["failure_id"]),
                     )
-                    return
-                except Exception as error:
-                    self.store.transition_job(
-                        current["id"], "failed", last_error=str(error)
+                    current = self._get_required_job(current["id"])
+            else:
+                if int(current["indexed_through_message_id"]) < int(
+                    current["fetched_through_message_id"]
+                ):
+                    await self._index_until_published(
+                        current, int(current["fetched_through_message_id"])
                     )
+                    current = self._get_required_job(current["id"])
+                delay_range = (
+                    self._full_delay_range()
+                    if current["kind"] == "full"
+                    else self._incremental_delay_range()
+                )
+                finished = await self._scan_range(
+                    current,
+                    int(current["next_message_id"]),
+                    int(current["snapshot_max_message_id"]),
+                    delay_range,
+                )
+                if not finished:
                     return
-
-                current = self._get_required_job(current["id"])
-                controlled = self.store.consume_job_control(current["id"])
-                if controlled is not None:
-                    return
-                if self._stopping:
-                    self.store.transition_job(current["id"], "queued")
-                    return
-                if int(current["next_message_id"]) <= int(
-                    current["snapshot_max_message_id"]
-                ) and batch_succeeded:
-                    delay = self.random_uniform(
-                        self.config.full_scan_delay_min_sec,
-                        self.config.full_scan_delay_max_sec,
-                    )
-                    await self.sleep(delay)
 
             current = self._get_required_job(current["id"])
             final_status = (
@@ -400,6 +384,161 @@ class ChannelLibraryService:
                 if controlled is None:
                     self.store.transition_job(cancelled_job["id"], "queued")
             raise
+        except Exception as error:
+            failed_job = self.store.get_job(job["id"])
+            if failed_job is not None and failed_job["status"] == "running":
+                self.store.transition_job(
+                    failed_job["id"], "failed", last_error=str(error)
+                )
+
+    async def _scan_range(
+        self,
+        job: dict,
+        start_id: int,
+        end_id: int,
+        delay_range: tuple[float, float],
+    ) -> bool:
+        """Run one durable ID range with shared gate, retry, and control behavior."""
+
+        next_id = start_id
+        while next_id <= end_id:
+            current = self._get_required_job(job["id"])
+            if current["status"] != "running":
+                return False
+            controlled = self.store.consume_job_control(current["id"])
+            if controlled is not None:
+                return False
+            if await self.gate.has_download_activity():
+                self.store.transition_job(current["id"], "auto_paused_download")
+                await self.gate.wait_until_downloads_idle()
+                paused = self.store.get_job(current["id"])
+                if paused is not None and paused["status"] == "auto_paused_download":
+                    self.store.transition_job(current["id"], "queued")
+                    await self.wake()
+                return False
+
+            batch_ids = list(
+                range(next_id, min(next_id + self._batch_size(current), end_id + 1))
+            )
+            batch_succeeded = True
+            batch_job = dict(current)
+            if job.get("repair_failure_id") is not None:
+                batch_job["repair_failure_id"] = int(job["repair_failure_id"])
+            try:
+                await self._fetch_commit_and_index(batch_job, batch_ids)
+            except errors.FloodWait as error:
+                wait_seconds = float(error.value or 0) + self.random_uniform(1, 3)
+                self.store.transition_job(
+                    current["id"],
+                    "waiting_rate_limit",
+                    wait_until=time.time() + wait_seconds,
+                    wait_reason="FloodWait",
+                    last_error=str(error),
+                )
+                return False
+            except self._permanent_errors() as error:
+                self.store.transition_job(current["id"], "failed", last_error=str(error))
+                return False
+            except _TransientBatchFailure as error:
+                if current["kind"] == "repair":
+                    self.store.transition_job(
+                        current["id"], "failed", last_error=str(error)
+                    )
+                    return False
+                batch_succeeded = False
+                try:
+                    anchor = self.store.reindex_anchor_for_message(
+                        int(current["library_id"]), batch_ids[0]
+                    )
+                    self.store.record_failed_range(
+                        current["id"],
+                        batch_ids[0],
+                        batch_ids[-1],
+                        str(error),
+                        reindex_anchor_start=anchor,
+                        uncertain_through_message_id=batch_ids[-1],
+                    )
+                    self.store.commit_fetched_batch(
+                        current["id"], [], end_id=batch_ids[-1]
+                    )
+                    await self._index_until_published(
+                        self._get_required_job(current["id"]), batch_ids[-1]
+                    )
+                except Exception as persistence_error:
+                    self.store.transition_job(
+                        current["id"], "failed", last_error=str(persistence_error)
+                    )
+                    return False
+            except Exception as error:
+                self.store.transition_job(current["id"], "failed", last_error=str(error))
+                return False
+
+            next_id = batch_ids[-1] + 1
+            current = self._get_required_job(current["id"])
+            controlled = self.store.consume_job_control(current["id"])
+            if controlled is not None:
+                return False
+            if self._stopping:
+                self.store.transition_job(current["id"], "queued")
+                return False
+            if next_id <= end_id and batch_succeeded:
+                await self.sleep(self.random_uniform(*delay_range))
+        return True
+
+    async def _fetch_commit_and_index(
+        self, job: dict, batch_ids: Sequence[int]
+    ) -> None:
+        messages = await self._fetch_batch(
+            int(job["id"]), int(job["library_id"]), batch_ids
+        )
+        rows = [
+            row
+            for item in normalize_messages(messages)
+            if (row := extract_media_row(item)) is not None
+        ]
+        self.store.commit_fetched_batch(
+            job["id"],
+            rows,
+            end_id=batch_ids[-1],
+            repair_failure_id=job.get("repair_failure_id"),
+        )
+        await self._index_until_published(
+            self._get_required_job(job["id"]), batch_ids[-1]
+        )
+
+    async def _index_until_published(
+        self,
+        job: dict,
+        through_message_id: int,
+        resolve_failure_id: Optional[int] = None,
+    ) -> None:
+        while True:
+            result = self.indexer.index_through(
+                self.store,
+                self._get_required_job(job["id"]),
+                through_message_id,
+                resolve_failure_id=resolve_failure_id,
+            )
+            if not result.publication_deferred:
+                return
+            await self.gate.wait_until_downloads_idle()
+
+    def _batch_size(self, job: dict) -> int:
+        if job["kind"] == "full":
+            return int(self.config.full_scan_batch_size)
+        return int(self.config.incremental_scan_batch_size)
+
+    def _full_delay_range(self) -> tuple[float, float]:
+        return (
+            float(self.config.full_scan_delay_min_sec),
+            float(self.config.full_scan_delay_max_sec),
+        )
+
+    def _incremental_delay_range(self) -> tuple[float, float]:
+        return (
+            float(self.config.incremental_scan_delay_min_sec),
+            float(self.config.incremental_scan_delay_max_sec),
+        )
 
     async def _fetch_batch(
         self, job_id: int, library_id: int, batch_ids: Sequence[int]

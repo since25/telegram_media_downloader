@@ -778,6 +778,33 @@ class ChannelLibraryStore:
             ).fetchone()
         return row is not None
 
+    def has_finished_full_scan(self, library_id: int) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id FROM channel_scan_jobs
+                WHERE library_id = ? AND kind = 'full'
+                  AND status IN ('completed', 'partial')
+                LIMIT 1
+                """,
+                (library_id,),
+            ).fetchone()
+        return row is not None
+
+    def reindex_anchor_for_message(self, library_id: int, message_id: int) -> int:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT start_message_id FROM channel_packages
+                WHERE library_id = ? AND boundary_status != 'superseded'
+                  AND start_message_id <= ?
+                ORDER BY start_message_id DESC, id DESC
+                LIMIT 1
+                """,
+                (library_id, message_id),
+            ).fetchone()
+        return int(row["start_message_id"]) if row is not None else 1
+
     def record_job_retry(
         self,
         job_id: int,
@@ -1014,6 +1041,7 @@ class ChannelLibraryStore:
         job_id: int,
         media_rows: Sequence[Mapping[str, object]],
         end_id: int,
+        repair_failure_id: Optional[int] = None,
         now: Optional[float] = None,
     ) -> dict:
         now = time.time() if now is None else now
@@ -1030,6 +1058,28 @@ class ChannelLibraryStore:
                 raise ValueError("Fetch checkpoint precedes the scan range")
             if end_id > job["snapshot_max_message_id"]:
                 raise ValueError("Fetch checkpoint exceeds the scan snapshot")
+            repair_target = None
+            if repair_failure_id is not None:
+                if job["kind"] != "repair":
+                    raise ValueError("Only repair jobs have repair target cursors")
+                repair_target = connection.execute(
+                    """
+                    SELECT t.*, f.end_message_id
+                    FROM channel_scan_repair_targets AS t
+                    JOIN channel_scan_failures AS f
+                      ON f.id = t.failure_id AND f.library_id = t.library_id
+                    WHERE t.job_id = ? AND t.failure_id = ?
+                    """,
+                    (job_id, repair_failure_id),
+                ).fetchone()
+                if repair_target is None:
+                    raise KeyError(
+                        f"Repair target {job_id}/{repair_failure_id} does not exist"
+                    )
+                if end_id < repair_target["next_message_id"]:
+                    raise ValueError("Repair target cursor cannot move backwards")
+                if end_id > repair_target["end_message_id"]:
+                    raise ValueError("Repair fetch checkpoint exceeds its target")
             for media in media_rows:
                 connection.execute(
                     """
@@ -1100,6 +1150,16 @@ class ChannelLibraryStore:
                     job_id,
                 ),
             )
+            if repair_target is not None:
+                connection.execute(
+                    """
+                    UPDATE channel_scan_repair_targets
+                    SET next_message_id = ?, status = 'running',
+                        updated_at = ?, completed_at = NULL
+                    WHERE job_id = ? AND failure_id = ?
+                    """,
+                    (end_id + 1, now, job_id, repair_failure_id),
+                )
             connection.execute(
                 """
                 UPDATE channel_libraries
@@ -1227,12 +1287,14 @@ class ChannelLibraryStore:
         reindex_anchor_start: int,
         packages: Sequence[Mapping[str, object]],
         failure_updates: Sequence[Mapping[str, object]] = (),
+        resolved_failure_ids: Sequence[int] = (),
         now: Optional[float] = None,
     ) -> dict:
         """Atomically publish derived packages, items, revision, and watermark."""
 
         now = time.time() if now is None else now
         desired_packages = [dict(package) for package in packages]
+        resolved_ids = list(dict.fromkeys(int(value) for value in resolved_failure_ids))
         desired_starts = [int(package["start_message_id"]) for package in desired_packages]
         if len(desired_starts) != len(set(desired_starts)):
             raise ValueError("Package start message IDs must be unique")
@@ -1287,6 +1349,27 @@ class ChannelLibraryStore:
             library = connection.execute(
                 "SELECT * FROM channel_libraries WHERE id = ?", (library_id,)
             ).fetchone()
+            for failure_id in resolved_ids:
+                target = connection.execute(
+                    """
+                    SELECT t.next_message_id, t.status AS target_status,
+                           f.end_message_id, f.status AS failure_status
+                    FROM channel_scan_repair_targets AS t
+                    JOIN channel_scan_failures AS f
+                      ON f.id = t.failure_id AND f.library_id = t.library_id
+                    WHERE t.job_id = ? AND t.failure_id = ?
+                    """,
+                    (job_id, failure_id),
+                ).fetchone()
+                if target is None:
+                    raise ValueError("Resolved failure is not a target of this repair")
+                if target["next_message_id"] <= target["end_message_id"]:
+                    raise ValueError("Cannot resolve an incompletely fetched repair target")
+                if (
+                    target["target_status"] == "completed"
+                    or target["failure_status"] == "resolved"
+                ):
+                    raise ValueError("Repair target is already resolved")
 
             existing_rows = connection.execute(
                 """
@@ -1346,6 +1429,27 @@ class ChannelLibraryStore:
                 and int(row["start_message_id"]) not in desired_by_start
             ]
             changed_count = sum(changed_desired.values()) + len(removed_rows)
+            changed_existing_ids = {
+                int(existing_by_start[start]["id"])
+                for start, changed in changed_desired.items()
+                if changed and start in existing_by_start
+            }
+            changed_existing_ids.update(int(row["id"]) for row in removed_rows)
+            if any(
+                int(row["id"]) in changed_existing_ids
+                and row["current_download_status"] == "downloading"
+                for row in existing_rows
+            ):
+                result = dict(job)
+                result.update(
+                    {
+                        "changed_package_count": changed_count,
+                        "superseded_package_count": len(removed_rows),
+                        "invalidated_selection_count": 0,
+                        "publication_deferred": True,
+                    }
+                )
+                return result
             old_revision = max(
                 int(job["index_revision"]), int(library["index_revision"])
             )
@@ -1520,6 +1624,24 @@ class ChannelLibraryStore:
                 if cursor.rowcount != 1:
                     raise ValueError("Failure does not belong to the indexing library")
 
+            for failure_id in resolved_ids:
+                connection.execute(
+                    """
+                    UPDATE channel_scan_repair_targets
+                    SET status = 'completed', updated_at = ?, completed_at = ?
+                    WHERE job_id = ? AND failure_id = ?
+                    """,
+                    (now, now, job_id, failure_id),
+                )
+                connection.execute(
+                    """
+                    UPDATE channel_scan_failures
+                    SET status = 'resolved', updated_at = ?, resolved_at = ?
+                    WHERE id = ? AND library_id = ?
+                    """,
+                    (now, now, failure_id, library_id),
+                )
+
             stable_package_count = connection.execute(
                 """
                 SELECT COUNT(*) FROM channel_packages
@@ -1565,6 +1687,7 @@ class ChannelLibraryStore:
                 "changed_package_count": changed_count,
                 "superseded_package_count": len(removed_rows),
                 "invalidated_selection_count": invalidated_selection_count,
+                "publication_deferred": False,
             }
         )
         return result
@@ -1855,6 +1978,91 @@ class ChannelLibraryStore:
                 (job_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def retry_failed_repair_job(
+        self, failed_job_id: int, now: Optional[float] = None
+    ) -> dict:
+        """Clone unfinished targets from a failed repair without losing cursors."""
+
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            failed = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (failed_job_id,)
+            ).fetchone()
+            if failed is None:
+                raise KeyError(f"Scan job {failed_job_id} does not exist")
+            if failed["kind"] != "repair" or failed["status"] != "failed":
+                raise ValueError("Only failed repair jobs can be retried here")
+            active = connection.execute(
+                """
+                SELECT id FROM channel_scan_jobs
+                WHERE library_id = ? AND status IN (
+                    'queued', 'running', 'paused_user',
+                    'auto_paused_download', 'waiting_rate_limit', 'stopped'
+                )
+                LIMIT 1
+                """,
+                (failed["library_id"],),
+            ).fetchone()
+            if active is not None:
+                raise ValueError(
+                    f"Library {failed['library_id']} already has a recoverable scan job"
+                )
+            targets = connection.execute(
+                """
+                SELECT t.* FROM channel_scan_repair_targets AS t
+                JOIN channel_scan_failures AS f
+                  ON f.id = t.failure_id AND f.library_id = t.library_id
+                WHERE t.job_id = ? AND t.status != 'completed'
+                  AND f.status != 'resolved'
+                ORDER BY t.id
+                """,
+                (failed_job_id,),
+            ).fetchall()
+            if not targets:
+                raise ValueError("Failed repair has no unfinished targets")
+            library = connection.execute(
+                "SELECT * FROM channel_libraries WHERE id = ?",
+                (failed["library_id"],),
+            ).fetchone()
+            job_id = self._insert_scan_job(
+                connection,
+                library,
+                "repair",
+                int(failed["start_message_id"]),
+                int(failed["snapshot_max_message_id"]),
+                now,
+            )
+            for target in targets:
+                connection.execute(
+                    """
+                    INSERT INTO channel_scan_repair_targets (
+                        job_id, failure_id, library_id, next_message_id,
+                        status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, 'queued', ?, ?)
+                    """,
+                    (
+                        job_id,
+                        target["failure_id"],
+                        target["library_id"],
+                        target["next_message_id"],
+                        now,
+                        now,
+                    ),
+                )
+            connection.execute(
+                """
+                UPDATE channel_libraries
+                SET status = 'indexing', updated_at = ?
+                WHERE id = ?
+                """,
+                (now, failed["library_id"]),
+            )
+            job = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+            ).fetchone()
+        return dict(job)
 
     def resolve_repair_target(
         self,

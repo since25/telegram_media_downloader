@@ -912,3 +912,39 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: retain scan ownership through cancelled stop$')"` 回滚本次修复。
+
+## 2026-07-16 - Task: Incremental Scan And Failed-Range Repair
+
+### What was done
+
+- 新增从已提交 fetch 水位下一条开始、创建时冻结最新消息 ID 的增量扫描，并复用服务端 1-2 秒低频配置。
+- 新增默认全部或指定失败区间的 repair、逐目标持久化 cursor、失败任务按原 kind/snapshot/checkpoint 重试，以及 fetched 领先 indexed 时不重复 Telegram 请求的恢复重建。
+- 将 full、incremental 和每个 repair target 统一到同一 range/fetch/index/retry/control 路径，保留 Task 5 的 gate、持久化重试、FloodWait、控制边界、安全停止和全局单例行为。
+- repair 批次的媒体元数据与 target cursor 同事务提交；完整不确定闭包的包 revision、index 水位、target 完成和 failure resolved 同事务发布。
+- 重算与 `downloading` 包重叠时无修改返回 deferred；runner 等待下载活动清空后只重试已抓取数据的索引发布，不重复 Telegram 请求。
+
+### Testing
+
+- Brief 相对解释器检查：worktree 内 `.venv/bin/python` 不存在，命令在收集前以 exit 127 失败；随后使用主仓库虚拟环境完成全部测试。
+- 接管 RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_service.py tests/module/test_channel_library_workflow.py -q`：`7 failed, 35 passed in 0.94s`，失败均为缺少 Task 6 命令或 deferred 结果。
+- 补充 RED：共享 runner、repair fetch/cursor 原子性、闭包发布/resolution 原子性、deferred runner 重试四个 targeted tests：`4 failed in 0.60s`，失败均为对应 Task 6 API 缺失。
+- 补充 GREEN：同四个 targeted tests：`4 passed in 0.50s`；fetched/indexed 恢复与 deferred/closure targeted：`3 passed in 0.53s`。
+- Brief focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_service.py tests/module/test_channel_library_workflow.py tests/module/test_channel_library_store.py -q`：`89 passed in 1.24s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`333 passed, 1 skipped in 24.17s`。
+- `py_compile module/channel_library_service.py module/channel_library_store.py module/channel_library_workflow.py` 与 `git diff --check`：通过。
+- Targeted mypy：store 既有宽泛 `Mapping[str, object]`/SQLite 类型区域仍有 21 条诊断，service/workflow 无诊断；未扩大为 store 全量类型重构。
+- Black check：报告 4 个 touched files 会被重排，且包含大量 Task 6 之外的既有行；为避免全文件格式化和超范围 churn，未执行自动重排。
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`: 增量/repair/retry 命令、共享 range runner、索引追赶与 deferred 重试。
+- `module/channel_library_store.py`: 完成 full 检查、失败锚点、repair cursor 原子 checkpoint、closure resolution 原子发布及 repair retry 克隆。
+- `module/channel_library_workflow.py`: deferred 结果与 repair failure 闭包重建参数。
+- `tests/module/test_channel_library_service.py`: 增量快照/频率/冲突、repair 选择/恢复、共享 runner、retry、索引追赶与 deferred 重试覆盖。
+- `tests/module/test_channel_library_workflow.py`: 新 caption 边界、旧尾包 revision、下载重叠 deferred、repair 两阶段原子性覆盖。
+- `.superpowers/sdd/task-6-report.md`: 接管、RED/GREEN、共享 runner、repair/revision 审计和文件清单。
+- `progress.md`: 追加本任务实现、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^feat: add incremental and repair scans$')"` 回滚 Task 6；保留 `channel_library.sqlite3`，避免丢失已扫描数据。

@@ -14,6 +14,7 @@ from pyrogram import errors
 
 from module.channel_library_service import ChannelLibraryService
 from module.channel_library_store import ChannelLibraryConfig, ChannelLibraryStore
+from module.channel_library_workflow import extract_media_row
 from module.telegram_activity import TelegramActivityGate
 
 
@@ -157,6 +158,45 @@ def make_service(tmp_path, *, client=None, config=None, sleep=None, random_value
     return service, library, recorder
 
 
+def finish_full_scan(service, library, snapshot_max=40, messages=()):
+    job = service.store.create_scan_job(
+        library["id"], "full", 1, snapshot_max
+    )
+    job = service.store.transition_job(job["id"], "running")
+    rows = [extract_media_row(message) for message in messages]
+    service.store.commit_fetched_batch(job["id"], rows, end_id=snapshot_max)
+    service.indexer.index_through(
+        service.store, service.store.get_job(job["id"]), snapshot_max
+    )
+    return service.store.transition_job(job["id"], "completed")
+
+
+def finish_partial_scan(service, library, failures, snapshot_max=40, messages=()):
+    job = service.store.create_scan_job(
+        library["id"], "full", 1, snapshot_max
+    )
+    job = service.store.transition_job(job["id"], "running")
+    rows = [extract_media_row(message) for message in messages]
+    service.store.commit_fetched_batch(job["id"], rows, end_id=snapshot_max)
+    recorded = []
+    for start, end, anchor, uncertain_through in failures:
+        recorded.append(
+            service.store.record_failed_range(
+                job["id"],
+                start,
+                end,
+                "unreadable range",
+                reindex_anchor_start=anchor,
+                uncertain_through_message_id=uncertain_through,
+            )
+        )
+    service.indexer.index_through(
+        service.store, service.store.get_job(job["id"]), snapshot_max
+    )
+    service.store.transition_job(job["id"], "partial")
+    return service.store.get_job(job["id"]), recorded
+
+
 @async_test
 async def test_full_scan_uses_50_id_batches_and_persists_progress(tmp_path):
     service, library, sleep = make_service(tmp_path)
@@ -193,6 +233,284 @@ async def test_full_scan_uses_immutable_snapshot_and_normalizes_singleton(tmp_pa
 
 
 @async_test
+async def test_queue_incremental_snapshots_new_tail_and_uses_low_rate_batches(
+    tmp_path,
+):
+    service, library, sleep = make_service(tmp_path)
+    finish_full_scan(service, library, snapshot_max=60)
+    service.owner_loop = asyncio.get_running_loop()
+    service.client.latest_message_id = 161
+
+    incremental = await service.queue_incremental(library["id"])
+    service.client.latest_message_id = 999
+    await service._run_job(incremental)
+
+    assert incremental["kind"] == "incremental"
+    assert incremental["start_message_id"] == 61
+    assert incremental["next_message_id"] == 61
+    assert incremental["snapshot_max_message_id"] == 161
+    assert service.client.requested_ids == [
+        list(range(61, 111)),
+        list(range(111, 161)),
+        [161],
+    ]
+    assert sleep.delays == [pytest.approx(1.0), pytest.approx(1.0)]
+    assert service.store.get_job(incremental["id"])["status"] == "completed"
+
+
+@async_test
+async def test_queue_incremental_rejects_incomplete_initial_full_before_snapshot(
+    tmp_path,
+):
+    service, library, _sleep = make_service(tmp_path)
+    service.store.create_scan_job(library["id"], "full", 1, 40)
+    service.owner_loop = asyncio.get_running_loop()
+    service.client.latest_message_id = 80
+
+    with pytest.raises(ValueError, match="finished full scan"):
+        await service.queue_incremental(library["id"])
+
+    assert service.client.call_loops == []
+
+
+@async_test
+async def test_repair_defaults_to_all_failures_and_resolves_complete_closures(
+    tmp_path,
+):
+    service, library, sleep = make_service(tmp_path)
+    _full, failures = finish_partial_scan(
+        service,
+        library,
+        [(5, 6, 1, 20), (15, 16, 11, 40)],
+        messages=(
+            fake_media(1, "Alpha"),
+            fake_media(11, "Bravo"),
+            fake_media(21, "Charlie"),
+        ),
+    )
+
+    repair = service.queue_repair(library["id"])
+    await service._run_job(repair)
+
+    assert service.client.requested_ids == [[5, 6], [15, 16]]
+    assert sleep.delays == []
+    targets = service.store.list_repair_targets(repair["id"])
+    assert [target["failure_id"] for target in targets] == [
+        failures[0]["id"],
+        failures[1]["id"],
+    ]
+    assert [target["status"] for target in targets] == ["completed", "completed"]
+    assert [target["failure_status"] for target in targets] == [
+        "resolved",
+        "resolved",
+    ]
+    assert service.store.get_job(repair["id"])["status"] == "completed"
+    assert service.store.get_library(library["id"])["status"] == "ready"
+
+
+@async_test
+async def test_selected_repair_resolves_only_successful_target(tmp_path):
+    service, library, _sleep = make_service(tmp_path)
+    _full, failures = finish_partial_scan(
+        service,
+        library,
+        [(5, 6, 1, 20), (25, 26, 21, 40)],
+        messages=(fake_media(1, "Alpha"), fake_media(21, "Bravo")),
+    )
+
+    repair = service.queue_repair(library["id"], [failures[1]["id"]])
+    await service._run_job(repair)
+
+    assert service.client.requested_ids == [[25, 26]]
+    assert service.store.get_job(repair["id"])["status"] == "partial"
+    with service.store.connect() as connection:
+        statuses = {
+            row["id"]: row["status"]
+            for row in connection.execute(
+                "SELECT id, status FROM channel_scan_failures ORDER BY id"
+            )
+        }
+    assert statuses == {
+        failures[0]["id"]: "open",
+        failures[1]["id"]: "resolved",
+    }
+
+
+@async_test
+async def test_repair_resumes_each_target_from_its_persisted_cursor(tmp_path):
+    service, library, _sleep = make_service(tmp_path)
+    _full, failures = finish_partial_scan(
+        service,
+        library,
+        [(1, 100, 1, 120)],
+        snapshot_max=120,
+    )
+    repair = service.queue_repair(library["id"], [failures[0]["id"]])
+    interrupted = InterruptingSleep()
+    service.sleep = interrupted
+
+    with pytest.raises(asyncio.CancelledError):
+        await service._run_job(repair)
+
+    target = service.store.list_repair_targets(repair["id"])[0]
+    assert target["next_message_id"] == 51
+    assert service.store.get_job(repair["id"])["status"] == "queued"
+
+    service.sleep = SleepRecorder()
+    await service._run_job(service.store.get_job(repair["id"]))
+
+    assert service.client.requested_ids == [
+        list(range(1, 51)),
+        list(range(51, 101)),
+    ]
+    assert service.store.list_repair_targets(repair["id"])[0][
+        "status"
+    ] == "completed"
+
+
+def test_retry_failed_job_preserves_kind_snapshot_and_checkpoint(tmp_path):
+    async def scenario():
+        service, library, _sleep = make_service(tmp_path)
+        finish_full_scan(service, library, snapshot_max=10)
+        failed = service.store.create_scan_job(
+            library["id"], "incremental", 11, 20
+        )
+        service.store.transition_job(failed["id"], "running")
+        service.store.commit_fetched_batch(failed["id"], [], end_id=15)
+        service.store.commit_indexed_revision(failed["id"], 15)
+        service.store.transition_job(failed["id"], "failed", last_error="offline")
+
+        retried = service.retry_failed_job(library["id"], failed["id"])
+
+        assert retried["id"] != failed["id"]
+        assert retried["kind"] == "incremental"
+        assert retried["start_message_id"] == 11
+        assert retried["next_message_id"] == 16
+        assert retried["snapshot_max_message_id"] == 20
+
+    asyncio.run(scenario())
+
+
+@async_test
+async def test_full_incremental_and_repair_use_one_range_runner(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    async def capture_range(job, start_id, end_id, delay_range):
+        calls.append(
+            (
+                job["kind"],
+                job.get("repair_failure_id"),
+                start_id,
+                end_id,
+                delay_range,
+            )
+        )
+        raise asyncio.CancelledError
+
+    full_service, full_library, _sleep = make_service(tmp_path / "full")
+    full = full_service.store.create_scan_job(full_library["id"], "full", 1, 10)
+    monkeypatch.setattr(full_service, "_scan_range", capture_range)
+    with pytest.raises(asyncio.CancelledError):
+        await full_service._run_job(full)
+
+    incremental_service, incremental_library, _sleep = make_service(
+        tmp_path / "incremental"
+    )
+    finish_full_scan(incremental_service, incremental_library, snapshot_max=10)
+    incremental_service.owner_loop = asyncio.get_running_loop()
+    incremental_service.client.latest_message_id = 15
+    incremental = await incremental_service.queue_incremental(
+        incremental_library["id"]
+    )
+    monkeypatch.setattr(incremental_service, "_scan_range", capture_range)
+    with pytest.raises(asyncio.CancelledError):
+        await incremental_service._run_job(incremental)
+
+    repair_service, repair_library, _sleep = make_service(tmp_path / "repair")
+    _full, failures = finish_partial_scan(
+        repair_service,
+        repair_library,
+        [(5, 6, 1, 10)],
+        snapshot_max=10,
+    )
+    repair = repair_service.queue_repair(repair_library["id"])
+    monkeypatch.setattr(repair_service, "_scan_range", capture_range)
+    with pytest.raises(asyncio.CancelledError):
+        await repair_service._run_job(repair)
+
+    assert calls == [
+        ("full", None, 1, 10, (5.0, 5.0)),
+        ("incremental", None, 11, 15, (1.0, 2.0)),
+        ("repair", failures[0]["id"], 5, 6, (1.0, 2.0)),
+    ]
+
+
+@async_test
+async def test_runner_retries_only_index_after_downloading_revision_clears(
+    tmp_path, monkeypatch
+):
+    service, library, _sleep = make_service(tmp_path)
+    finish_full_scan(
+        service,
+        library,
+        snapshot_max=2,
+        messages=(fake_media(1, "Alpha"), fake_media(2)),
+    )
+    with service.store.connect() as connection:
+        package_id = connection.execute(
+            "SELECT id FROM channel_packages WHERE library_id = ?",
+            (library["id"],),
+        ).fetchone()[0]
+
+    def begin_download():
+        with service.store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE channel_packages
+                SET current_download_status = 'downloading'
+                WHERE id = ?
+                """,
+                (package_id,),
+            )
+
+    waits = []
+
+    async def finish_download():
+        waits.append(True)
+        with service.store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE channel_packages
+                SET current_download_status = 'cancelled'
+                WHERE id = ?
+                """,
+                (package_id,),
+            )
+
+    service.client.on_request = begin_download
+    monkeypatch.setattr(service.gate, "wait_until_downloads_idle", finish_download)
+    service.owner_loop = asyncio.get_running_loop()
+    service.client.latest_message_id = 3
+    incremental = await service.queue_incremental(library["id"])
+
+    await service._run_job(incremental)
+
+    with service.store.connect() as connection:
+        package = dict(
+            connection.execute(
+                "SELECT * FROM channel_packages WHERE id = ?", (package_id,)
+            ).fetchone()
+        )
+    assert service.client.requested_ids == [[3]]
+    assert waits == [True]
+    assert package["end_message_id"] == 3
+    assert package["current_download_status"] == "cancelled"
+    assert service.store.get_job(incremental["id"])["status"] == "completed"
+
+
+@async_test
 async def test_full_scan_resumes_from_persisted_next_message_id(tmp_path):
     service, library, _sleep = make_service(tmp_path)
     job = service.store.create_scan_job(library["id"], "full", 1, 100)
@@ -205,6 +523,25 @@ async def test_full_scan_resumes_from_persisted_next_message_id(tmp_path):
 
     assert service.client.requested_ids == [list(range(51, 101))]
     assert service.store.get_job(job["id"])["status"] == "completed"
+
+
+@async_test
+async def test_resume_reindexes_fetched_checkpoint_without_refetching(tmp_path):
+    service, library, _sleep = make_service(tmp_path)
+    job = service.store.create_scan_job(library["id"], "full", 1, 50)
+    running = service.store.transition_job(job["id"], "running")
+    service.store.commit_fetched_batch(
+        running["id"], [extract_media_row(fake_media(1, "Alpha"))], end_id=50
+    )
+    service.store.transition_job(running["id"], "queued")
+
+    await service._run_job(service.store.get_job(job["id"]))
+
+    current = service.store.get_job(job["id"])
+    assert service.client.requested_ids == []
+    assert current["fetched_through_message_id"] == 50
+    assert current["indexed_through_message_id"] == 50
+    assert current["status"] == "completed"
 
 
 @pytest.mark.parametrize(

@@ -454,6 +454,191 @@ def test_successful_changed_revision_becomes_outdated_without_losing_history(sto
     assert changed["last_successful_at"] == 15.0
 
 
+def test_incremental_caption_boundary_creates_new_package_without_revising_old(store):
+    job = make_running_job(store, snapshot_max_id=2)
+    job = persist_messages(
+        store,
+        job,
+        [fake_media(1, "Alpha"), fake_media(2, None)],
+        end_id=2,
+    )
+    ChannelPackageIndexer().index_through(store, job, 2)
+    original = active_package_rows(store, job["library_id"])[0]
+
+    job = start_incremental_job(store, job, snapshot_max_id=3)
+    job = persist_messages(store, job, [fake_media(3, "Bravo")], end_id=3)
+    ChannelPackageIndexer().index_through(store, job, 3)
+
+    packages = active_package_rows(store, job["library_id"])
+    assert [(row["start_message_id"], row["end_message_id"]) for row in packages] == [
+        (1, 2),
+        (3, 3),
+    ]
+    assert packages[0]["id"] == original["id"]
+    assert packages[0]["index_revision"] == original["index_revision"]
+    assert packages[1]["index_revision"] > original["index_revision"]
+
+
+def test_changed_revision_waits_while_overlapping_package_is_downloading(store):
+    job = make_running_job(store, snapshot_max_id=2)
+    job = persist_messages(
+        store,
+        job,
+        [fake_media(1, "Alpha"), fake_media(2, None)],
+        end_id=2,
+    )
+    ChannelPackageIndexer().index_through(store, job, 2)
+    original = active_package_rows(store, job["library_id"])[0]
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_packages SET current_download_status = 'downloading' WHERE id = ?",
+            (original["id"],),
+        )
+
+    job = start_incremental_job(store, job, snapshot_max_id=3)
+    job = persist_messages(store, job, [fake_media(3, None)], end_id=3)
+    deferred = ChannelPackageIndexer().index_through(store, job, 3)
+
+    unchanged = active_package_rows(store, job["library_id"])[0]
+    assert deferred.publication_deferred is True
+    assert unchanged["end_message_id"] == 2
+    assert unchanged["index_revision"] == original["index_revision"]
+    assert unchanged["current_download_status"] == "downloading"
+    assert store.get_job(job["id"])["indexed_through_message_id"] == 2
+
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_packages SET current_download_status = 'cancelled' WHERE id = ?",
+            (original["id"],),
+        )
+    published = ChannelPackageIndexer().index_through(store, job, 3)
+
+    changed = active_package_rows(store, job["library_id"])[0]
+    assert published.publication_deferred is False
+    assert changed["end_message_id"] == 3
+    assert changed["index_revision"] > original["index_revision"]
+    assert store.get_job(job["id"])["indexed_through_message_id"] == 3
+
+
+def test_repair_media_and_target_cursor_commit_atomically(store):
+    job = make_running_job(store, snapshot_max_id=20)
+    job = persist_messages(store, job, [fake_media(1, "Alpha")], end_id=20)
+    failure = store.record_failed_range(
+        job["id"],
+        5,
+        6,
+        "unreadable range",
+        reindex_anchor_start=1,
+        uncertain_through_message_id=20,
+    )
+    ChannelPackageIndexer().index_through(store, job, 20)
+    store.transition_job(job["id"], "partial")
+    repair = store.create_repair_job(job["library_id"], [failure["id"]])
+    repair = store.transition_job(repair["id"], "running")
+    with store.connect() as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER abort_repair_target_cursor
+            BEFORE UPDATE OF next_message_id ON channel_scan_repair_targets
+            BEGIN
+                SELECT RAISE(ABORT, 'repair cursor blocked');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="repair cursor blocked"):
+        store.commit_fetched_batch(
+            repair["id"],
+            [extract_media_row(fake_media(5, None))],
+            end_id=5,
+            repair_failure_id=failure["id"],
+        )
+
+    assert store.get_media(job["library_id"], 5) is None
+    target = store.list_repair_targets(repair["id"])[0]
+    assert target["next_message_id"] == 5
+    assert target["status"] == "queued"
+
+
+def test_repair_closure_publication_and_resolution_commit_atomically(store):
+    job = make_running_job(store, snapshot_max_id=21)
+    job = persist_messages(
+        store,
+        job,
+        [
+            fake_media(1, "Alpha"),
+            fake_media(11, "Bravo"),
+            fake_media(21, "Charlie"),
+        ],
+        end_id=21,
+    )
+    failure = store.record_failed_range(
+        job["id"],
+        5,
+        6,
+        "unreadable range",
+        reindex_anchor_start=1,
+        uncertain_through_message_id=20,
+    )
+    ChannelPackageIndexer().index_through(store, job, 21)
+    store.transition_job(job["id"], "partial")
+    repair = store.create_repair_job(job["library_id"], [failure["id"]])
+    repair = store.transition_job(repair["id"], "running")
+    store.commit_fetched_batch(
+        repair["id"],
+        [extract_media_row(fake_media(5, None))],
+        end_id=6,
+        repair_failure_id=failure["id"],
+    )
+    before_job = store.get_job(repair["id"])
+    before_packages = package_rows(store, job["library_id"])
+    with store.connect() as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER abort_repair_failure_resolution
+            BEFORE UPDATE OF status ON channel_scan_failures
+            WHEN NEW.status = 'resolved'
+            BEGIN
+                SELECT RAISE(ABORT, 'repair resolution blocked');
+            END
+            """
+        )
+
+    with pytest.raises(sqlite3.IntegrityError, match="repair resolution blocked"):
+        ChannelPackageIndexer().index_through(
+            store,
+            store.get_job(repair["id"]),
+            20,
+            resolve_failure_id=failure["id"],
+        )
+
+    target = store.list_repair_targets(repair["id"])[0]
+    assert target["status"] == "running"
+    assert target["failure_status"] == "repairing"
+    assert store.get_job(repair["id"])["index_revision"] == before_job[
+        "index_revision"
+    ]
+    assert package_rows(store, job["library_id"]) == before_packages
+
+    with store.connect() as connection:
+        connection.execute("DROP TRIGGER abort_repair_failure_resolution")
+    ChannelPackageIndexer().index_through(
+        store,
+        store.get_job(repair["id"]),
+        20,
+        resolve_failure_id=failure["id"],
+    )
+
+    target = store.list_repair_targets(repair["id"])[0]
+    assert target["status"] == "completed"
+    assert target["failure_status"] == "resolved"
+    assert all(
+        package["boundary_status"] != "uncertain"
+        for package in active_package_rows(store, job["library_id"])
+        if package["start_message_id"] <= 20
+    )
+
+
 def test_package_publication_rolls_back_with_index_watermark(store):
     job = make_running_job(store, snapshot_max_id=1)
     job = persist_messages(store, job, [fake_media(1, "Alpha")], end_id=1)
