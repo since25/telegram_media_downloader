@@ -38,6 +38,7 @@ from module.download_stat import (
 )
 from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
 from module.task_state import FileStatus, TERMINAL_TASK_STATUSES, mask_display_name
+from module.telegram_activity import get_telegram_activity_gate
 from utils.crypto import AesBase64
 from utils.format import format_byte
 
@@ -693,25 +694,26 @@ async def _run_web_prescan_task(
 
     node = None
     try:
-        entity = await client.get_chat(workflow_request.source_chat)
+        async with get_telegram_activity_gate().download_permit():
+            entity = await client.get_chat(workflow_request.source_chat)
         channel = entity.username or entity.title or str(entity.id)
         title = f"Prescan {channel}/{workflow_request.start_message_id}"
         node = _create_web_task(task_id, "prescan", entity.id, title, "prescan")
         node.client = client
-
-        scan_result = await scan_prescan_packages(
-            client,
-            entity.id,
-            workflow_request.start_message_id,
-            max_messages=limits["max_messages"],
-            max_packages=limits["max_packages"],
-            batch_size=limits["batch_size"],
-            batch_delay_seconds=limits["batch_delay_seconds"],
-            progress_callback=lambda progress: _update_web_prescan_progress(
-                task_id, progress
-            ),
-            should_stop=lambda: bool(node.is_stop_transmission),
-        )
+        async with get_telegram_activity_gate().download_permit():
+            scan_result = await scan_prescan_packages(
+                client,
+                entity.id,
+                workflow_request.start_message_id,
+                max_messages=limits["max_messages"],
+                max_packages=limits["max_packages"],
+                batch_size=limits["batch_size"],
+                batch_delay_seconds=limits["batch_delay_seconds"],
+                progress_callback=lambda progress: _update_web_prescan_progress(
+                    task_id, progress
+                ),
+                should_stop=lambda: bool(node.is_stop_transmission),
+            )
         if node.is_stop_transmission:
             _mark_web_task_cancelled(task_id, "prescan")
             return
@@ -773,7 +775,8 @@ async def _run_web_package_task(app: Application, client, task_id: str, workflow
 
     node = None
     try:
-        entity = await client.get_chat(workflow_request.source_chat)
+        async with get_telegram_activity_gate().download_permit():
+            entity = await client.get_chat(workflow_request.source_chat)
         channel = entity.username or entity.title or str(entity.id)
         title = f"{channel}/{workflow_request.start_message_id}"
         node = _create_web_task(
@@ -784,12 +787,13 @@ async def _run_web_package_task(app: Application, client, task_id: str, workflow
             "message_package",
         )
         node.client = client
+        async with get_telegram_activity_gate().download_permit():
+            scan_result = await scan_message_package(
+                client,
+                entity.id,
+                workflow_request.start_message_id,
+            )
 
-        scan_result = await scan_message_package(
-            client,
-            entity.id,
-            workflow_request.start_message_id,
-        )
         if node.is_stop_transmission:
             _mark_web_task_cancelled(task_id, "message_package")
             return
@@ -872,7 +876,8 @@ async def _run_web_comment_task(app: Application, client, task_id: str, workflow
 
     node = None
     try:
-        entity = await client.get_chat(workflow_request.source_chat)
+        async with get_telegram_activity_gate().download_permit():
+            entity = await client.get_chat(workflow_request.source_chat)
         channel = entity.username or entity.title or str(entity.id)
         title = f"{channel}/{workflow_request.post_id}?comment={workflow_request.start_comment_id}"
         node = _create_web_task(

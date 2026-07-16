@@ -759,3 +759,35 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^feat: index revisioned channel packages$')"` 回滚 Task 3 全部已跟踪改动。
+
+## 2026-07-16 - Task: Download-Priority Telegram Activity Gate
+
+### What was done
+
+- 新增单事件循环、单 `asyncio.Condition` 的 Telegram activity gate，使等待或进行中的下载优先于下一扫描批，同时允许多个下载并行且全局仅一个扫描 permit。
+- 在下载入队前登记 intent，兼容旧二元 queue item，并在入队失败/取消、停止前丢弃、worker 取消/异常/正常结束路径中幂等结算。
+- 为 Web package、comment、Prescan 预览及确认后的评论读取加下载优先 permit；Telegram 阶段结束即释放，rclone/纯云盘上传保持不占 gate。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_telegram_activity.py -q`：收集阶段按预期报 `ModuleNotFoundError: No module named 'module.telegram_activity'`，`1 error in 0.04s`。
+- 无效 GREEN（未采信）：首次实现后因仓库未安装 `pytest-asyncio`，异步测试被跳过，`1 passed, 5 skipped, 10 warnings in 0.02s`；改用 `asyncio.run` 后全部真实执行。
+- GREEN gate：同一 gate 命令通过，`6 passed in 0.01s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_telegram_activity.py tests/test_media_downloader.py tests/module/test_web.py -q`：`62 passed in 23.38s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`289 passed, 1 skipped in 23.46s`。
+- `py_compile` 与 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `module/telegram_activity.py`: 新增下载优先、扫描互斥、单 loop 所有权与 context permit API。
+- `media_downloader.py`: 入队 intent、worker 激活/取消/释放、旧 queue item 兼容及云上传前释放。
+- `module/web.py`: Web package、comment、Prescan Telegram 预览读取接入 permit。
+- `tests/module/test_telegram_activity.py`: 覆盖优先级竞态、并行下载、单扫描、取消释放与 loop 所有权。
+- `tests/test_media_downloader.py`: 覆盖入队失败/取消、停止、worker 取消/异常、旧 item 与云上传边界。
+- `tests/module/test_web.py`: 覆盖三类 Web 预览在扫描 permit 下等待。
+- `.superpowers/sdd/task-4-report.md`: 记录 RED/GREEN、取消路径审计、自审与关注项。
+- `progress.md`: 追加 Task 4 实施、验证与回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^feat: prioritize telegram downloads over scans$')"` 回滚 Task 4 全部改动。

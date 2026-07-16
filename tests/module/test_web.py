@@ -762,6 +762,130 @@ class WebTestCase(unittest.TestCase):
             self.assertIn("web-preview-1", self.web_module._pending_web_task_previews)
             self.assertEqual(download_calls, [])
 
+    def test_telegram_preview_reads_wait_for_download_permit(self):
+        from module.comment_workflow import (
+            build_comment_workflow_request,
+            build_message_package_workflow_request,
+        )
+        from module.telegram_activity import TelegramActivityGate
+
+        web_module = self.web_module
+
+        class FakeClient:
+            def __init__(self):
+                self.get_chat_calls = []
+
+            async def get_chat(self, chat_id):
+                self.get_chat_calls.append(chat_id)
+                return SimpleNamespace(id=-10012345, username="demo", title="Demo")
+
+        message = SimpleNamespace(id=99)
+        package_scan_result = SimpleNamespace(
+            messages=[message],
+            failed_message_ids=[],
+            package_plan=SimpleNamespace(
+                package_title="Demo package",
+                summary=SimpleNamespace(scanned_count=5, media_count=1),
+                items=[SimpleNamespace(message=message)],
+            ),
+        )
+        prescan_scan_result = SimpleNamespace(
+            prescan_plan=SimpleNamespace(
+                start_message_id=99,
+                scanned_count=1,
+                packages=[],
+                warning=None,
+            ),
+            messages=[],
+            failed_message_ids=[],
+        )
+
+        async def fake_package_scan(*_args, **_kwargs):
+            return package_scan_result
+
+        async def fake_prescan_scan(*_args, **_kwargs):
+            return prescan_scan_result
+
+        async def assert_preview_waits(gate, client, coroutine):
+            scan = await gate.acquire_scan()
+            preview_task = asyncio.create_task(coroutine)
+            await asyncio.sleep(0)
+            self.assertEqual(client.get_chat_calls, [])
+            scan.release()
+            await asyncio.wait_for(preview_task, 1)
+            await gate.wait_until_idle()
+
+        async def scenario():
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                app = build_web_test_app(tmp_dir)
+
+                package_gate = TelegramActivityGate()
+                package_client = FakeClient()
+                package_request = build_message_package_workflow_request(
+                    "https://t.me/c/12345/99"
+                )
+                with patch.object(
+                    web_module,
+                    "get_telegram_activity_gate",
+                    return_value=package_gate,
+                ), patch(
+                    "media_downloader.scan_message_package", fake_package_scan
+                ):
+                    await assert_preview_waits(
+                        package_gate,
+                        package_client,
+                        web_module._run_web_package_task(
+                            app,
+                            package_client,
+                            "web-gated-package",
+                            package_request,
+                        ),
+                    )
+
+                comment_gate = TelegramActivityGate()
+                comment_client = FakeClient()
+                comment_request = build_comment_workflow_request(
+                    "https://t.me/c/12345/99?comment=101"
+                )
+                with patch.object(
+                    web_module,
+                    "get_telegram_activity_gate",
+                    return_value=comment_gate,
+                ):
+                    await assert_preview_waits(
+                        comment_gate,
+                        comment_client,
+                        web_module._run_web_comment_task(
+                            app,
+                            comment_client,
+                            "web-gated-comment",
+                            comment_request,
+                        ),
+                    )
+
+                prescan_gate = TelegramActivityGate()
+                prescan_client = FakeClient()
+                with patch.object(
+                    web_module,
+                    "get_telegram_activity_gate",
+                    return_value=prescan_gate,
+                ), patch(
+                    "media_downloader.scan_prescan_packages", fake_prescan_scan
+                ):
+                    await assert_preview_waits(
+                        prescan_gate,
+                        prescan_client,
+                        web_module._run_web_prescan_task(
+                            app,
+                            prescan_client,
+                            "web-gated-prescan",
+                            package_request,
+                            web_module._prescan_limits_from_payload({}),
+                        ),
+                    )
+
+        asyncio.run(scenario())
+
     def test_confirm_preview_schedules_package_download(self):
         class FakeLoop:
             def __init__(self):

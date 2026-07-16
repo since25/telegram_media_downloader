@@ -50,6 +50,7 @@ from module.pyrogram_extension import (
     update_cloud_upload_stat,
     upload_telegram_chat,
 )
+from module.telegram_activity import DownloadIntent, get_telegram_activity_gate
 from module.web import init_web
 from utils.format import truncate_filename, validate_title
 from utils.log import LogFilter
@@ -538,6 +539,8 @@ async def add_download_task(
     node: TaskNode,
 ):
     """Add Download task"""
+    download_intent = None
+    enqueued = False
     try:
         msg_id = getattr(message, "id", None)
 
@@ -594,7 +597,13 @@ async def add_download_task(
         queue_entry_time = time.time()
         QUEUE_ENTRY_TIMES[(node.chat_id, msg_id)] = queue_entry_time
 
-        await queue.put((message, node))
+        download_intent = await get_telegram_activity_gate().register_download_intent()
+        try:
+            await queue.put((message, node, download_intent))
+            enqueued = True
+        except BaseException:
+            download_intent.cancel()
+            raise
 
         node.total_task += 1
         node.total_download_task += 1
@@ -640,6 +649,8 @@ async def add_download_task(
         return True
 
     except Exception as e:
+        if download_intent is not None and not enqueued:
+            download_intent.cancel()
         logger.exception(f"add_download_task: failed - {e}")
         return False
 
@@ -672,7 +683,10 @@ async def save_msg_to_file(
 
 
 async def download_task(
-    client: PyrogramClient, message: pyrogram.types.Message, node: TaskNode
+    client: PyrogramClient,
+    message: pyrogram.types.Message,
+    node: TaskNode,
+    telegram_permit: Optional[DownloadIntent] = None,
 ):
     """Download and Forward media"""
     # 初始化变量，确保在任何情况下都有定义
@@ -777,6 +791,10 @@ async def download_task(
             download_status,
             file_name,
         )
+
+        # The following rclone phase is cloud-only and must not block scans.
+        if telegram_permit is not None:
+            telegram_permit.release()
 
         # rclone upload (云盘上传)
         # 条件：1. 没有设置telegram转发目标 2. 下载成功 3. 有文件路径
@@ -1399,6 +1417,7 @@ async def worker(client: PyrogramClient):
         message = None
         node = None
         real_client = None
+        download_intent = None
 
         try:
             logger.info(
@@ -1406,12 +1425,16 @@ async def worker(client: PyrogramClient):
                 f"queue_id={id(queue)} item_type={type(item)}"
             )
 
-            # ✅ 防御性解包
-            try:
+            # New queue items carry their pre-enqueue priority intent. Keep
+            # accepting legacy two-tuples constructed by tests and callers.
+            if isinstance(item, (tuple, list)) and len(item) == 3:
+                message, node, download_intent = item
+            elif isinstance(item, (tuple, list)) and len(item) == 2:
                 message, node = item
-            except Exception:
+            else:
                 logger.error(
-                    f"worker: invalid queue item (expect (message,node)): {item!r}"
+                    "worker: invalid queue item "
+                    f"(expect (message,node[,intent])): {item!r}"
                 )
                 continue
 
@@ -1425,14 +1448,26 @@ async def worker(client: PyrogramClient):
 
             if getattr(node, "is_stop_transmission", False):
                 logger.info(f"worker: 任务已停止 - message_id={msg_id}, task_id={task_id}")
+                if download_intent is not None:
+                    download_intent.cancel()
                 continue
 
             logger.info(f"worker: 开始处理下载任务 - message_id={msg_id}, task_id={task_id}")
 
             real_client = getattr(node, "client", None) or client
 
+            if download_intent is None:
+                download_intent = await get_telegram_activity_gate().acquire_download()
+            else:
+                await download_intent.activate()
+
             # ✅ 这里必须 await（你说“缺了一部分 await”，核心就在这里）
-            await download_task(real_client, message, node)
+            await download_task(
+                real_client,
+                message,
+                node,
+                telegram_permit=download_intent,
+            )
 
             logger.info(f"worker: 完成下载任务 - message_id={msg_id}, task_id={task_id}")
 
@@ -1445,6 +1480,9 @@ async def worker(client: PyrogramClient):
             # 可选：异常后稍微 sleep，避免持续异常刷屏
             await asyncio.sleep(0.5)
         finally:
+            if download_intent is not None:
+                download_intent.release()
+
             # ✅ 无论成功/continue/异常，都保证 task_done 一次
             try:
                 queue.task_done()
@@ -2282,13 +2320,14 @@ async def download_comments(
         )
 
         try:
-            scan_result = await scan_comment_range(
-                client,
-                chat_id,
-                base_message_id,
-                start_comment_id,
-                end_comment_id,
-            )
+            async with get_telegram_activity_gate().download_permit():
+                scan_result = await scan_comment_range(
+                    client,
+                    chat_id,
+                    base_message_id,
+                    start_comment_id,
+                    end_comment_id,
+                )
             comments = scan_result.comments
             failed_comment_ids = scan_result.failed_comment_ids
         except ValueError:

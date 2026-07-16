@@ -1679,6 +1679,275 @@ class MediaDownloaderTestCase(unittest.TestCase):
             {"enabled": True, "webhook_url": None},
         )
 
+    def test_add_download_task_releases_intent_when_queue_put_fails(self):
+        import media_downloader
+        from module.telegram_activity import TelegramActivityGate
+
+        class FailingQueue:
+            @staticmethod
+            def qsize():
+                return 0
+
+            async def put(self, _item):
+                raise RuntimeError("queue unavailable")
+
+        async def scenario():
+            gate = TelegramActivityGate()
+            message = MockMessage(id=701, media=True)
+            node = TaskNode(chat_id=-1001)
+            with mock.patch.object(media_downloader, "queue", FailingQueue()), mock.patch.object(
+                media_downloader, "get_telegram_activity_gate", return_value=gate
+            ):
+                result = await media_downloader.add_download_task(message, node)
+
+            self.assertFalse(result)
+            scan = await asyncio.wait_for(gate.acquire_scan(), 1)
+            scan.release()
+            await gate.wait_until_idle()
+
+        self.loop.run_until_complete(scenario())
+
+    def test_add_download_task_cancellation_releases_pending_intent(self):
+        import media_downloader
+        from module.telegram_activity import TelegramActivityGate
+
+        class BlockingQueue:
+            def __init__(self):
+                self.put_started = asyncio.Event()
+
+            @staticmethod
+            def qsize():
+                return 0
+
+            async def put(self, _item):
+                self.put_started.set()
+                await asyncio.Future()
+
+        async def scenario():
+            gate = TelegramActivityGate()
+            blocking_queue = BlockingQueue()
+            with mock.patch.object(
+                media_downloader, "queue", blocking_queue
+            ), mock.patch.object(
+                media_downloader, "get_telegram_activity_gate", return_value=gate
+            ):
+                enqueue_task = asyncio.create_task(
+                    media_downloader.add_download_task(
+                        MockMessage(id=707, media=True), TaskNode(chat_id=-1001)
+                    )
+                )
+                await blocking_queue.put_started.wait()
+                enqueue_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await enqueue_task
+
+            scan = await asyncio.wait_for(gate.acquire_scan(), 1)
+            scan.release()
+            await gate.wait_until_idle()
+
+        self.loop.run_until_complete(scenario())
+
+    def test_stopped_queue_item_cancels_registered_download_intent(self):
+        import media_downloader
+        from module.telegram_activity import TelegramActivityGate
+
+        async def scenario():
+            gate = TelegramActivityGate()
+            test_queue = asyncio.Queue()
+            node = TaskNode(chat_id=-1001)
+            node.stop_transmission()
+            intent = await gate.register_download_intent()
+            await test_queue.put((MockMessage(id=702, media=True), node, intent))
+
+            with mock.patch.object(media_downloader, "queue", test_queue), mock.patch.object(
+                media_downloader, "get_telegram_activity_gate", return_value=gate
+            ):
+                worker_task = asyncio.create_task(media_downloader.worker(MockClient()))
+                await asyncio.wait_for(test_queue.join(), 1)
+                await gate.wait_until_idle()
+                worker_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await worker_task
+
+            scan = await asyncio.wait_for(gate.acquire_scan(), 1)
+            scan.release()
+            await gate.wait_until_idle()
+
+        self.loop.run_until_complete(scenario())
+
+    def test_worker_cancellation_releases_active_download_intent(self):
+        import media_downloader
+        from module.telegram_activity import TelegramActivityGate
+
+        async def scenario():
+            gate = TelegramActivityGate()
+            test_queue = asyncio.Queue()
+            entered_download = asyncio.Event()
+
+            async def blocked_download_task(
+                _client, _message, _node, telegram_permit=None
+            ):
+                self.assertIsNotNone(telegram_permit)
+                entered_download.set()
+                await asyncio.Future()
+
+            with mock.patch.object(media_downloader, "queue", test_queue), mock.patch.object(
+                media_downloader, "get_telegram_activity_gate", return_value=gate
+            ), mock.patch.object(
+                media_downloader, "download_task", new=blocked_download_task
+            ):
+                queued = await media_downloader.add_download_task(
+                    MockMessage(id=703, media=True), TaskNode(chat_id=-1001)
+                )
+                self.assertTrue(queued)
+                worker_task = asyncio.create_task(media_downloader.worker(MockClient()))
+                await entered_download.wait()
+                worker_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await worker_task
+
+            await gate.wait_until_idle()
+            scan = await asyncio.wait_for(gate.acquire_scan(), 1)
+            scan.release()
+            await gate.wait_until_idle()
+
+        self.loop.run_until_complete(scenario())
+
+    def test_worker_exception_releases_active_download_intent(self):
+        import media_downloader
+        from module.telegram_activity import TelegramActivityGate
+
+        async def scenario():
+            gate = TelegramActivityGate()
+            test_queue = asyncio.Queue()
+            original_sleep = asyncio.sleep
+
+            async def failed_download_task(
+                _client, _message, _node, telegram_permit=None
+            ):
+                self.assertIsNotNone(telegram_permit)
+                raise RuntimeError("download failed")
+
+            async def yield_without_delay(_seconds):
+                await original_sleep(0)
+
+            with mock.patch.object(media_downloader, "queue", test_queue), mock.patch.object(
+                media_downloader, "get_telegram_activity_gate", return_value=gate
+            ), mock.patch.object(
+                media_downloader, "download_task", new=failed_download_task
+            ), mock.patch.object(
+                media_downloader.asyncio, "sleep", new=yield_without_delay
+            ):
+                queued = await media_downloader.add_download_task(
+                    MockMessage(id=704, media=True), TaskNode(chat_id=-1001)
+                )
+                self.assertTrue(queued)
+                worker_task = asyncio.create_task(media_downloader.worker(MockClient()))
+                await asyncio.wait_for(test_queue.join(), 1)
+                await gate.wait_until_idle()
+                worker_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await worker_task
+
+            scan = await asyncio.wait_for(gate.acquire_scan(), 1)
+            scan.release()
+            await gate.wait_until_idle()
+
+        self.loop.run_until_complete(scenario())
+
+    def test_worker_accepts_legacy_queue_item_and_gates_telegram_work(self):
+        import media_downloader
+        from module.telegram_activity import TelegramActivityGate
+
+        async def scenario():
+            gate = TelegramActivityGate()
+            test_queue = asyncio.Queue()
+            started = asyncio.Event()
+
+            async def successful_download_task(
+                _client, _message, _node, telegram_permit=None
+            ):
+                self.assertIsNotNone(telegram_permit)
+                started.set()
+
+            await test_queue.put(
+                (MockMessage(id=705, media=True), TaskNode(chat_id=-1001))
+            )
+            scan = await gate.acquire_scan()
+            with mock.patch.object(media_downloader, "queue", test_queue), mock.patch.object(
+                media_downloader, "get_telegram_activity_gate", return_value=gate
+            ), mock.patch.object(
+                media_downloader, "download_task", new=successful_download_task
+            ):
+                worker_task = asyncio.create_task(media_downloader.worker(MockClient()))
+                await asyncio.sleep(0)
+                self.assertFalse(started.is_set())
+                scan.release()
+                await asyncio.wait_for(started.wait(), 1)
+                await asyncio.wait_for(test_queue.join(), 1)
+                await gate.wait_until_idle()
+                worker_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await worker_task
+
+        self.loop.run_until_complete(scenario())
+
+    def test_cloud_upload_starts_after_telegram_permit_is_released(self):
+        import media_downloader
+
+        class TrackingPermit:
+            def __init__(self):
+                self.released = False
+
+            def release(self):
+                self.released = True
+
+        async def scenario():
+            rest_app(MOCK_CONF)
+            app.cloud_drive_config.enable_upload_file = True
+            permit = TrackingPermit()
+            message = MockMessage(id=706, media=True)
+            node = TaskNode(chat_id=-1001)
+            cloud_upload_called = False
+
+            async def fake_download_media(*_args, **_kwargs):
+                return DownloadStatus.SuccessDownload, "/tmp/telegram-media.bin"
+
+            async def fake_telegram_upload(*_args, **_kwargs):
+                return None
+
+            async def fake_cloud_upload(*_args, **_kwargs):
+                nonlocal cloud_upload_called
+                self.assertTrue(permit.released)
+                cloud_upload_called = True
+                return True
+
+            async def fake_report(*_args, **_kwargs):
+                return None
+
+            with mock.patch.object(
+                media_downloader, "download_media", new=fake_download_media
+            ), mock.patch.object(
+                media_downloader, "upload_telegram_chat", new=fake_telegram_upload
+            ), mock.patch.object(
+                media_downloader, "report_bot_download_status", new=fake_report
+            ), mock.patch.object(
+                media_downloader.app, "upload_file", new=fake_cloud_upload
+            ), mock.patch.object(
+                media_downloader.app, "set_download_id"
+            ), mock.patch.object(
+                media_downloader.os.path, "exists", return_value=True
+            ), mock.patch.object(
+                media_downloader.os.path, "getsize", return_value=1
+            ):
+                await media_downloader.download_task(
+                    MockClient(), message, node, telegram_permit=permit
+                )
+
+            self.assertTrue(cloud_upload_called)
+
+        self.loop.run_until_complete(scenario())
+
     # @mock.patch(
     #     "media_downloader.queue",
     #     new=MyQueue(
