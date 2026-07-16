@@ -50,6 +50,7 @@ SCAN_FAILURE_STATUSES = frozenset({"open", "repairing", "resolved"})
 DOWNLOAD_DISPATCH_STATUSES = frozenset({"pending_dispatch", "dispatched"})
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
+SQLITE_MAX_INTEGER = 2**63 - 1
 
 ALLOWED_SCAN_TRANSITIONS = {
     "queued": {"running", "paused_user", "stopped", "failed"},
@@ -158,7 +159,12 @@ def _decode_cursor(cursor: str, required_keys: frozenset[str]) -> dict[str, int]
         raise ValueError("Invalid cursor") from error
     if not isinstance(payload, dict) or frozenset(payload) != required_keys:
         raise ValueError("Invalid cursor")
-    if any(type(payload[key]) is not int or payload[key] < 0 for key in required_keys):
+    if any(
+        type(payload[key]) is not int
+        or payload[key] < 0
+        or payload[key] > SQLITE_MAX_INTEGER
+        for key in required_keys
+    ):
         raise ValueError("Invalid cursor")
     return payload
 

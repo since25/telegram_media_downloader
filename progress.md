@@ -1007,3 +1007,29 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^feat: query and select channel packages$')"` 回滚 Task 7 查询与选择改动。
+
+## 2026-07-16 - Task: Bound Channel Package Cursor Integers
+
+### What was done
+
+- 为包 cursor 的 `start_message_id` 和 `id` 增加 SQLite signed 64-bit 上界校验；超过 `2**63 - 1` 的整数在 decode 阶段统一返回 malformed-cursor `ValueError`，不再泄漏 SQLite bind `OverflowError`。
+- 保留既有负数、bool、非整数及严格 shape/key 校验，并验证合法最大值可进入参数化 keyset 查询。
+
+### Testing
+
+- RED：两个字段分别使用 `2**63` 的 targeted 回归为 `2 failed, 1 passed in 0.07s`；两例均在 SQLite bind 处抛出 `OverflowError`，`2**63 - 1` 合法例通过。
+- Targeted GREEN：同三个用例 `3 passed in 0.02s`。
+- Focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_queries.py tests/module/test_channel_library_store.py -q`：`60 passed in 0.47s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`352 passed, 1 skipped in 24.47s`。
+- `py_compile module/channel_library_store.py tests/module/test_channel_library_queries.py` 与 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: cursor decode 增加 SQLite 最大整数上界。
+- `tests/module/test_channel_library_queries.py`: 覆盖两个 cursor 字段越界及合法最大值绑定。
+- `.superpowers/sdd/task-7-report.md`: 追加 Important review RED/GREEN/full 与边界审计。
+- `progress.md`: 追加 cursor 整数边界修复、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: bound channel package cursor integers$')"` 回滚本次 cursor 上界修复。

@@ -1,6 +1,8 @@
 """Filtered query, keyset pagination, and persistent selection tests."""
 
+import base64
 import datetime
+import json
 
 import pytest
 
@@ -129,6 +131,11 @@ def insert_package_item(store, library_id, package_id, message_id, ordinal=0):
 
 def package_ids(page):
     return [item["id"] for item in page.items]
+
+
+def encode_cursor(payload):
+    raw = json.dumps(payload, separators=(",", ":")).encode("ascii")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def test_title_filter_uses_normalized_unicode_literal_substring(store, library):
@@ -268,6 +275,38 @@ def test_package_keyset_is_capped_opaque_and_rejects_malformed_shapes(store, lib
             store.list_packages(
                 library["id"], PackageFilter(), cursor=bad_cursor, limit=2
             )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"start_message_id": 2**63, "id": 1},
+        {"start_message_id": 1, "id": 2**63},
+    ],
+)
+def test_package_cursor_rejects_integers_outside_sqlite_range(
+    store, library, payload
+):
+    with pytest.raises(ValueError, match="cursor"):
+        store.list_packages(
+            library["id"],
+            PackageFilter(),
+            cursor=encode_cursor(payload),
+            limit=2,
+        )
+
+
+def test_package_cursor_accepts_sqlite_max_integer(store, library):
+    package_id = insert_package(store, library["id"], 10)
+    cursor = encode_cursor(
+        {"start_message_id": 2**63 - 1, "id": 2**63 - 1}
+    )
+
+    page = store.list_packages(
+        library["id"], PackageFilter(), cursor=cursor, limit=2
+    )
+
+    assert package_ids(page) == [package_id]
 
 
 def test_package_keyset_has_no_duplicates_when_newer_package_is_inserted(store, library):
