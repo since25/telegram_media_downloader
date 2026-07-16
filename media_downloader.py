@@ -42,6 +42,8 @@ from rich.logging import RichHandler
 
 from module.app import Application, ChatDownloadConfig, DownloadStatus, TaskNode
 from module.bot import start_download_bot, stop_download_bot
+from module.channel_library_service import ChannelLibraryService
+from module.channel_library_store import ChannelLibraryStore
 from module.download_stat import (
     get_active_task_nodes,
     get_download_result,
@@ -2655,6 +2657,43 @@ async def stop_server(client: PyrogramClient):
     await client.stop()
 
 
+def _start_channel_library_service(
+    application: Application, client: PyrogramClient
+) -> Optional[ChannelLibraryService]:
+    """Start the persistent channel service on the application's owner loop."""
+
+    application.channel_library_service = None
+    try:
+        service = ChannelLibraryService(
+            application,
+            client,
+            ChannelLibraryStore(Path.cwd() / "channel_library.sqlite3"),
+            application.channel_library_config,
+            task_store=get_task_store(),
+        )
+        application.loop.run_until_complete(service.start())
+    except Exception:
+        logger.exception("Channel library service initialization failed")
+        application.channel_library_service = None
+        return None
+    application.channel_library_service = service
+    return service
+
+
+def _stop_channel_library_service(application: Application) -> None:
+    """Stop all channel-owned tasks before Telegram and the main task set."""
+
+    service = getattr(application, "channel_library_service", None)
+    if service is None:
+        return
+    try:
+        application.loop.run_until_complete(service.stop())
+    except Exception:
+        logger.exception("Channel library service shutdown failed")
+    finally:
+        application.channel_library_service = None
+
+
 def _sanitize_monitor_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """返回可安全写日志的 monitor 配置副本，webhook_url 只保留 scheme+host。"""
     safe = dict(cfg)
@@ -3159,6 +3198,7 @@ def main():
         set_max_concurrent_transmissions(client, app.max_concurrent_transmissions)
 
         app.loop.run_until_complete(start_server(client))
+        _start_channel_library_service(app, client)
         # 启动兜底轮询（版本B可选）
         if monitor_tasks and monitor_tasks.get("fallback_loop"):
             fallback_task = app.loop.create_task(monitor_tasks["fallback_loop"](client))
@@ -3191,6 +3231,7 @@ def main():
         logger.exception("{}", e)
     finally:
         app.is_running = False
+        _stop_channel_library_service(app)
         if app.bot_token:
             try:
                 app.loop.run_until_complete(stop_download_bot())

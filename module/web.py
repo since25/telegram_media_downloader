@@ -1,6 +1,7 @@
 """web ui for media download"""
 
 import asyncio
+import concurrent.futures
 import hmac
 import json
 import logging
@@ -9,15 +10,17 @@ import secrets
 import shutil
 import threading
 import time
+from functools import wraps
 from pathlib import Path
 from typing import Any, Optional
 
 import psutil
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, session
 from flask_login import LoginManager, UserMixin, login_required, login_user, logout_user
 
 import utils
 from module.app import Application, TaskNode
+from module.channel_library_store import PackageFilter, SQLITE_MAX_INTEGER
 from module.comment_workflow import (
     CommentNamingContext,
     NamingStrategy,
@@ -78,6 +81,31 @@ WEB_PRESCAN_MAX_BATCH_SIZE = 100
 WEB_PRESCAN_BATCH_DELAY_SECONDS = 1
 _active_web_prescan_task_id: Optional[str] = None
 _prescan_lock = threading.RLock()
+CHANNEL_FILTER_FIELDS = frozenset(
+    {
+        "q",
+        "date_from",
+        "date_to",
+        "message_id_min",
+        "message_id_max",
+        "media_count_min",
+        "media_count_max",
+        "size_min",
+        "size_max",
+        "include_unknown_size",
+        "download_status",
+    }
+)
+
+
+class _ChannelApiError(Exception):
+    """Stable client-facing failure without raw exception details."""
+
+    def __init__(self, status: int, error_code: str, message: str):
+        super().__init__(error_code)
+        self.status = status
+        self.error_code = error_code
+        self.message = message
 
 
 class User(UserMixin):
@@ -276,6 +304,578 @@ def index():
             "pause" if get_download_state() is DownloadState.Downloading else "continue"
         ),
     )
+
+
+def _channel_error(status: int, error_code: str, message: str):
+    return jsonify({"error_code": error_code, "message": message}), status
+
+
+def _channel_api(function):
+    """Map channel adapter failures to one safe JSON contract."""
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        except _ChannelApiError as error:
+            return _channel_error(error.status, error.error_code, error.message)
+        except KeyError:
+            return _channel_error(404, "not_found", "Requested channel object was not found")
+        except Exception:
+            logger.exception("Channel library API operation failed")
+            return _channel_error(
+                503,
+                "service_unavailable",
+                "Channel library service is unavailable",
+            )
+
+    return wrapped
+
+
+def _csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def _require_csrf(function):
+    """Require the session's synchronizer token on one mutating endpoint."""
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        supplied = request.headers.get("X-CSRF-Token", "")
+        if not hmac.compare_digest(supplied, _csrf_token()):
+            raise _ChannelApiError(403, "csrf_failed", "CSRF token is missing or invalid")
+        return function(*args, **kwargs)
+
+    return wrapped
+
+
+def _channel_service():
+    service = getattr(_active_app(), "channel_library_service", None)
+    if service is None:
+        raise _ChannelApiError(
+            503,
+            "service_unavailable",
+            "Channel library service is unavailable",
+        )
+    return service
+
+
+def _invalid_request(message: str = "Request parameters are invalid") -> None:
+    raise _ChannelApiError(400, "invalid_request", message)
+
+
+def _json_object(allowed_fields: frozenset[str]) -> dict:
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        _invalid_request("A JSON object is required")
+    unknown = set(payload) - allowed_fields
+    if unknown:
+        _invalid_request("Request contains unsupported fields")
+    return payload
+
+
+def _json_int(
+    value: Any,
+    name: str,
+    *,
+    minimum: int = 0,
+    maximum: int = SQLITE_MAX_INTEGER,
+) -> int:
+    if type(value) is not int or value < minimum or value > maximum:
+        _invalid_request(f"{name} must be an integer in range")
+    return value
+
+
+def _query_int(
+    name: str,
+    default: Optional[int] = None,
+    *,
+    minimum: int = 0,
+    maximum: int = SQLITE_MAX_INTEGER,
+) -> Optional[int]:
+    value = request.args.get(name)
+    if value is None:
+        return default
+    if not value or not value.isascii() or not value.isdecimal():
+        _invalid_request(f"{name} must be an integer in range")
+    parsed = int(value)
+    if parsed < minimum or parsed > maximum:
+        _invalid_request(f"{name} must be an integer in range")
+    return parsed
+
+
+def _page_inputs() -> tuple[Optional[str], int]:
+    cursor = request.args.get("cursor")
+    if cursor == "":
+        _invalid_request("cursor must not be empty")
+    page_size = _query_int("page_size", 50, minimum=1, maximum=200)
+    return cursor, int(page_size)
+
+
+def _filter_from_mapping(values: Any, *, query: bool) -> PackageFilter:
+    if query:
+        unknown = set(request.args) - CHANNEL_FILTER_FIELDS - {"cursor", "page_size"}
+        if unknown:
+            _invalid_request("Request contains unsupported query parameters")
+        getter = request.args.get
+    else:
+        if not isinstance(values, dict):
+            _invalid_request("A JSON object is required")
+        unknown = set(values) - CHANNEL_FILTER_FIELDS
+        if unknown:
+            _invalid_request("Request contains unsupported fields")
+        getter = values.get
+
+    text_values = {}
+    for field_name in ("q", "date_from", "date_to", "download_status"):
+        value = getter(field_name)
+        if value is not None and not isinstance(value, str):
+            _invalid_request(f"{field_name} must be a string")
+        text_values[field_name] = value
+
+    numeric_values = {}
+    for field_name in (
+        "message_id_min",
+        "message_id_max",
+        "media_count_min",
+        "media_count_max",
+        "size_min",
+        "size_max",
+    ):
+        if query:
+            numeric_values[field_name] = _query_int(field_name)
+        else:
+            value = getter(field_name)
+            numeric_values[field_name] = (
+                None if value is None else _json_int(value, field_name)
+            )
+
+    include_unknown = getter("include_unknown_size")
+    if query:
+        if include_unknown is None:
+            include_unknown = False
+        elif include_unknown == "true":
+            include_unknown = True
+        elif include_unknown == "false":
+            include_unknown = False
+        else:
+            _invalid_request("include_unknown_size must be true or false")
+    elif include_unknown is None:
+        include_unknown = False
+    elif type(include_unknown) is not bool:
+        _invalid_request("include_unknown_size must be a boolean")
+
+    return PackageFilter(
+        **text_values,
+        **numeric_values,
+        include_unknown_size=include_unknown,
+    )
+
+
+def _safe_scan(scan: Optional[dict]) -> Optional[dict]:
+    if scan is None:
+        return None
+    result = dict(scan)
+    had_error = bool(result.pop("last_error", None))
+    if had_error or result.get("status") == "failed":
+        result["error_code"] = "scan_failed"
+        result["error_message"] = "The scan did not complete"
+    return result
+
+
+def _safe_overview(overview: dict) -> dict:
+    result = dict(overview)
+    result["library"] = dict(overview["library"])
+    result["scan"] = _safe_scan(overview.get("scan"))
+    failures = []
+    for failure in overview.get("failures", []):
+        safe_failure = dict(failure)
+        safe_failure.pop("last_error", None)
+        safe_failure["error_code"] = "scan_range_failed"
+        failures.append(safe_failure)
+    result["failures"] = failures
+    return result
+
+
+def _safe_batch(batch: dict) -> dict:
+    result = dict(batch)
+    result["packages"] = []
+    for package in batch.get("packages", []):
+        safe_package = dict(package)
+        safe_package["items"] = [dict(item) for item in package.get("items", [])]
+        result["packages"].append(safe_package)
+    return result
+
+
+@_flask_app.route("/api/csrf-token")
+@login_required
+def csrf_token():
+    """Return the current authenticated session's synchronizer token."""
+
+    return jsonify({"csrf_token": _csrf_token()})
+
+
+@_flask_app.route("/api/channel-libraries", methods=["GET"])
+@login_required
+@_channel_api
+def channel_libraries():
+    """List channel libraries with their latest persisted scan summary."""
+
+    service = _channel_service()
+    cursor, page_size = _page_inputs()
+    try:
+        page = service.store.list_libraries(cursor=cursor, limit=page_size)
+    except (TypeError, ValueError):
+        _invalid_request()
+    items = []
+    for library in page.items:
+        overview = service.store.get_library_overview(int(library["id"]))
+        if overview is None:
+            continue
+        safe = _safe_overview(overview)
+        item = dict(safe.pop("library"))
+        item.update(safe)
+        items.append(item)
+    return jsonify({"items": items, "next_cursor": page.next_cursor})
+
+
+@_flask_app.route("/api/channel-libraries", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def create_channel_library():
+    """Resolve one Telegram link on the owner loop and persist a full scan."""
+
+    service = _channel_service()
+    payload = _json_object(frozenset({"link"}))
+    link = payload.get("link")
+    if not isinstance(link, str) or not link.strip():
+        _invalid_request("link must be a non-empty string")
+    try:
+        future = service.submit_library_link_threadsafe(link.strip())
+        result = future.result(timeout=30)
+    except concurrent.futures.TimeoutError:
+        raise _ChannelApiError(
+            503,
+            "service_timeout",
+            "Channel library command is still being processed",
+        )
+    except ValueError:
+        raise _ChannelApiError(400, "invalid_link", "Telegram channel link is invalid")
+    except RuntimeError:
+        raise _ChannelApiError(
+            503,
+            "service_unavailable",
+            "Channel library service is unavailable",
+        )
+    response = {
+        "created": bool(result.created),
+        "library": dict(result.library),
+        "scan": _safe_scan(result.job),
+    }
+    return jsonify(response), 202 if result.created else 200
+
+
+@_flask_app.route("/api/channel-libraries/<int:library_id>", methods=["GET"])
+@login_required
+@_channel_api
+def channel_library_detail(library_id: int):
+    """Return one channel library's persisted status and counts."""
+
+    overview = _channel_service().store.get_library_overview(library_id)
+    if overview is None:
+        raise KeyError(library_id)
+    return jsonify(_safe_overview(overview))
+
+
+@_flask_app.route("/api/channel-libraries/<int:library_id>", methods=["DELETE"])
+@login_required
+@_channel_api
+@_require_csrf
+def delete_channel_library(library_id: int):
+    """Version-check and delete one inactive library index."""
+
+    payload = _json_object(frozenset({"confirm_library_id", "library_version"}))
+    confirm_library_id = _json_int(
+        payload.get("confirm_library_id"), "confirm_library_id", minimum=1
+    )
+    if confirm_library_id != library_id:
+        _invalid_request("confirm_library_id does not match the route")
+    library_version = payload.get("library_version")
+    if not isinstance(library_version, str) or not library_version:
+        _invalid_request("library_version must be a non-empty string")
+    try:
+        deleted = _channel_service().store.delete_library(
+            library_id, confirm_library_id, library_version
+        )
+    except ValueError:
+        raise _ChannelApiError(
+            409,
+            "state_conflict",
+            "Channel library changed or still has active work",
+        )
+    return jsonify({"deleted": True, "library_id": int(deleted["id"])})
+
+
+@_flask_app.route("/api/channel-libraries/<int:library_id>/scans", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def create_channel_scan(library_id: int):
+    """Queue an incremental, repair, or retry scan command."""
+
+    service = _channel_service()
+    payload = _json_object(frozenset({"mode", "failure_ids", "failed_job_id"}))
+    mode = payload.get("mode")
+    if mode not in {"incremental", "repair", "retry"}:
+        _invalid_request("mode must be incremental, repair, or retry")
+    try:
+        if mode == "incremental":
+            if set(payload) != {"mode"}:
+                _invalid_request("incremental mode does not accept extra fields")
+            future = service.submit_incremental_threadsafe(library_id)
+            scan = future.result(timeout=30)
+        elif mode == "repair":
+            if "failed_job_id" in payload:
+                _invalid_request("repair mode does not accept failed_job_id")
+            failure_ids = payload.get("failure_ids")
+            if failure_ids is not None:
+                if not isinstance(failure_ids, list):
+                    _invalid_request("failure_ids must be an array")
+                failure_ids = [
+                    _json_int(value, "failure_ids", minimum=1)
+                    for value in failure_ids
+                ]
+            scan = service.queue_repair(library_id, failure_ids)
+        else:
+            if "failure_ids" in payload:
+                _invalid_request("retry mode does not accept failure_ids")
+            failed_job_id = _json_int(
+                payload.get("failed_job_id"), "failed_job_id", minimum=1
+            )
+            scan = service.retry_failed_job(library_id, failed_job_id)
+    except concurrent.futures.TimeoutError:
+        raise _ChannelApiError(
+            503,
+            "service_timeout",
+            "Channel scan command is still being processed",
+        )
+    except ValueError:
+        raise _ChannelApiError(
+            409, "state_conflict", "Channel scan command is invalid for this state"
+        )
+    except RuntimeError:
+        raise _ChannelApiError(
+            503,
+            "service_unavailable",
+            "Channel library service is unavailable",
+        )
+    return jsonify({"scan": _safe_scan(scan)}), 202
+
+
+def _control_channel_scan(job_id: int, action: str):
+    service = _channel_service()
+    operation = {
+        "pause": service.pause,
+        "resume": service.resume,
+        "stop": service.stop_job,
+    }[action]
+    try:
+        scan = operation(job_id)
+    except ValueError:
+        raise _ChannelApiError(
+            409, "state_conflict", "Scan control is invalid for this state"
+        )
+    return jsonify({"scan": _safe_scan(scan)})
+
+
+@_flask_app.route("/api/channel-scans/<int:job_id>/pause", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def pause_channel_scan(job_id: int):
+    return _control_channel_scan(job_id, "pause")
+
+
+@_flask_app.route("/api/channel-scans/<int:job_id>/resume", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def resume_channel_scan(job_id: int):
+    return _control_channel_scan(job_id, "resume")
+
+
+@_flask_app.route("/api/channel-scans/<int:job_id>/stop", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def stop_channel_scan(job_id: int):
+    return _control_channel_scan(job_id, "stop")
+
+
+@_flask_app.route("/api/channel-libraries/<int:library_id>/packages")
+@login_required
+@_channel_api
+def channel_packages(library_id: int):
+    """Return one filtered keyset page of channel packages."""
+
+    service = _channel_service()
+    cursor, page_size = _page_inputs()
+    package_filter = _filter_from_mapping(request.args, query=True)
+    try:
+        page = service.store.list_packages(
+            library_id, package_filter, cursor=cursor, limit=page_size
+        )
+    except (TypeError, ValueError):
+        _invalid_request()
+    return jsonify(
+        {
+            "items": page.items,
+            "next_cursor": page.next_cursor,
+            "library_revision": page.library_revision,
+        }
+    )
+
+
+@_flask_app.route(
+    "/api/channel-libraries/<int:library_id>/packages/<int:package_id>/items"
+)
+@login_required
+@_channel_api
+def channel_package_items(library_id: int, package_id: int):
+    """Return one keyset page of package media metadata."""
+
+    service = _channel_service()
+    cursor, page_size = _page_inputs()
+    if set(request.args) - {"cursor", "page_size"}:
+        _invalid_request("Request contains unsupported query parameters")
+    try:
+        page = service.store.list_package_items(
+            library_id, package_id, cursor=cursor, limit=page_size
+        )
+    except (TypeError, ValueError):
+        _invalid_request()
+    hide_file_name = bool(getattr(_active_app(), "hide_file_name", False))
+    items = []
+    for item in page.items:
+        safe_item = dict(item)
+        safe_item["file_name"] = mask_display_name(
+            safe_item.get("file_name"), hide_file_name
+        )
+        items.append(safe_item)
+    return jsonify(
+        {
+            "items": items,
+            "next_cursor": page.next_cursor,
+            "library_revision": page.library_revision,
+        }
+    )
+
+
+@_flask_app.route(
+    "/api/channel-libraries/<int:library_id>/selection/packages/<int:package_id>",
+    methods=["PUT"],
+)
+@login_required
+@_channel_api
+@_require_csrf
+def set_channel_package_selection(library_id: int, package_id: int):
+    payload = _json_object(frozenset({"selected"}))
+    selected = payload.get("selected")
+    if type(selected) is not bool:
+        _invalid_request("selected must be a boolean")
+    try:
+        result = _channel_service().store.set_package_selected(
+            library_id, package_id, selected
+        )
+    except ValueError:
+        raise _ChannelApiError(
+            409, "state_conflict", "Package cannot be selected in its current state"
+        )
+    return jsonify({"selection": result})
+
+
+@_flask_app.route(
+    "/api/channel-libraries/<int:library_id>/selection/select-filtered",
+    methods=["POST"],
+)
+@login_required
+@_channel_api
+@_require_csrf
+def select_filtered_channel_packages(library_id: int):
+    payload = request.get_json(silent=True)
+    package_filter = _filter_from_mapping(payload, query=False)
+    try:
+        result = _channel_service().store.select_filtered(library_id, package_filter)
+    except (TypeError, ValueError):
+        _invalid_request()
+    return jsonify(result)
+
+
+@_flask_app.route(
+    "/api/channel-libraries/<int:library_id>/selection/clear", methods=["POST"]
+)
+@login_required
+@_channel_api
+@_require_csrf
+def clear_channel_selection(library_id: int):
+    cleared = _channel_service().store.clear_selection(library_id)
+    return jsonify({"cleared_count": cleared})
+
+
+@_flask_app.route("/api/channel-libraries/<int:library_id>/selection")
+@login_required
+@_channel_api
+def channel_selection_summary(library_id: int):
+    return jsonify(_channel_service().store.selection_summary(library_id))
+
+
+@_flask_app.route(
+    "/api/channel-libraries/<int:library_id>/download-batches", methods=["POST"]
+)
+@login_required
+@_channel_api
+@_require_csrf
+def create_channel_download_batch(library_id: int):
+    """Persist and owner-loop schedule the current channel selection."""
+
+    service = _channel_service()
+    payload = _json_object(frozenset({"redownload"}))
+    redownload = payload.get("redownload", False)
+    if type(redownload) is not bool:
+        _invalid_request("redownload must be a boolean")
+    idempotency_key = request.headers.get("Idempotency-Key", "")
+    if not idempotency_key.strip() or len(idempotency_key) > 200:
+        _invalid_request("Idempotency-Key is required")
+    idempotency_key = idempotency_key.strip()
+    existing = service.store.get_download_batch_by_idempotency_key(
+        library_id, idempotency_key
+    )
+    if existing is not None:
+        return jsonify({"batch": _safe_batch(existing), "created": False}), 200
+    try:
+        batch = service.create_download_batch(
+            library_id, idempotency_key, redownload=redownload
+        )
+    except ValueError:
+        raise _ChannelApiError(
+            409,
+            "state_conflict",
+            "Selected packages cannot be downloaded in their current state",
+        )
+    try:
+        service.schedule_download_batch_threadsafe(int(batch["id"]))
+    except RuntimeError:
+        raise _ChannelApiError(
+            503,
+            "service_unavailable",
+            "Download batch was persisted and will resume when service is available",
+        )
+    return jsonify({"batch": _safe_batch(batch), "created": True}), 202
 
 
 @_flask_app.route("/get_download_status")

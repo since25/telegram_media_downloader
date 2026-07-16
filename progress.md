@@ -1141,3 +1141,38 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: snapshot channel batch execution identity$')"` 回滚代码；SQLite v3 新增列保留为空闲兼容字段，不执行破坏性降级或删列。
+
+## 2026-07-16 - Task: Expose authenticated channel library Web APIs and lifecycle
+
+### What was done
+
+- Added login-protected channel library, scan, package/item, selection, and idempotent download-batch APIs with session-bound CSRF on every mutation, strict primitive/range validation, and stable safe error envelopes.
+- Added atomic library overview/versioned deletion store operations and owner-loop-only incremental/download scheduling, including startup recovery/replay/reconciliation and shutdown-safe service task cancellation.
+- Wired the channel service after Telegram startup and stopped it before Telegram shutdown/general task cancellation; initialization failures leave the Web server available with channel routes returning safe `503` responses.
+- Documented the API bodies/statuses, authentication/CSRF contract, owner-loop boundary, lifecycle behavior, and timeout semantics.
+
+### Testing
+
+- RED: `.venv/bin/python -m pytest tests/module/test_channel_library_web.py -q` -> 28 failed in 1.17s from the expected missing routes and lifecycle/scheduling helpers.
+- Lifecycle cleanup RED: `.venv/bin/python -m pytest tests/module/test_channel_library_web.py::test_service_start_cleans_owner_tasks_when_pending_schedule_fails -q` -> 1 failed because a partial startup left the scheduler pending.
+- GREEN: `.venv/bin/python -m pytest tests/module/test_channel_library_web.py -q` -> 29 passed.
+- Requested Web regressions: `.venv/bin/python -m pytest tests/module/test_channel_library_web.py tests/module/test_web.py tests/test_web_cancel_task.py tests/test_web_prescan_retention.py -q` -> 67 passed in 1.04s.
+- Expanded channel/downloader regressions: `.venv/bin/python -m pytest tests/module/test_channel_library_store.py tests/module/test_channel_library_queries.py tests/module/test_channel_library_service.py tests/test_channel_library_download.py tests/test_media_downloader.py tests/module/test_task_state.py -q` -> 159 passed in 24.35s.
+- Full suite: `.venv/bin/python -m pytest -q` -> 410 passed, 1 skipped in 24.86s.
+- `python -m py_compile` for touched Python modules/tests and `git diff --check` passed.
+- `pylint --errors-only` ran but remains non-clean from existing pylintrc/astroid issues and the pre-existing `media_downloader.py:2953` undefined `STARTUP_SCAN_WINDOW_SEC` monitor finding; no new Task 9 runtime or compile failure was found.
+
+### Notes
+
+Changed files:
+- `module/web.py`: Added authenticated channel library routes, CSRF, validation, safe serialization, and status mapping.
+- `module/channel_library_store.py`: Added overview/version helpers, atomic guarded deletion, and idempotency-key lookup.
+- `module/channel_library_service.py`: Added owner-loop incremental submission, exactly-once process-local batch task scheduling, and startup/shutdown cleanup.
+- `media_downloader.py`: Wired channel service startup after Telegram and shutdown before Telegram/general tasks.
+- `tests/module/test_channel_library_web.py`: Added endpoint, security, storage race, scheduling, and lifecycle contracts.
+- `tests/test_media_downloader.py`: Isolated legacy `main()` tests from production-named channel database creation.
+- `docs/web-control-console.md`: Documented the channel API/auth/lifecycle contract.
+- `progress.md`: Added Task 9 implementation and verification evidence.
+
+Rollback:
+- Run `git revert "$(git rev-list -1 --all --grep='^feat: expose channel library web api$')"`; preserve `channel_library.sqlite3` because rollback must not delete persisted channel indexes or download history.

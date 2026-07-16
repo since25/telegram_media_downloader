@@ -360,6 +360,8 @@ def check_for_updates(_: dict = None):
 @mock.patch("media_downloader.get_chat_history_v2", new=get_chat_history)
 @mock.patch("media_downloader.RETRY_TIME_OUT", new=0)
 @mock.patch("media_downloader.check_for_updates", new=check_for_updates)
+@mock.patch("media_downloader._start_channel_library_service", new=lambda *_args: None)
+@mock.patch("media_downloader._stop_channel_library_service", new=lambda *_args: None)
 class MediaDownloaderTestCase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

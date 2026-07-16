@@ -729,6 +729,121 @@ class ChannelLibraryStore:
         return dict(row) if row is not None else None
 
     @staticmethod
+    def library_version(library: Mapping[str, object]) -> str:
+        """Return an opaque version covering library state and derived packages."""
+
+        return f"{library['updated_at']!r}:{int(library['index_revision'])}"
+
+    def get_library_overview(self, library_id: int) -> Optional[dict]:
+        """Return one library with its latest scan, counts, and failure summaries."""
+
+        with self.connect() as connection:
+            connection.execute("BEGIN")
+            library = connection.execute(
+                "SELECT * FROM channel_libraries WHERE id = ?", (library_id,)
+            ).fetchone()
+            if library is None:
+                return None
+            scan = connection.execute(
+                """
+                SELECT * FROM channel_scan_jobs
+                WHERE library_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (library_id,),
+            ).fetchone()
+            counts = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM channel_packages
+                     WHERE library_id = ? AND boundary_status != 'superseded')
+                        AS package_count,
+                    (SELECT COUNT(*) FROM channel_packages
+                     WHERE library_id = ? AND boundary_status = 'stable')
+                        AS stable_package_count,
+                    (SELECT COUNT(*) FROM channel_media_messages
+                     WHERE library_id = ?) AS media_count,
+                    (SELECT COUNT(*) FROM channel_scan_failures
+                     WHERE library_id = ? AND status != 'resolved')
+                        AS open_failure_count,
+                    (SELECT COUNT(*) FROM channel_package_selections AS s
+                     JOIN channel_packages AS p
+                       ON p.library_id = s.library_id AND p.id = s.package_id
+                     WHERE s.library_id = ? AND s.selected = 1
+                       AND s.package_revision = p.index_revision
+                       AND p.boundary_status = 'stable') AS selected_count
+                """,
+                (library_id, library_id, library_id, library_id, library_id),
+            ).fetchone()
+            failures = connection.execute(
+                """
+                SELECT * FROM channel_scan_failures
+                WHERE library_id = ? AND status != 'resolved'
+                ORDER BY start_message_id, id
+                """,
+                (library_id,),
+            ).fetchall()
+        library_dict = dict(library)
+        return {
+            "library": library_dict,
+            "library_version": self.library_version(library_dict),
+            "scan": dict(scan) if scan is not None else None,
+            "counts": dict(counts),
+            "failures": [dict(row) for row in failures],
+        }
+
+    def delete_library(
+        self,
+        library_id: int,
+        confirm_library_id: int,
+        library_version: str,
+    ) -> dict:
+        """Atomically version-check and delete an inactive channel library."""
+
+        if type(confirm_library_id) is not int or confirm_library_id != library_id:
+            raise ValueError("Library confirmation does not match")
+        if not isinstance(library_version, str) or not library_version:
+            raise ValueError("Library version is required")
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            library = connection.execute(
+                "SELECT * FROM channel_libraries WHERE id = ?", (library_id,)
+            ).fetchone()
+            if library is None:
+                raise KeyError(f"Channel library {library_id} does not exist")
+            library_dict = dict(library)
+            if self.library_version(library_dict) != library_version:
+                raise ValueError("Channel library version changed")
+            active_scan = connection.execute(
+                """
+                SELECT 1 FROM channel_scan_jobs
+                WHERE library_id = ? AND status IN (
+                    'queued', 'running', 'paused_user',
+                    'auto_paused_download', 'waiting_rate_limit'
+                )
+                LIMIT 1
+                """,
+                (library_id,),
+            ).fetchone()
+            if active_scan is not None:
+                raise ValueError("Channel library has active scan work")
+            active_download = connection.execute(
+                """
+                SELECT 1 FROM channel_download_batches
+                WHERE library_id = ? AND status IN ('queued', 'downloading')
+                LIMIT 1
+                """,
+                (library_id,),
+            ).fetchone()
+            if active_download is not None:
+                raise ValueError("Channel library has active download work")
+            connection.execute(
+                "DELETE FROM channel_libraries WHERE id = ?", (library_id,)
+            )
+        return library_dict
+
+    @staticmethod
     def _page_size(limit: int) -> int:
         if type(limit) is not int or limit < 1:
             raise ValueError("Page size must be a positive integer")
@@ -1441,6 +1556,21 @@ class ChannelLibraryStore:
         result = dict(batch)
         result["packages"] = packages
         return result
+
+    def get_download_batch_by_idempotency_key(
+        self, library_id: int, idempotency_key: str
+    ) -> Optional[dict]:
+        """Return the immutable batch previously created for one client key."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id FROM channel_download_batches
+                WHERE library_id = ? AND idempotency_key = ?
+                """,
+                (library_id, idempotency_key),
+            ).fetchone()
+        return self.get_download_batch(int(row["id"])) if row is not None else None
 
     def list_download_batches(self, library_id: Optional[int] = None) -> list[dict]:
         predicate = "" if library_id is None else "WHERE library_id = ?"

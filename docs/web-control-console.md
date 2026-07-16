@@ -20,6 +20,32 @@ Prescan mode scans a bounded message window, writes package summaries to the Web
 
 Confirming a prescan keeps its package list in Web state instead of discarding it, so `GET /api/prescans/<task_id>/packages` keeps returning `200` (with each package's `selected` flag as of confirmation time) while the download is in progress, which is what backs the prescan download detail view. Cancelling a prescan, or clearing/clear-completing its task once it reaches a terminal state, drops the retained package list so it does not linger in memory.
 
+## Channel Library API
+
+The channel library uses the existing Web login session. Call `GET /api/csrf-token` after login and send its `csrf_token` value in `X-CSRF-Token` on every mutating channel-library request. The token is bound to that browser session. Read and write channel routes return `503 service_unavailable` until Telegram has started and the single channel-library service is running.
+
+Errors use one JSON envelope: `{"error_code": "<stable_code>", "message": "<safe summary>"}`. Supported status classes are `400 invalid_request` or `invalid_link`, `403 csrf_failed`, `404 not_found`, `409 state_conflict`, and `503 service_unavailable` or `service_timeout`. Raw exceptions, Telegram session details, tokens, and configuration secrets are not returned.
+
+Channel and scan routes:
+
+- `GET /api/channel-libraries?cursor=&page_size=50`: keyset page with latest scan/count summary.
+- `POST /api/channel-libraries`: `{"link": "https://t.me/..."}`; returns `202` when created and `200` for the existing library.
+- `GET /api/channel-libraries/<library_id>`: library, opaque `library_version`, latest scan, counts, and safe failure summaries.
+- `DELETE /api/channel-libraries/<library_id>`: `{"confirm_library_id": <id>, "library_version": "<version>"}`; atomically rejects version changes and active scan/download work with `409`.
+- `POST /api/channel-libraries/<library_id>/scans`: `{"mode": "incremental"}`, `{"mode": "repair", "failure_ids": [<id>]}`, or `{"mode": "retry", "failed_job_id": <id>}`; returns `202`.
+- `POST /api/channel-scans/<job_id>/pause`, `/resume`, or `/stop`: persists control at the next safe scan boundary.
+
+Package, selection, and download routes:
+
+- `GET /api/channel-libraries/<library_id>/packages`: accepts `q`, UTC `date_from`/`date_to`, message/media/size min/max bounds, `include_unknown_size=true|false`, `download_status`, `cursor`, and `page_size` (1-200). Returns `next_cursor` and `library_revision` unchanged from the store.
+- `GET /api/channel-libraries/<library_id>/packages/<package_id>/items`: keyset-paginated media metadata; respects `hide_file_name`.
+- `PUT /api/channel-libraries/<library_id>/selection/packages/<package_id>`: `{"selected": true|false}`.
+- `POST /api/channel-libraries/<library_id>/selection/select-filtered`: a JSON object containing the same package filters.
+- `POST /api/channel-libraries/<library_id>/selection/clear` and `GET /api/channel-libraries/<library_id>/selection`: clear or summarize the persistent cross-page selection.
+- `POST /api/channel-libraries/<library_id>/download-batches`: optional `{"redownload": true|false}` plus required `Idempotency-Key`. A new persisted batch returns `202`; replaying the same library/key returns the same batch with `200`.
+
+Flask performs synchronous validation, store reads, and persisted store commands only. Telegram link resolution, incremental snapshots, scan scheduling, and package downloads are submitted to the existing `Application.loop`; Flask never starts or awaits a second event loop. Link resolution waits at most 30 seconds, and a timeout returns `503` without cancelling persisted or in-flight owner-loop work. Startup initializes recovery, outbox replay, reconciliation, the single scan scheduler, and resumable download runners. Shutdown awaits the channel service before stopping Telegram or cancelling general application tasks.
+
 ## Resource Boundaries
 
 The Web console persists task and file snapshots to `web_tasks.sqlite3` using SQLite WAL mode. Runtime Telegram sessions, auth files, and downloaded media are not stored in this database.

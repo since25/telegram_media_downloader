@@ -101,6 +101,7 @@ class ChannelLibraryService:
         self._ownership_key: Optional[str] = None
         self._shutdown_task: Optional[asyncio.Task[None]] = None
         self._running_download_batch_ids: set[int] = set()
+        self._download_batch_tasks: dict[int, asyncio.Task[Any]] = {}
 
     async def start(self) -> None:
         """Initialize recovery and start exactly one scheduler task."""
@@ -126,7 +127,17 @@ class ChannelLibraryService:
             self.scheduler_task = loop.create_task(
                 self._run_scheduler(), name="channel-library-scheduler"
             )
+            self.schedule_pending_download_batches()
         except BaseException:
+            owned_tasks = list(self._download_batch_tasks.values())
+            if self.scheduler_task is not None:
+                owned_tasks.append(self.scheduler_task)
+            for task in owned_tasks:
+                if not task.done():
+                    task.cancel()
+            if owned_tasks:
+                await asyncio.gather(*owned_tasks, return_exceptions=True)
+            self._download_batch_tasks.clear()
             self._release_store_ownership()
             raise
 
@@ -162,6 +173,13 @@ class ChannelLibraryService:
             except asyncio.CancelledError:
                 pass
         finally:
+            download_tasks = list(self._download_batch_tasks.values())
+            for download_task in download_tasks:
+                if not download_task.done():
+                    download_task.cancel()
+            if download_tasks:
+                await asyncio.gather(*download_tasks, return_exceptions=True)
+            self._download_batch_tasks.clear()
             if task is None or task.done():
                 self._release_store_ownership()
 
@@ -193,6 +211,53 @@ class ChannelLibraryService:
             allow_redownload=redownload,
         )
         return self._dispatch_download_batch_task(batch)
+
+    def schedule_pending_download_batches(self) -> list[int]:
+        """Schedule every resumable dispatched batch once in this process."""
+
+        scheduled = []
+        for batch in self.store.list_download_batches():
+            if batch["dispatch_status"] != "dispatched" or batch["status"] not in {
+                "queued",
+                "downloading",
+            }:
+                continue
+            if self._schedule_download_batch_owned(int(batch["id"])):
+                scheduled.append(int(batch["id"]))
+        return scheduled
+
+    def schedule_download_batch_threadsafe(self, batch_id: int) -> None:
+        """Wake the owner loop to run one persisted download batch."""
+
+        if self.owner_loop is None or not self.owner_loop.is_running():
+            raise RuntimeError("ChannelLibraryService is not running")
+        self.owner_loop.call_soon_threadsafe(
+            self._schedule_download_batch_owned, int(batch_id)
+        )
+
+    def _schedule_download_batch_owned(self, batch_id: int) -> bool:
+        existing = self._download_batch_tasks.get(batch_id)
+        if existing is not None and not existing.done():
+            return False
+        if self.owner_loop is None:
+            raise RuntimeError("ChannelLibraryService is not running")
+        task = self.owner_loop.create_task(
+            self.run_download_batch(batch_id),
+            name=f"channel-library-download-{batch_id}",
+        )
+        self._download_batch_tasks[batch_id] = task
+
+        def discard(completed: asyncio.Task[Any]) -> None:
+            if self._download_batch_tasks.get(batch_id) is completed:
+                self._download_batch_tasks.pop(batch_id, None)
+            if not completed.cancelled():
+                try:
+                    completed.exception()
+                except Exception:  # pragma: no cover - defensive task callback
+                    LOGGER.exception("Channel-library download task failed")
+
+        task.add_done_callback(discard)
+        return True
 
     def dispatch_pending_batches(self) -> list[dict]:
         """Replay committed outbox rows into the persistent Web task store."""
@@ -643,6 +708,17 @@ class ChannelLibraryService:
             raise RuntimeError("ChannelLibraryService is not running")
         return asyncio.run_coroutine_threadsafe(
             self.resolve_and_create_library(link), self.owner_loop
+        )
+
+    def submit_incremental_threadsafe(
+        self, library_id: int
+    ) -> concurrent.futures.Future[dict]:
+        """Schedule an incremental snapshot on the service owner loop."""
+
+        if self.owner_loop is None or not self.owner_loop.is_running():
+            raise RuntimeError("ChannelLibraryService is not running")
+        return asyncio.run_coroutine_threadsafe(
+            self.queue_incremental(library_id), self.owner_loop
         )
 
     def pause(self, job_id: int) -> dict:
