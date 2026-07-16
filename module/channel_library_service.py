@@ -346,6 +346,7 @@ class ChannelLibraryService:
                         self._get_required_job(current["id"]),
                         int(target["uncertain_through_message_id"]),
                         resolve_failure_id=int(target["failure_id"]),
+                        repair_failure_id=int(target["failure_id"]),
                     )
                     current = self._get_required_job(current["id"])
             else:
@@ -503,7 +504,9 @@ class ChannelLibraryService:
             repair_failure_id=job.get("repair_failure_id"),
         )
         await self._index_until_published(
-            self._get_required_job(job["id"]), batch_ids[-1]
+            self._get_required_job(job["id"]),
+            batch_ids[-1],
+            repair_failure_id=job.get("repair_failure_id"),
         )
 
     async def _index_until_published(
@@ -511,6 +514,7 @@ class ChannelLibraryService:
         job: dict,
         through_message_id: int,
         resolve_failure_id: Optional[int] = None,
+        repair_failure_id: Optional[int] = None,
     ) -> None:
         while True:
             result = self.indexer.index_through(
@@ -518,6 +522,7 @@ class ChannelLibraryService:
                 self._get_required_job(job["id"]),
                 through_message_id,
                 resolve_failure_id=resolve_failure_id,
+                repair_failure_id=repair_failure_id,
             )
             if not result.publication_deferred:
                 return

@@ -305,7 +305,7 @@ def test_indexer_stabilizes_nonempty_tail_only_at_snapshot_end(store):
     assert result.stable_package_count == 1
 
 
-def test_failure_closure_requires_two_proven_boundaries_after_gap(store):
+def test_unresolved_failure_closure_never_shrinks_at_a_proven_boundary(store):
     job = make_running_job(store, snapshot_max_id=40)
     messages = [
         fake_media(1, "Alpha"),
@@ -328,13 +328,13 @@ def test_failure_closure_requires_two_proven_boundaries_after_gap(store):
     packages = active_package_rows(store, job["library_id"])
     assert [
         (row["start_message_id"], row["boundary_status"]) for row in packages
-    ] == [(1, "uncertain"), (11, "uncertain"), (21, "provisional")]
+    ] == [(1, "uncertain"), (11, "uncertain"), (21, "uncertain")]
     with store.connect() as connection:
         uncertain_through = connection.execute(
             "SELECT uncertain_through_message_id FROM channel_scan_failures WHERE id = ?",
             (failure["id"],),
         ).fetchone()[0]
-    assert uncertain_through == 20
+    assert uncertain_through == 21
 
 
 def test_split_and_merge_supersede_removed_start_identities(store):
@@ -591,6 +591,7 @@ def test_repair_closure_publication_and_resolution_commit_atomically(store):
         repair_failure_id=failure["id"],
     )
     before_job = store.get_job(repair["id"])
+    before_library = store.get_library(job["library_id"])
     before_packages = package_rows(store, job["library_id"])
     with store.connect() as connection:
         connection.execute(
@@ -618,6 +619,12 @@ def test_repair_closure_publication_and_resolution_commit_atomically(store):
     assert store.get_job(repair["id"])["index_revision"] == before_job[
         "index_revision"
     ]
+    assert store.get_job(repair["id"])["indexed_through_message_id"] == before_job[
+        "indexed_through_message_id"
+    ]
+    assert store.get_library(job["library_id"])[
+        "indexed_through_message_id"
+    ] == before_library["indexed_through_message_id"]
     assert package_rows(store, job["library_id"]) == before_packages
 
     with store.connect() as connection:

@@ -368,6 +368,75 @@ async def test_repair_resumes_each_target_from_its_persisted_cursor(tmp_path):
     ] == "completed"
 
 
+@async_test
+async def test_later_repair_closure_survives_earlier_target_and_failed_retry(
+    tmp_path,
+):
+    service, library, _sleep = make_service(tmp_path)
+    _full, failures = finish_partial_scan(
+        service,
+        library,
+        [(5, 6, 1, 20), (25, 26, 11, 40)],
+        snapshot_max=50,
+        messages=(
+            fake_media(1, "Alpha"),
+            fake_media(11, "Bravo"),
+            fake_media(21, "Charlie"),
+            fake_media(31, "Delta"),
+            fake_media(41, "Echo"),
+        ),
+    )
+    repair = service.queue_repair(library["id"])
+    service.client.failures = [None] + [errors.InternalServerError()] * 4
+
+    await service._run_job(repair)
+
+    failed = service.store.get_job(repair["id"])
+    first_targets = {
+        target["failure_id"]: target
+        for target in service.store.list_repair_targets(repair["id"])
+    }
+    assert failed["status"] == "failed"
+    assert first_targets[failures[0]["id"]]["status"] == "completed"
+    assert first_targets[failures[0]["id"]]["failure_status"] == "resolved"
+    assert first_targets[failures[1]["id"]]["status"] == "queued"
+    assert first_targets[failures[1]["id"]]["failure_status"] == "repairing"
+    assert first_targets[failures[1]["id"]][
+        "uncertain_through_message_id"
+    ] == 40
+
+    retried = service.retry_failed_job(library["id"], failed["id"])
+    retry_targets = service.store.list_repair_targets(retried["id"])
+    assert len(retry_targets) == 1
+    assert retry_targets[0]["failure_id"] == failures[1]["id"]
+    assert retry_targets[0]["uncertain_through_message_id"] == 40
+
+    await service._run_job(retried)
+
+    completed_target = service.store.list_repair_targets(retried["id"])[0]
+    assert completed_target["status"] == "completed"
+    assert completed_target["failure_status"] == "resolved"
+    assert service.store.get_job(retried["id"])["status"] == "completed"
+    assert service.store.get_library(library["id"])["status"] == "ready"
+    with service.store.connect() as connection:
+        failure_statuses = connection.execute(
+            """
+            SELECT status FROM channel_scan_failures
+            WHERE library_id = ? ORDER BY id
+            """,
+            (library["id"],),
+        ).fetchall()
+        uncertain_count = connection.execute(
+            """
+            SELECT COUNT(*) FROM channel_packages
+            WHERE library_id = ? AND boundary_status = 'uncertain'
+            """,
+            (library["id"],),
+        ).fetchone()[0]
+    assert [row["status"] for row in failure_statuses] == ["resolved", "resolved"]
+    assert uncertain_count == 0
+
+
 def test_retry_failed_job_preserves_kind_snapshot_and_checkpoint(tmp_path):
     async def scenario():
         service, library, _sleep = make_service(tmp_path)

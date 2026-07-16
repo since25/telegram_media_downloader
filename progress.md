@@ -948,3 +948,34 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^feat: add incremental and repair scans$')"` 回滚 Task 6；保留 `channel_library.sqlite3`，避免丢失已扫描数据。
+
+## 2026-07-16 - Task: Preserve Repair Uncertainty Across Retries
+
+### What was done
+
+- 修复多失败区间 repair 的重启安全问题：较早 target 的中间索引发布不再缩短或改写其他未解决 failure 的持久化不确定闭包。
+- 未解决 failure 的规划闭包取持久值与本轮候选值的最大值；store 使用 SQL `MAX` 再次保证 closure 单调不减，并保持原始 `reindex_anchor_start` 不变。
+- repair publication 的 failure update 与 resolution 必须属于同一个显式 active target；只有目标闭包的 package/item revision、index 水位、target completed 和 failure resolved 同事务成功后才解除该 failure 的不确定状态。
+- 增加双 failure 的失败重试回归：前一 target 成功，后一 target 耗尽重试并从 failed job 重建，确认 closure 不缩短、最终库 ready 且 active uncertain 包为零。
+
+### Testing
+
+- Review RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_service.py::test_later_repair_closure_survives_earlier_target_and_failed_retry tests/module/test_channel_library_workflow.py::test_repair_closure_publication_and_resolution_commit_atomically -q`：`1 failed, 1 passed in 0.37s`；较晚 failure closure 实际为 `20`，期望保留 `40`。
+- Targeted GREEN：同命令最终 `2 passed in 0.56s`。
+- Focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_service.py tests/module/test_channel_library_workflow.py tests/module/test_channel_library_store.py -q`：`90 passed in 1.20s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`334 passed, 1 skipped in 24.12s`。
+- `py_compile module/channel_library_service.py module/channel_library_store.py module/channel_library_workflow.py` 与 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`: 将 active repair failure ID 贯穿中间与 resolution 索引发布。
+- `module/channel_library_store.py`: 强制 repair target 作用域并以 SQL `MAX` 保证 closure 单调。
+- `module/channel_library_workflow.py`: 保留持久化 closure，且 repair 只生成当前 target 的 failure update。
+- `tests/module/test_channel_library_service.py`: 覆盖双失败区间、后段失败、failed-job retry 和最终无 uncertain 包。
+- `tests/module/test_channel_library_workflow.py`: 更新 unresolved closure 单调断言并强化 resolution 失败的双 watermark 回滚证据。
+- `.superpowers/sdd/task-6-report.md`: 追加 Critical RED/GREEN、重启链和 closure monotonicity 审计。
+- `progress.md`: 追加本 review 修复、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: preserve repair uncertainty across retries$')"` 回滚本次 Critical 修复。

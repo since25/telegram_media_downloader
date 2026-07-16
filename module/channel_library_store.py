@@ -1288,6 +1288,7 @@ class ChannelLibraryStore:
         packages: Sequence[Mapping[str, object]],
         failure_updates: Sequence[Mapping[str, object]] = (),
         resolved_failure_ids: Sequence[int] = (),
+        repair_failure_id: Optional[int] = None,
         now: Optional[float] = None,
     ) -> dict:
         """Atomically publish derived packages, items, revision, and watermark."""
@@ -1349,6 +1350,28 @@ class ChannelLibraryStore:
             library = connection.execute(
                 "SELECT * FROM channel_libraries WHERE id = ?", (library_id,)
             ).fetchone()
+            if job["kind"] == "repair" and (failure_updates or resolved_ids):
+                target_failure_ids = {
+                    int(row["failure_id"])
+                    for row in connection.execute(
+                        """
+                        SELECT failure_id FROM channel_scan_repair_targets
+                        WHERE job_id = ?
+                        """,
+                        (job_id,),
+                    ).fetchall()
+                }
+                if (
+                    repair_failure_id not in target_failure_ids
+                    or any(
+                        int(update["failure_id"]) != repair_failure_id
+                        for update in failure_updates
+                    )
+                    or any(failure_id != repair_failure_id for failure_id in resolved_ids)
+                ):
+                    raise ValueError(
+                        "Repair index updates must be scoped to the active target"
+                    )
             for failure_id in resolved_ids:
                 target = connection.execute(
                     """
@@ -1611,7 +1634,10 @@ class ChannelLibraryStore:
                 cursor = connection.execute(
                     """
                     UPDATE channel_scan_failures
-                    SET uncertain_through_message_id = ?, updated_at = ?
+                    SET uncertain_through_message_id = MAX(
+                            uncertain_through_message_id, ?
+                        ),
+                        updated_at = ?
                     WHERE id = ? AND library_id = ? AND status != 'resolved'
                     """,
                     (

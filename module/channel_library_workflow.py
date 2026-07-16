@@ -131,11 +131,17 @@ class ChannelPackageIndexer:
         job: Mapping[str, Any],
         through_message_id: int,
         resolve_failure_id: Optional[int] = None,
+        repair_failure_id: Optional[int] = None,
     ) -> IndexResult:
         context = store.load_package_index_context(
             int(job["id"]),
             int(job["library_id"]),
             int(through_message_id),
+        )
+        active_repair_failure_id = (
+            repair_failure_id
+            if repair_failure_id is not None
+            else resolve_failure_id
         )
         messages = [
             PersistedMessageAdapter.from_row(row) for row in context["media_rows"]
@@ -171,18 +177,26 @@ class ChannelPackageIndexer:
                 if start > int(failure["end_message_id"])
             ]
             if len(starts_after_failure) >= 2:
-                uncertain_through = starts_after_failure[1] - 1
+                candidate_uncertain_through = starts_after_failure[1] - 1
             else:
-                uncertain_through = through
+                candidate_uncertain_through = through
+            uncertain_through = max(
+                int(failure["uncertain_through_message_id"]),
+                candidate_uncertain_through,
+            )
             uncertain_intervals.append(
                 (int(failure["reindex_anchor_start"]), uncertain_through)
             )
-            failure_updates.append(
-                {
-                    "failure_id": int(failure["id"]),
-                    "uncertain_through_message_id": uncertain_through,
-                }
-            )
+            if context["job"]["kind"] != "repair" or (
+                active_repair_failure_id is not None
+                and int(failure["id"]) == int(active_repair_failure_id)
+            ):
+                failure_updates.append(
+                    {
+                        "failure_id": int(failure["id"]),
+                        "uncertain_through_message_id": uncertain_through,
+                    }
+                )
 
         packages = []
         for plan in package_plans:
@@ -236,6 +250,7 @@ class ChannelPackageIndexer:
             resolved_failure_ids=(
                 () if resolve_failure_id is None else (int(resolve_failure_id),)
             ),
+            repair_failure_id=active_repair_failure_id,
         )
         return IndexResult(
             index_revision=publication["index_revision"],
