@@ -163,6 +163,38 @@ class TaskStateStoreTestCase(unittest.TestCase):
             self.assertEqual(snapshot.task_type, "package")
             self.assertEqual(len(snapshot.files), 2)
 
+    def test_ensure_task_is_idempotent_and_does_not_regress_existing_state(self):
+        from module.task_state import TaskStateStore, TaskStatus
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            store = TaskStateStore(storage_path=db_path)
+
+            created = store.ensure_task(
+                "channel-batch-fixed",
+                source="web",
+                task_type="channel_library",
+                chat_id=-1001,
+                title="Original batch",
+                status=TaskStatus.QUEUED,
+                total_count=2,
+            )
+            store.update_task(created.task_id, status=TaskStatus.DOWNLOADING)
+
+            replayed = TaskStateStore(storage_path=db_path).ensure_task(
+                "channel-batch-fixed",
+                source="web",
+                task_type="channel_library",
+                chat_id=-1001,
+                title="Original batch",
+                status=TaskStatus.QUEUED,
+                total_count=2,
+            )
+
+            self.assertEqual(replayed.task_id, created.task_id)
+            self.assertEqual(replayed.status, TaskStatus.DOWNLOADING)
+            self.assertEqual(len(TaskStateStore(storage_path=db_path).tasks()), 1)
+
     def test_paginate_files_bounds_page_size(self):
         from module.task_state import FileStatus, TaskStateStore, TaskStatus
 

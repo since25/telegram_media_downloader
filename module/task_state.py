@@ -313,6 +313,33 @@ class TaskStateStore:
             self._persist_task(task)
             return task
 
+    def ensure_task(
+        self,
+        task_id: Any,
+        source: str = "bot",
+        task_type: str = "unknown",
+        chat_id: Optional[int] = None,
+        title: str = "",
+        status: str = TaskStatus.CREATED,
+        **updates,
+    ) -> TaskSnapshot:
+        """Create a deterministic task once without resetting an existing task."""
+
+        task_key = str(task_id)
+        with self._lock:
+            existing = self._active.get(task_key) or self._completed.get(task_key)
+            if existing is not None:
+                return existing
+            return self.create_task(
+                task_key,
+                source=source,
+                task_type=task_type,
+                chat_id=chat_id,
+                title=title,
+                status=status,
+                **updates,
+            )
+
     def update_task(self, task_id: Any, **updates) -> Optional[TaskSnapshot]:
         task_key = str(task_id)
         with self._lock:

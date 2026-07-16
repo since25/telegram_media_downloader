@@ -1033,3 +1033,41 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^fix: bound channel package cursor integers$')"` 回滚本次 cursor 上界修复。
+
+## 2026-07-16 - Task: Dispatch Channel Package Download Batches
+
+### What was done
+
+- 实现频道库下载批次的持久化 outbox/saga：频道事务先校验终态库、稳定 selection revision、历史成功与 active duplicate，再原子保存 batch/package/item 不可变快照和 queued 摘要；事务提交后才幂等创建确定性 Web task 并标记 dispatched。
+- 实现 pending startup replay、终态对账、精确快照 ID 重取和逐包串行下载；真实缺失、读取失败、上传失败、完整文件跳过和取消分别持久化，不以父任务累计计数推导包结果。
+- 扩展现有预扫包下载为一次父任务生命周期和可等待逐包回调；失败显式重下不清除历史成功事实，不同 idempotency key 不能并发圈入 active 包。
+- 补充跨库故障窗口、真实 SQLite TaskState、多包生命周期、不可变命名快照、结果分类、取消、对账和重复保护文档及测试。
+
+### Testing
+
+- RED：`TaskStateStore.ensure_task` 缺失为 `1 failed`；多包 callback/result 为 `2 failed`；初始 outbox API 为 `5 failed`；immutable runner、refetch error、cancel window 和 active duplicate 各自先得到预期 `1 failed`。
+- Initial focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/test_channel_library_download.py tests/test_media_downloader.py tests/module/test_task_state.py -q`：`48 passed in 23.45s`。
+- Upload focused：加 `tests/test_web_upload_progress.py`：`59 passed in 23.62s`。
+- Channel regressions：频道 store/service/workflow/query `108 passed in 1.65s`；旧评论包兼容用例 `2 passed`。
+- Final targeted：`tests/test_channel_library_download.py -q` 为 `11 passed in 1.01s`；media/TaskState/upload 为 `49 passed in 23.62s`。
+- Authoritative full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`366 passed, 1 skipped in 24.73s`。
+- `py_compile` 与 `git diff --check`：通过。
+- Mypy 在分析项目文件前被已安装 `markupsafe/_speedups.pyi` positional-only 语法错误阻断；显式 `--python-version 3.11` 结果相同。
+- Black check 报告 6 个 touched 大文件会被重排；为避免全文件格式化和超范围 churn，未执行自动重排。
+
+### Notes
+
+Changed files:
+- `media_downloader.py`: 包级结果、完整文件/未找到标记、一次父生命周期和可等待 callback。
+- `module/channel_library_service.py`: 确定性任务派发、pending replay、对账、不可变快照 runner 和取消落盘。
+- `module/channel_library_store.py`: 原子批次快照、active duplicate 校验、attempt/summary 状态持久化。
+- `module/task_state.py`: 不回退既有任务状态的幂等 `ensure_task`。
+- `tests/test_channel_library_download.py`: 三个 crash window、snapshot/dispatch/reconcile/result/cancel/duplicate 覆盖。
+- `tests/test_media_downloader.py`: 真实 TaskState 多包父生命周期与逐包结果覆盖。
+- `tests/module/test_task_state.py`: 确定性任务跨重启幂等覆盖。
+- `docs/channel-library-download-outbox.md`: 两库 saga 顺序、状态语义和恢复说明。
+- `.superpowers/sdd/task-8-report.md`: RED/GREEN、故障窗口、生命周期、验证与静态缺口审计。
+- `progress.md`: 追加本任务实现、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^feat: dispatch channel package download batches$')"` 回滚 Task 8；保留两个 SQLite 文件，避免误删既有任务和频道库历史。

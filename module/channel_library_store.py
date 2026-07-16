@@ -48,6 +48,9 @@ PACKAGE_DOWNLOAD_STATUSES = frozenset(
 )
 SCAN_FAILURE_STATUSES = frozenset({"open", "repairing", "resolved"})
 DOWNLOAD_DISPATCH_STATUSES = frozenset({"pending_dispatch", "dispatched"})
+DOWNLOAD_ATTEMPT_TERMINAL_STATUSES = frozenset(
+    {"completed", "failed", "upload_failed", "cancelled", "not_found"}
+)
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 SQLITE_MAX_INTEGER = 2**63 - 1
@@ -1183,6 +1186,367 @@ class ChannelLibraryStore:
             "invalidated_count": len(invalidations),
             "invalidations": invalidations,
         }
+
+    def create_download_batch(
+        self,
+        library_id: int,
+        idempotency_key: str,
+        task_id: str,
+        allow_redownload: bool = False,
+        now: Optional[float] = None,
+    ) -> dict:
+        """Atomically validate selections and persist one immutable outbox batch."""
+
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("Idempotency key is required")
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                """
+                SELECT id FROM channel_download_batches
+                WHERE library_id = ? AND idempotency_key = ?
+                """,
+                (library_id, key),
+            ).fetchone()
+            if existing is not None:
+                batch_id = int(existing["id"])
+            else:
+                library = connection.execute(
+                    "SELECT * FROM channel_libraries WHERE id = ?", (library_id,)
+                ).fetchone()
+                if library is None:
+                    raise KeyError(f"Channel library {library_id} does not exist")
+                if library["status"] not in {"ready", "partial"}:
+                    raise ValueError("Channel library is not ready for download")
+
+                selected = connection.execute(
+                    """
+                    SELECT p.*, s.package_revision AS selected_revision
+                    FROM channel_package_selections AS s
+                    JOIN channel_packages AS p
+                      ON p.library_id = s.library_id AND p.id = s.package_id
+                    WHERE s.library_id = ? AND s.selected = 1
+                    ORDER BY p.start_message_id, p.id
+                    """,
+                    (library_id,),
+                ).fetchall()
+                if not selected:
+                    raise ValueError("No channel packages are selected")
+                for package in selected:
+                    if int(package["selected_revision"]) != int(
+                        package["index_revision"]
+                    ):
+                        raise ValueError("Selected package revision changed")
+                    if package["boundary_status"] != "stable":
+                        raise ValueError("Selected package is not stable")
+                    if package["current_download_status"] in {
+                        "queued",
+                        "downloading",
+                    }:
+                        raise ValueError("Selected package is in an active download batch")
+                    if (
+                        package["has_successful_attempt"] == 1
+                        or package["current_download_status"] == "outdated"
+                    ) and not allow_redownload:
+                        raise ValueError("Explicit redownload confirmation is required")
+
+                cursor = connection.execute(
+                    """
+                    INSERT INTO channel_download_batches (
+                        library_id, task_id, idempotency_key, allow_redownload,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        library_id,
+                        task_id,
+                        key,
+                        1 if allow_redownload else 0,
+                        now,
+                        now,
+                    ),
+                )
+                batch_id = int(cursor.lastrowid)
+                for package_ordinal, package in enumerate(selected, start=1):
+                    package_id = int(package["id"])
+                    connection.execute(
+                        """
+                        INSERT INTO channel_download_batch_packages (
+                            batch_id, library_id, package_id, package_revision,
+                            title, start_message_id, end_message_id, ordinal,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            batch_id,
+                            library_id,
+                            package_id,
+                            int(package["index_revision"]),
+                            package["title"],
+                            int(package["start_message_id"]),
+                            int(package["end_message_id"]),
+                            package_ordinal,
+                            now,
+                            now,
+                        ),
+                    )
+                    item_rows = connection.execute(
+                        """
+                        SELECT * FROM channel_package_items
+                        WHERE library_id = ? AND package_id = ?
+                        ORDER BY ordinal, message_id
+                        """,
+                        (library_id, package_id),
+                    ).fetchall()
+                    if not item_rows:
+                        raise ValueError("Selected package has no media items")
+                    for item in item_rows:
+                        connection.execute(
+                            """
+                            INSERT INTO channel_download_batch_items (
+                                batch_id, package_id, library_id, message_id,
+                                ordinal, media_type, caption_for_naming,
+                                original_caption, inherited_caption
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                batch_id,
+                                package_id,
+                                library_id,
+                                int(item["message_id"]),
+                                int(item["ordinal"]),
+                                item["media_type"],
+                                item["caption_for_naming"],
+                                item["original_caption"],
+                                item["inherited_caption"],
+                            ),
+                        )
+                    connection.execute(
+                        """
+                        UPDATE channel_packages
+                        SET current_download_status = 'queued',
+                            last_download_task_id = ?,
+                            download_attempt_count = download_attempt_count + 1,
+                            updated_at = ?
+                        WHERE library_id = ? AND id = ?
+                        """,
+                        (task_id, now, library_id, package_id),
+                    )
+        return self.get_download_batch(batch_id)
+
+    def get_download_batch(self, batch_id: int) -> Optional[dict]:
+        with self.connect() as connection:
+            batch = connection.execute(
+                "SELECT * FROM channel_download_batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+            if batch is None:
+                return None
+            package_rows = connection.execute(
+                """
+                SELECT * FROM channel_download_batch_packages
+                WHERE batch_id = ? ORDER BY ordinal, package_id
+                """,
+                (batch_id,),
+            ).fetchall()
+            packages = []
+            for package_row in package_rows:
+                package = dict(package_row)
+                item_rows = connection.execute(
+                    """
+                    SELECT * FROM channel_download_batch_items
+                    WHERE batch_id = ? AND package_id = ?
+                    ORDER BY ordinal, message_id
+                    """,
+                    (batch_id, package_row["package_id"]),
+                ).fetchall()
+                package["items"] = [dict(item) for item in item_rows]
+                packages.append(package)
+        result = dict(batch)
+        result["packages"] = packages
+        return result
+
+    def list_download_batches(self, library_id: Optional[int] = None) -> list[dict]:
+        predicate = "" if library_id is None else "WHERE library_id = ?"
+        parameters = () if library_id is None else (library_id,)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT id FROM channel_download_batches
+                {predicate}
+                ORDER BY created_at, id
+                """,
+                parameters,
+            ).fetchall()
+        return [self.get_download_batch(int(row["id"])) for row in rows]
+
+    def list_pending_download_batches(self) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id FROM channel_download_batches
+                WHERE dispatch_status = 'pending_dispatch'
+                ORDER BY created_at, id
+                """
+            ).fetchall()
+        return [self.get_download_batch(int(row["id"])) for row in rows]
+
+    def mark_download_batch_dispatched(
+        self, batch_id: int, now: Optional[float] = None
+    ) -> dict:
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE channel_download_batches
+                SET dispatch_status = 'dispatched', dispatched_at = COALESCE(dispatched_at, ?),
+                    updated_at = ?, last_error = NULL
+                WHERE id = ?
+                """,
+                (now, now, batch_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(f"Download batch {batch_id} does not exist")
+        return self.get_download_batch(batch_id)
+
+    def mark_download_batch_package_started(
+        self, batch_id: int, package_id: int, now: Optional[float] = None
+    ) -> dict:
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch = connection.execute(
+                "SELECT task_id, library_id FROM channel_download_batches WHERE id = ?",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                raise KeyError(f"Download batch {batch_id} does not exist")
+            cursor = connection.execute(
+                """
+                UPDATE channel_download_batch_packages
+                SET status = 'downloading', updated_at = ?
+                WHERE batch_id = ? AND package_id = ? AND status = 'queued'
+                """,
+                (now, batch_id, package_id),
+            )
+            if cursor.rowcount not in {0, 1}:
+                raise RuntimeError("Unexpected package attempt update count")
+            connection.execute(
+                """
+                UPDATE channel_packages
+                SET current_download_status = 'downloading', updated_at = ?
+                WHERE library_id = ? AND id = ? AND last_download_task_id = ?
+                """,
+                (now, batch["library_id"], package_id, batch["task_id"]),
+            )
+            connection.execute(
+                """
+                UPDATE channel_download_batches
+                SET status = 'downloading', updated_at = ? WHERE id = ?
+                """,
+                (now, batch_id),
+            )
+        return self.get_download_batch(batch_id)
+
+    def finish_download_batch_package(
+        self,
+        batch_id: int,
+        package_id: int,
+        status: str,
+        last_error: Optional[str] = None,
+        now: Optional[float] = None,
+    ) -> dict:
+        if status not in DOWNLOAD_ATTEMPT_TERMINAL_STATUSES:
+            raise ValueError(f"Invalid package download status: {status}")
+        now = time.time() if now is None else now
+        summary_status = (
+            "completed"
+            if status == "completed"
+            else "cancelled" if status == "cancelled" else "failed"
+        )
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch = connection.execute(
+                "SELECT task_id, library_id FROM channel_download_batches WHERE id = ?",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                raise KeyError(f"Download batch {batch_id} does not exist")
+            cursor = connection.execute(
+                """
+                UPDATE channel_download_batch_packages
+                SET status = ?, last_error = ?, updated_at = ?, completed_at = ?
+                WHERE batch_id = ? AND package_id = ?
+                """,
+                (status, last_error, now, now, batch_id, package_id),
+            )
+            if cursor.rowcount != 1:
+                raise KeyError(
+                    f"Package {package_id} is not in download batch {batch_id}"
+                )
+            connection.execute(
+                """
+                UPDATE channel_packages
+                SET current_download_status = ?,
+                    has_successful_attempt = CASE
+                        WHEN ? = 'completed' THEN 1 ELSE has_successful_attempt END,
+                    completed_revision = CASE
+                        WHEN ? = 'completed' THEN (
+                            SELECT package_revision
+                            FROM channel_download_batch_packages
+                            WHERE batch_id = ? AND package_id = ?
+                        ) ELSE completed_revision END,
+                    last_successful_at = CASE
+                        WHEN ? = 'completed' THEN ? ELSE last_successful_at END,
+                    last_downloaded_at = ?, updated_at = ?
+                WHERE library_id = ? AND id = ? AND last_download_task_id = ?
+                """,
+                (
+                    summary_status,
+                    status,
+                    status,
+                    batch_id,
+                    package_id,
+                    status,
+                    now,
+                    now,
+                    now,
+                    batch["library_id"],
+                    package_id,
+                    batch["task_id"],
+                ),
+            )
+            unfinished = connection.execute(
+                """
+                SELECT COUNT(*) FROM channel_download_batch_packages
+                WHERE batch_id = ? AND status IN ('queued', 'downloading')
+                """,
+                (batch_id,),
+            ).fetchone()[0]
+            if unfinished == 0:
+                statuses = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT status FROM channel_download_batch_packages WHERE batch_id = ?",
+                        (batch_id,),
+                    )
+                }
+                batch_status = (
+                    "completed"
+                    if statuses == {"completed"}
+                    else "cancelled"
+                    if statuses <= {"completed", "cancelled"}
+                    else "failed"
+                )
+                connection.execute(
+                    """
+                    UPDATE channel_download_batches
+                    SET status = ?, updated_at = ?, completed_at = ? WHERE id = ?
+                    """,
+                    (batch_status, now, now, batch_id),
+                )
+        return self.get_download_batch(batch_id)
 
     @staticmethod
     def _insert_scan_job(

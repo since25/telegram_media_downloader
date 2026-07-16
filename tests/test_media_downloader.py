@@ -4,8 +4,10 @@ import os
 import platform
 import queue
 import sys
+import tempfile
 import unittest
 from datetime import datetime
+from pathlib import Path
 from typing import List, Union
 
 import mock
@@ -2002,6 +2004,239 @@ class MediaDownloaderTestCase(unittest.TestCase):
     #     mock_remove.assert_called_with(
     #         platform_generic_path("/root/project/8654123/0/312 - sucess_down.mp4")
     #     )
+
+    def test_download_prescan_packages_manages_parent_once_and_reports_package_results(self):
+        import media_downloader
+        import module.task_state as task_state_module
+
+        from module.comment_workflow import plan_message_package
+        from module.download_stat import (
+            add_active_task_node,
+            get_active_task_nodes,
+            remove_active_task_node,
+        )
+        from module.prescan_workflow import PrescanPackage
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+        messages = [
+            MockMessage(
+                id=message_id,
+                media="video",
+                caption=f"Lesson {index}",
+                video=MockVideo(file_name=f"{index}.mp4", mime_type="video/mp4"),
+            )
+            for index, message_id in enumerate((101, 202), start=1)
+        ]
+        packages = []
+        for package_id, message in zip((11, 22), messages):
+            plan = plan_message_package([message], message.id)
+            package = PrescanPackage(
+                package_id,
+                message.caption,
+                message.id,
+                message.id,
+                plan.items,
+                plan,
+                [message],
+            )
+            package.attempt_id = f"attempt-{package_id}"
+            packages.append(package)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            real_store = TaskStateStore(storage_path=Path(tmp_dir) / "tasks.sqlite3")
+            node = TaskNode(chat_id=-1001, bot=None, task_id="channel-batch-fixed")
+            node.client = object()
+            callbacks = []
+            lifecycle = []
+
+            async def fake_add_download_task(message, package_node):
+                package_node.total_task += 1
+                package_node.total_download_task += 1
+                package_node.download_status[message.id] = DownloadStatus.SuccessDownload
+                package_node.stat(
+                    DownloadStatus.SuccessDownload,
+                    package_node.chat_id,
+                    message.id,
+                    f"/{message.id}.mp4",
+                )
+                real_store.upsert_file(
+                    package_node.task_id,
+                    message.id,
+                    status=FileStatus.DOWNLOADED,
+                    filename=f"/{message.id}.mp4",
+                )
+                return True
+
+            async def fake_report(*_args, **_kwargs):
+                return None
+
+            async def on_package_started(attempt_id, package):
+                callbacks.append(("started", attempt_id, package.package_id))
+
+            async def on_package_finished(attempt_id, message_results):
+                snapshot = real_store.get_task(node.task_id)
+                callbacks.append(
+                    (
+                        "finished",
+                        attempt_id,
+                        tuple(message_results),
+                        snapshot.status,
+                    )
+                )
+
+            def tracked_add(active_node, *args, **kwargs):
+                lifecycle.append("add")
+                return add_active_task_node(active_node, *args, **kwargs)
+
+            def tracked_remove(task_id):
+                lifecycle.append("remove")
+                return remove_active_task_node(task_id)
+
+            old_store = task_state_module._TASK_STORE
+            task_state_module._TASK_STORE = real_store
+            try:
+                with mock.patch.object(
+                    media_downloader, "add_download_task", new=fake_add_download_task
+                ), mock.patch(
+                    "module.pyrogram_extension.report_bot_status", new=fake_report
+                ), mock.patch(
+                    "module.download_stat.add_active_task_node", new=tracked_add
+                ), mock.patch(
+                    "module.download_stat.remove_active_task_node", new=tracked_remove
+                ):
+                    results = self.loop.run_until_complete(
+                        media_downloader.download_prescan_packages(
+                            packages,
+                            channel="Course",
+                            parent_node=node,
+                            selected_package_ids={11, 22},
+                            on_package_started=on_package_started,
+                            on_package_finished=on_package_finished,
+                        )
+                    )
+            finally:
+                task_state_module._TASK_STORE = old_store
+                get_active_task_nodes().pop(node.task_id, None)
+
+            self.assertEqual(lifecycle, ["add", "remove"])
+            self.assertEqual(
+                [result.status for result in results], ["completed", "completed"]
+            )
+            self.assertEqual(
+                callbacks,
+                [
+                    ("started", "attempt-11", 11),
+                    ("finished", "attempt-11", (101,), TaskStatus.DOWNLOADING),
+                    ("started", "attempt-22", 22),
+                    ("finished", "attempt-22", (202,), TaskStatus.DOWNLOADING),
+                ],
+            )
+            self.assertEqual(
+                real_store.get_task(node.task_id).status, TaskStatus.COMPLETED
+            )
+
+    def test_download_prescan_packages_classifies_package_scoped_outcomes(self):
+        import media_downloader
+        import module.task_state as task_state_module
+
+        from module.comment_workflow import plan_message_package
+        from module.download_stat import get_active_task_nodes
+        from module.prescan_workflow import PrescanPackage
+        from module.task_state import FileStatus, TaskStateStore
+
+        outcome_by_message = {
+            1: FileStatus.DOWNLOADED,
+            2: FileStatus.UPLOAD_FAILED,
+            3: FileStatus.FAILED,
+            4: FileStatus.SKIPPED,
+            5: FileStatus.SKIPPED,
+        }
+        packages = []
+        for message_id in range(1, 7):
+            message = MockMessage(
+                id=message_id,
+                media="video",
+                caption=f"Lesson {message_id}",
+                video=MockVideo(file_name=f"{message_id}.mp4", mime_type="video/mp4"),
+            )
+            plan = plan_message_package([message], message_id)
+            packages.append(
+                PrescanPackage(
+                    message_id,
+                    message.caption,
+                    message_id,
+                    message_id,
+                    plan.items,
+                    plan,
+                    [message],
+                )
+            )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            real_store = TaskStateStore(storage_path=Path(tmp_dir) / "tasks.sqlite3")
+            node = TaskNode(chat_id=-1001, bot=None, task_id="channel-batch-results")
+
+            async def fake_download_one(
+                messages,
+                _download_filter,
+                package_node,
+                failed_message_ids=None,
+                manage_parent_lifecycle=True,
+            ):
+                message_id = messages[0].id
+                if message_id == 6:
+                    package_node.stop_transmission()
+                    return
+                real_store.upsert_file(
+                    package_node.task_id,
+                    message_id,
+                    status=outcome_by_message[message_id],
+                )
+                if message_id == 4:
+                    package_node.skip_not_found_message_ids.add(message_id)
+                if message_id == 5:
+                    package_node.completed_file_skip_message_ids.add(message_id)
+
+            async def fake_report(*_args, **_kwargs):
+                return None
+
+            old_store = task_state_module._TASK_STORE
+            task_state_module._TASK_STORE = real_store
+            try:
+                with mock.patch.object(
+                    media_downloader,
+                    "download_prepared_messages",
+                    new=fake_download_one,
+                ), mock.patch(
+                    "module.pyrogram_extension.report_bot_status", new=fake_report
+                ):
+                    results = self.loop.run_until_complete(
+                        media_downloader.download_prescan_packages(
+                            packages,
+                            channel="Course",
+                            parent_node=node,
+                            selected_package_ids=set(range(1, 7)),
+                        )
+                    )
+            finally:
+                task_state_module._TASK_STORE = old_store
+                get_active_task_nodes().pop(node.task_id, None)
+
+            self.assertEqual(
+                [result.status for result in results],
+                [
+                    "completed",
+                    "upload_failed",
+                    "failed",
+                    "not_found",
+                    "completed",
+                    "cancelled",
+                ],
+            )
+            self.assertEqual(
+                results[4].message_results[5].status, "completed_file_skip"
+            )
+            self.assertEqual(results[5].message_results[6].status, "cancelled")
 
     @classmethod
     def tearDownClass(cls):

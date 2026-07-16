@@ -8,6 +8,7 @@ import logging
 import random
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
@@ -17,6 +18,7 @@ from module.channel_library_store import ChannelLibraryConfig, ChannelLibrarySto
 from module.channel_library_workflow import ChannelPackageIndexer, extract_media_row
 from module.comment_workflow import build_message_package_workflow_request
 from module.telegram_activity import get_telegram_activity_gate
+from module.task_state import FileStatus, TaskStatus, get_task_store
 
 
 LOGGER = logging.getLogger(__name__)
@@ -58,6 +60,7 @@ class ChannelLibraryService:
         config: ChannelLibraryConfig,
         sleep: Callable[[float], Any] = asyncio.sleep,
         random_uniform: Callable[[float, float], float] = random.uniform,
+        task_store: Optional[Any] = None,
     ) -> None:
         self.app = app
         self.client = client
@@ -65,6 +68,7 @@ class ChannelLibraryService:
         self.config = config
         self.sleep = sleep
         self.random_uniform = random_uniform
+        self.task_store = task_store or get_task_store()
         self.indexer = ChannelPackageIndexer()
         self.gate = get_telegram_activity_gate()
         self.owner_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -90,6 +94,8 @@ class ChannelLibraryService:
             self.owner_loop = loop
             self.store.initialize()
             self.store.recover_interrupted_jobs()
+            self.dispatch_pending_batches()
+            self.reconcile_download_batches()
             self._wake_event = asyncio.Event()
             self._telegram_request_finished = asyncio.Event()
             self._telegram_request_finished.set()
@@ -142,6 +148,282 @@ class ChannelLibraryService:
 
         if self._wake_event is not None:
             self._wake_event.set()
+
+    def create_download_batch(
+        self,
+        library_id: int,
+        idempotency_key: str,
+        redownload: bool = False,
+    ) -> dict:
+        """Commit a channel snapshot before idempotently creating its Web task."""
+
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("Idempotency key is required")
+        deterministic_uuid = uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"telegram-media-downloader:channel-library:{library_id}:{key}",
+        )
+        batch = self.store.create_download_batch(
+            library_id,
+            key,
+            f"channel-batch-{deterministic_uuid}",
+            allow_redownload=redownload,
+        )
+        return self._dispatch_download_batch_task(batch)
+
+    def dispatch_pending_batches(self) -> list[dict]:
+        """Replay committed outbox rows into the persistent Web task store."""
+
+        return [
+            self._dispatch_download_batch_task(batch)
+            for batch in self.store.list_pending_download_batches()
+        ]
+
+    def _dispatch_download_batch_task(self, batch: dict) -> dict:
+        library = self.store.get_library(int(batch["library_id"]))
+        if library is None:
+            raise KeyError(f"Channel library {batch['library_id']} does not exist")
+        total_count = sum(len(package["items"]) for package in batch["packages"])
+        self.task_store.ensure_task(
+            batch["task_id"],
+            source="web",
+            task_type="channel_library",
+            chat_id=int(library["chat_id"]),
+            title=f"{library['title']} / {len(batch['packages'])} packages",
+            status=TaskStatus.QUEUED,
+            total_count=total_count,
+        )
+        return self.store.mark_download_batch_dispatched(int(batch["id"]))
+
+    def reconcile_download_batches(self) -> list[dict]:
+        """Repair unfinished package summaries from durable Web task evidence."""
+
+        reconciled: list[dict] = []
+        for batch in self.store.list_download_batches():
+            if batch["dispatch_status"] != "dispatched" or batch["status"] not in {
+                "queued",
+                "downloading",
+            }:
+                continue
+            task = self.task_store.get_task(batch["task_id"])
+            if task is not None and task.status not in {
+                TaskStatus.COMPLETED,
+                TaskStatus.COMPLETED_WITH_ERRORS,
+                TaskStatus.CANCELLED,
+                TaskStatus.FAILED,
+            }:
+                continue
+            for package in batch["packages"]:
+                if package["status"] not in {"queued", "downloading"}:
+                    continue
+                status = "failed"
+                error = "Web task missing during reconciliation"
+                if task is not None and task.status == TaskStatus.CANCELLED:
+                    status = "cancelled"
+                    error = "Web task was cancelled"
+                elif task is not None and task.status == TaskStatus.COMPLETED:
+                    item_files = [
+                        task.files.get(str(item["message_id"]))
+                        for item in package["items"]
+                    ]
+                    file_statuses = {
+                        item.status for item in item_files if item is not None
+                    }
+                    if len(item_files) == len(package["items"]) and all(
+                        item is not None
+                        and item.status in {FileStatus.DOWNLOADED, FileStatus.UPLOADED}
+                        for item in item_files
+                    ):
+                        status = "completed"
+                        error = None
+                    elif FileStatus.UPLOAD_FAILED in file_statuses:
+                        status = "upload_failed"
+                        error = "A package file upload failed"
+                    else:
+                        error = "Package completion could not be proven"
+                elif task is not None:
+                    error = task.error or f"Web task ended as {task.status}"
+                self.store.finish_download_batch_package(
+                    int(batch["id"]),
+                    int(package["package_id"]),
+                    status,
+                    last_error=error,
+                )
+            refreshed = self.store.get_download_batch(int(batch["id"]))
+            if refreshed is not None:
+                reconciled.append(refreshed)
+        return reconciled
+
+    async def run_download_batch(self, batch_id: int) -> list[Any]:
+        """Refetch and serially download one committed immutable batch snapshot."""
+
+        from media_downloader import download_prescan_packages
+        from module.app import TaskNode
+        from module.comment_workflow import (
+            MessagePackagePlan,
+            PackageMediaItem,
+            build_size_summary,
+            summarize_comments,
+        )
+        from module.prescan_workflow import PrescanPackage
+
+        batch = self.store.get_download_batch(batch_id)
+        if batch is None:
+            raise KeyError(f"Download batch {batch_id} does not exist")
+        library = self.store.get_library(int(batch["library_id"]))
+        if library is None:
+            raise KeyError(f"Channel library {batch['library_id']} does not exist")
+        packages = []
+        attempt_packages = {}
+        for package_snapshot in batch["packages"]:
+            if package_snapshot["status"] not in {"queued", "downloading"}:
+                continue
+            message_ids = [
+                int(item["message_id"]) for item in package_snapshot["items"]
+            ]
+            fetch_error = None
+            try:
+                async with self.gate.download_permit():
+                    raw_messages = await self.client.get_messages(
+                        int(library["chat_id"]), message_ids
+                    )
+            except Exception as error:
+                raw_messages = []
+                fetch_error = str(error)
+            found_by_id = {
+                int(message.id): message
+                for message in normalize_messages(raw_messages)
+                if message is not None and getattr(message, "id", None) is not None
+            }
+            media_items = []
+            failed_message_ids = []
+            for item_snapshot in package_snapshot["items"]:
+                message_id = int(item_snapshot["message_id"])
+                message = found_by_id.get(message_id)
+                if message is None or getattr(message, "empty", False):
+                    failed_message_ids.append(message_id)
+                    continue
+                media_items.append(
+                    PackageMediaItem(
+                        message=message,
+                        media_type=item_snapshot["media_type"],
+                        caption_for_naming=item_snapshot["caption_for_naming"],
+                        original_caption=item_snapshot["original_caption"],
+                        inherited_caption=bool(item_snapshot["inherited_caption"]),
+                    )
+                )
+            messages = [item.message for item in media_items]
+            package_plan = MessagePackagePlan(
+                items=media_items,
+                package_title=package_snapshot["title"],
+                summary=summarize_comments(messages),
+                size_summary=build_size_summary(messages),
+            )
+            package = PrescanPackage(
+                package_id=int(package_snapshot["package_id"]),
+                title=package_snapshot["title"],
+                start_message_id=int(package_snapshot["start_message_id"]),
+                end_message_id=int(package_snapshot["end_message_id"]),
+                items=media_items,
+                package_plan=package_plan,
+                messages=messages,
+                failed_message_ids=failed_message_ids,
+            )
+            package.package_revision = int(package_snapshot["package_revision"])
+            package.attempt_id = f"{batch_id}:{package.package_id}"
+            package.not_found_message_ids = (
+                set(failed_message_ids) if fetch_error is None else set()
+            )
+            package.fetch_error = fetch_error
+            packages.append(package)
+            attempt_packages[package.attempt_id] = package.package_id
+
+        node = TaskNode(
+            chat_id=int(library["chat_id"]),
+            bot=None,
+            task_id=batch["task_id"],
+        )
+        node.client = self.client
+
+        async def on_package_started(attempt_id: Any, _package: Any) -> None:
+            self.store.mark_download_batch_package_started(
+                batch_id, attempt_packages[attempt_id]
+            )
+
+        async def on_package_finished(
+            attempt_id: Any, message_results: dict[int, Any]
+        ) -> None:
+            statuses = {result.status for result in message_results.values()}
+            if statuses and statuses <= {"completed", "completed_file_skip"}:
+                status = "completed"
+            elif "upload_failed" in statuses:
+                status = "upload_failed"
+            elif "not_found" in statuses:
+                status = "not_found"
+            elif "failed" in statuses:
+                status = "failed"
+            elif "cancelled" in statuses:
+                status = "cancelled"
+            else:
+                status = "failed"
+            errors = [result.error for result in message_results.values() if result.error]
+            self.store.finish_download_batch_package(
+                batch_id,
+                attempt_packages[attempt_id],
+                status,
+                last_error="; ".join(errors) or None,
+            )
+
+        try:
+            results = await download_prescan_packages(
+                packages,
+                channel=library["title"],
+                parent_node=node,
+                selected_package_ids={package.package_id for package in packages},
+                on_package_started=on_package_started,
+                on_package_finished=on_package_finished,
+            )
+        except asyncio.CancelledError:
+            for package in self.store.get_download_batch(batch_id)["packages"]:
+                if package["status"] in {"queued", "downloading"}:
+                    self.store.finish_download_batch_package(
+                        batch_id,
+                        int(package["package_id"]),
+                        "cancelled",
+                        last_error="Batch download was cancelled",
+                    )
+            self.task_store.update_task(batch["task_id"], status=TaskStatus.CANCELLED)
+            raise
+        except Exception as error:
+            for package in self.store.get_download_batch(batch_id)["packages"]:
+                if package["status"] in {"queued", "downloading"}:
+                    self.store.finish_download_batch_package(
+                        batch_id,
+                        int(package["package_id"]),
+                        "failed",
+                        last_error=str(error),
+                    )
+            self.task_store.update_task(
+                batch["task_id"], status=TaskStatus.FAILED, error=str(error)
+            )
+            raise
+        completed_package_ids = {result.package_id for result in results}
+        remaining_status = "cancelled" if node.is_stop_transmission else "failed"
+        for package in packages:
+            if package.package_id in completed_package_ids:
+                continue
+            self.store.finish_download_batch_package(
+                batch_id,
+                package.package_id,
+                remaining_status,
+                last_error=(
+                    "Parent task was cancelled"
+                    if remaining_status == "cancelled"
+                    else "Package did not produce a terminal result"
+                ),
+            )
+        return results
 
     def _wake_threadsafe(self) -> None:
         if self.owner_loop is None or self._wake_event is None:

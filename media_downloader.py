@@ -9,7 +9,18 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import (
+    AbstractSet,
+    Any,
+    Callable,
+    Dict,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -83,6 +94,40 @@ class PrescanScanResult:
     prescan_plan: Any
     messages: list
     failed_message_ids: list
+
+
+@dataclass(frozen=True)
+class PackageMessageResult:
+    """Terminal result for one message in one package."""
+
+    message_id: int
+    status: str
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class PackageDownloadResult:
+    """Package-scoped result independent of parent task counters."""
+
+    attempt_id: Any
+    package_id: int
+    status: str
+    expected_message_ids: tuple[int, ...]
+    message_results: dict[int, PackageMessageResult]
+
+
+PackageStartedCallback = Callable[[Any, Any], Any]
+PackageFinishedCallback = Callable[[Any, dict[int, PackageMessageResult]], Any]
+
+
+def _record_message_marker(node: TaskNode, attribute: str, message_id: Any) -> None:
+    if not isinstance(message_id, int):
+        return
+    values = getattr(node, attribute, None)
+    if not isinstance(values, set):
+        values = set()
+        setattr(node, attribute, values)
+    values.add(message_id)
 
 
 def _comment_thread_reference_ids(comment) -> List[int]:
@@ -1043,18 +1088,21 @@ async def download_media(
             message_id = getattr(message, "id", "N/A") if message else "N/A"
             logger.info(f"Message[{message_id}]: message不存在或为空，跳过下载")
             node.skip_not_found_download_task += 1
+            _record_message_marker(node, "skip_not_found_message_ids", message_id)
             return DownloadStatus.SkipDownload, None
     except pyrogram.errors.BadRequest as e:
         # message不存在/不可见/不属于thread等情况
         message_id = getattr(message, "id", "N/A")
         logger.info(f"Message[{message_id}]: 无法获取message (BadRequest: {e})，跳过下载")
         node.skip_not_found_download_task += 1
+        _record_message_marker(node, "skip_not_found_message_ids", message_id)
         return DownloadStatus.SkipDownload, None
     except pyrogram.errors.NotFound as e:
         # message不存在
         message_id = getattr(message, "id", "N/A")
         logger.info(f"Message[{message_id}]: message不存在 (NotFound: {e})，跳过下载")
         node.skip_not_found_download_task += 1
+        _record_message_marker(node, "skip_not_found_message_ids", message_id)
         return DownloadStatus.SkipDownload, None
     except Exception as e:
         # 其他获取message的错误，也归为skip_not_found
@@ -1063,6 +1111,7 @@ async def download_media(
             f"Message[{message_id}]: 获取message失败 ({type(e).__name__}: {e})，跳过下载"
         )
         node.skip_not_found_download_task += 1
+        _record_message_marker(node, "skip_not_found_message_ids", message_id)
         return DownloadStatus.SkipDownload, None
 
     try:
@@ -1086,6 +1135,9 @@ async def download_media(
                         logger.info(
                             f"id={message.id} {ui_file_name} "
                             f"{_t('already download,download skipped')}.\n"
+                        )
+                        _record_message_marker(
+                            node, "completed_file_skip_message_ids", message.id
                         )
                         return DownloadStatus.SkipDownload, None
                     else:
@@ -1161,6 +1213,9 @@ async def download_media(
                     else:
                         logger.info(
                             f"Message[{message_id}] file exists and size is correct, no need to remove: {file_name}"
+                        )
+                        _record_message_marker(
+                            node, "completed_file_skip_message_ids", message_id
                         )
                         return DownloadStatus.SkipDownload, None  # 文件已存在且完整，跳过下载
                 else:
@@ -2066,6 +2121,7 @@ async def download_prepared_messages(
     download_filter,
     node,
     failed_message_ids=None,
+    manage_parent_lifecycle: bool = True,
 ):
     """Download already-scanned ordinary package media and preserve scan failures."""
     from module.comment_workflow import PackageMediaItem, filter_media_comments
@@ -2240,19 +2296,104 @@ async def download_prepared_messages(
             f"跳过: {node.skip_download_task}"
         )
     finally:
-        remove_active_task_node(node.task_id)
+        if manage_parent_lifecycle and not getattr(
+            node, "prescan_batch_in_progress", False
+        ):
+            remove_active_task_node(node.task_id)
+
+
+async def _maybe_await(value: Any) -> Any:
+    if hasattr(value, "__await__"):
+        return await value
+    return value
+
+
+def _package_download_result(package: Any, parent_node: TaskNode) -> PackageDownloadResult:
+    expected_ids = tuple(
+        dict.fromkeys(
+            [
+                int(item.message.id)
+                for item in package.items
+                if getattr(getattr(item, "message", None), "id", None) is not None
+            ]
+            + [int(message_id) for message_id in package.failed_message_ids]
+        )
+    )
+    task = get_task_store().get_task(parent_node.task_id)
+    files = task.files if task is not None else {}
+    not_found_ids = set(
+        getattr(parent_node, "skip_not_found_message_ids", set()) or set()
+    ) | set(getattr(package, "not_found_message_ids", set()) or set())
+    completed_skip_ids = set(
+        getattr(parent_node, "completed_file_skip_message_ids", set()) or set()
+    )
+    message_results: dict[int, PackageMessageResult] = {}
+
+    for message_id in expected_ids:
+        file_snapshot = files.get(str(message_id))
+        if message_id in not_found_ids:
+            status = "not_found"
+        elif message_id in completed_skip_ids:
+            status = "completed_file_skip"
+        elif file_snapshot is not None and file_snapshot.status == FileStatus.UPLOAD_FAILED:
+            status = "upload_failed"
+        elif file_snapshot is not None and file_snapshot.status == FileStatus.FAILED:
+            status = "failed"
+        elif file_snapshot is not None and file_snapshot.status in {
+            FileStatus.DOWNLOADED,
+            FileStatus.UPLOADED,
+        }:
+            status = "completed"
+        elif parent_node.is_stop_transmission:
+            status = "cancelled"
+        else:
+            status = "failed"
+        message_results[message_id] = PackageMessageResult(
+            message_id=message_id,
+            status=status,
+            error=(file_snapshot.error if file_snapshot is not None else ""),
+        )
+
+    statuses = {result.status for result in message_results.values()}
+    if statuses and statuses <= {"completed", "completed_file_skip"}:
+        package_status = "completed"
+    elif "upload_failed" in statuses:
+        package_status = "upload_failed"
+    elif "not_found" in statuses:
+        package_status = "not_found"
+    elif "failed" in statuses:
+        package_status = "failed"
+    elif "cancelled" in statuses or parent_node.is_stop_transmission:
+        package_status = "cancelled"
+    else:
+        package_status = "failed"
+
+    return PackageDownloadResult(
+        attempt_id=getattr(package, "attempt_id", package.package_id),
+        package_id=int(package.package_id),
+        status=package_status,
+        expected_message_ids=expected_ids,
+        message_results=message_results,
+    )
 
 
 async def download_prescan_packages(
-    packages,
+    packages: Sequence[Any],
     channel: str,
-    parent_node,
-    selected_package_ids,
-):
+    parent_node: TaskNode,
+    selected_package_ids: AbstractSet[int],
+    on_package_started: Optional[PackageStartedCallback] = None,
+    on_package_finished: Optional[PackageFinishedCallback] = None,
+    manage_parent_lifecycle: bool = True,
+) -> list[PackageDownloadResult]:
     """Download selected prescan packages one by one using recommended naming."""
 
     from module.comment_workflow import NamingStrategy, PackageNamingContext
-    from module.download_stat import add_active_task_node
+    from module.download_stat import (
+        add_active_task_node,
+        get_active_task_nodes,
+        remove_active_task_node,
+    )
     from module.pyrogram_extension import report_bot_status
 
     selected_ids = set(selected_package_ids)
@@ -2262,9 +2403,23 @@ async def download_prescan_packages(
         if package.package_id in selected_ids
     ]
     parent_node.prescan_batch_in_progress = True
+    if not isinstance(
+        getattr(parent_node, "skip_not_found_message_ids", None), set
+    ):
+        parent_node.skip_not_found_message_ids = set()
+    if not isinstance(
+        getattr(parent_node, "completed_file_skip_message_ids", None), set
+    ):
+        parent_node.completed_file_skip_message_ids = set()
+    results: list[PackageDownloadResult] = []
     try:
         if not parent_node.is_stop_transmission:
             parent_node.is_running = True
+        if (
+            manage_parent_lifecycle
+            and parent_node.task_id not in get_active_task_nodes()
+        ):
+            add_active_task_node(parent_node)
 
         for index, package in enumerate(ordered_packages, start=1):
             if not parent_node.is_running or parent_node.is_stop_transmission:
@@ -2287,16 +2442,30 @@ async def download_prescan_packages(
                 f"批量下载中：包 {index}/{len(ordered_packages)} "
                 f"{package.start_message_id}-{package.end_message_id} {package.title}"
             )
-            add_active_task_node(parent_node)
+            attempt_id = getattr(package, "attempt_id", package.package_id)
+            if on_package_started is not None:
+                await _maybe_await(on_package_started(attempt_id, package))
             await download_prepared_messages(
                 package.messages,
                 None,
                 parent_node,
                 failed_message_ids=list(package.failed_message_ids),
             )
+            result = _package_download_result(package, parent_node)
+            results.append(result)
+            if on_package_finished is not None:
+                await _maybe_await(
+                    on_package_finished(attempt_id, result.message_results)
+                )
     finally:
         parent_node.prescan_batch_in_progress = False
         await report_bot_status(parent_node.bot, parent_node, immediate_reply=True)
+        if (
+            manage_parent_lifecycle
+            and parent_node.task_id in get_active_task_nodes()
+        ):
+            remove_active_task_node(parent_node.task_id)
+    return results
 
 
 async def download_comments(
