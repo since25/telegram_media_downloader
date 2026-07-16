@@ -1299,3 +1299,94 @@ Changed files:
 
 Rollback:
 - Run `git revert "$(git rev-list -1 --all --grep='^test: verify full channel library workflow$')"`; preserve `channel_library.sqlite3` and `web_tasks.sqlite3` because reverting tests/docs must not delete persisted channel or task data.
+
+## 2026-07-16 - Task: Correct Task 11 acceptance evidence after review
+
+### What was done
+
+- Appended this correction after independent review; the earlier Task 11 entry remains unchanged.
+- Extended the 15,000-ID E2E to schedule the real `ChannelLibraryService.run_download_batch` path through the real `download_prescan_packages` serial loop, while replacing only bottom-level media IO and bot status reporting.
+- Separated 50-ID scan calls from package refetches, recorded package ranges/order/execution counts and active concurrency, and proved five ascending packages run once with `max_active == 1`, one process-local task, and completed package/batch/Web-task states.
+- Added an exact `(4.0, 6.0)` random-range spy assertion for all 299 no-wait delay calls, documented the 300-batch timing example and ID-range accounting, and added the `redownload_required` API error code.
+
+### Testing
+
+- Fixture RED: `../../.venv/bin/python -m pytest tests/test_channel_library_e2e.py -q` -> `1 failed in 1.02s`; the extracted fake message constructor referenced removed local variables, so the service correctly marked the scan failed. The test fixture was corrected without production changes.
+- Final E2E: `../../.venv/bin/python -m pytest tests/test_channel_library_e2e.py -q` -> `1 passed in 1.42s`.
+- Focused channel/downloader contracts: `../../.venv/bin/python -m pytest tests/test_channel_library_e2e.py tests/module/test_channel_library_store.py tests/module/test_channel_library_workflow.py tests/module/test_channel_library_service.py tests/module/test_channel_library_queries.py tests/test_channel_library_download.py tests/module/test_channel_library_web.py tests/module/test_telegram_activity.py tests/test_media_downloader.py -q` -> `265 passed in 25.62s`.
+- Full suite: `../../.venv/bin/python -m pytest tests/ -q` -> `475 passed, 1 skipped in 26.65s`.
+- `git diff --check` passed before this append and was rerun after all tracked edits.
+- Pylint was not rerun because Task 11 review requested the already recorded output be cited exactly. Original command and output, reproduced line for line:
+
+```text
+$ ../../.venv/bin/python -m pylint --errors-only module/channel_library_store.py module/channel_library_workflow.py module/channel_library_service.py module/telegram_activity.py module/web.py media_downloader.py
+************* Module /Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.worktrees/web-full-channel-library/pylintrc
+pylintrc:1: [W0012(unknown-option-value), ] Unknown option value for '--disable', expected a valid pylint message and got 'redefined-variable-type'
+pylintrc:1: [R0022(useless-option-value), ] Useless option value for '--disable', 'bad-continuation' was removed from pylint, see https://github.com/PyCQA/pylint/pull/3571.
+************* Module module.channel_library_store
+module/channel_library_store.py:611: [E1101(no-member), ChannelLibraryStore.initialize] Module 'os' has no 'chmod' member
+************* Module module.web
+module/web.py:156: [E1101(no-member), _web_auth_file_path] Module 'os' has no 'environ' member
+module/web.py:159: [E1101(no-member), _web_auth_file_path] Module 'os' has no 'path' member
+module/web.py:181: [E1101(no-member), _write_local_auth_file] Module 'os' has no 'open' member
+module/web.py:183: [E1101(no-member), _write_local_auth_file] Module 'os' has no 'O_WRONLY' member
+module/web.py:183: [E1101(no-member), _write_local_auth_file] Module 'os' has no 'O_CREAT' member
+module/web.py:183: [E1101(no-member), _write_local_auth_file] Module 'os' has no 'O_TRUNC' member
+module/web.py:186: [E1101(no-member), _write_local_auth_file] Module 'os' has no 'fdopen' member
+module/web.py:1021: [E1101(no-member), get_download_list] Module 'os' has no 'path' member
+************* Module media_downloader
+media_downloader.py:301: [E1101(no-member), _check_download_finish] Module 'os' has no 'path' member
+media_downloader.py:312: [E1101(no-member), _check_download_finish] Module 'os' has no 'remove' member
+media_downloader.py:332: [E1101(no-member), _move_to_download_path] Module 'os' has no 'path' member
+media_downloader.py:333: [E1101(no-member), _move_to_download_path] Module 'os' has no 'makedirs' member
+media_downloader.py:395: [E1101(no-member), _is_exist] Module 'os' has no 'path' member
+media_downloader.py:395: [E1101(no-member), _is_exist] Module 'os' has no 'path' member
+media_downloader.py:459: [E1101(no-member), _get_media_meta] Module 'os' has no 'path' member
+media_downloader.py:461: [E1101(no-member), _get_media_meta] Module 'os' has no 'path' member
+media_downloader.py:473: [E1101(no-member), _get_media_meta] Module 'os' has no 'path' member
+media_downloader.py:473: [E1101(no-member), _get_media_meta] Module 'os' has no 'path' member
+media_downloader.py:474: [E1101(no-member), _get_media_meta] Module 'os' has no 'path' member
+media_downloader.py:585: [E1101(no-member), _get_media_meta] Module 'os' has no 'path' member
+media_downloader.py:587: [E1101(no-member), _get_media_meta] Module 'os' has no 'path' member
+media_downloader.py:722: [E1101(no-member), save_msg_to_file] Module 'os' has no 'path' member
+media_downloader.py:728: [E1101(no-member), save_msg_to_file] Module 'os' has no 'makedirs' member
+media_downloader.py:728: [E1101(no-member), save_msg_to_file] Module 'os' has no 'path' member
+media_downloader.py:832: [E1101(no-member), download_task] Module 'os' has no 'path' member
+media_downloader.py:833: [E1101(no-member), download_task] Module 'os' has no 'path' member
+media_downloader.py:867: [E1101(no-member), download_task] Module 'os' has no 'path' member
+media_downloader.py:1109: [E1101(no-member), download_media] Module 'pyrogram.errors' has no 'NotFound' member
+media_downloader.py:1138: [E1101(no-member), download_media] Module 'os' has no 'path' member
+media_downloader.py:1204: [E1101(no-member), download_media] Module 'os' has no 'path' member
+media_downloader.py:1208: [E1101(no-member), download_media] Module 'os' has no 'remove' member
+media_downloader.py:1215: [E1101(no-member), download_media] Module 'os' has no 'path' member
+media_downloader.py:1216: [E1101(no-member), download_media] Module 'os' has no 'path' member
+media_downloader.py:1221: [E1101(no-member), download_media] Module 'os' has no 'remove' member
+media_downloader.py:1388: [E1101(no-member), _check_config] Module 'os' has no 'path' member
+media_downloader.py:2952: [E0602(undefined-variable), main._init_baseline] Undefined variable 'STARTUP_SCAN_WINDOW_SEC'
+```
+
+- Pylint summary: exit 14; the command did not pass. Task 11 changes no production Python.
+- Mypy was not rerun because Task 11 review requested the already recorded output be cited exactly. Original command and output, reproduced line for line:
+
+```text
+$ ../../.venv/bin/python -m mypy module/channel_library_store.py module/channel_library_workflow.py module/channel_library_service.py module/telegram_activity.py
+module/web.py:17: error: Skipping analyzing "psutil": module is installed, but missing library stubs or py.typed marker
+module/web.py:17: note: See https://mypy.readthedocs.io/en/stable/running_mypy.html#missing-imports
+module/web.py:19: error: Skipping analyzing "flask_login": module is installed, but missing library stubs or py.typed marker
+module/filter.py:7: error: Skipping analyzing "ply": module is installed, but missing library stubs or py.typed marker
+/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/lib/python3.11/site-packages/markupsafe/_speedups.pyi:1: error: Positional-only parameters are only supported in Python 3.8 and greater
+Found 4 errors in 3 files (errors prevented further checking)
+```
+
+- Mypy summary: exit 2; four errors in three files prevented further checking, so the command did not pass.
+
+### Notes
+
+Changed files:
+- `tests/test_channel_library_e2e.py`: Exercised the real serial package download path and strengthened pacing/idempotent scheduling assertions.
+- `README_CN.md`: Corrected ID-range timing guidance with the 15,000-ID example and delay caveats.
+- `docs/web-control-console.md`: Corrected operational timing/accounting and documented `redownload_required`.
+- `progress.md`: Appended this review correction and exact prior static-check output.
+
+Rollback:
+- Run `git revert "$(git rev-list -1 --all --grep='^fix: complete channel library acceptance evidence$')"`; preserve both SQLite databases because the review fix changes only tests and documentation.

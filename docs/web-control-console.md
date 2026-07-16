@@ -24,7 +24,7 @@ Confirming a prescan keeps its package list in Web state instead of discarding i
 
 Open the Channel Library tab after login and submit any accessible message link from a channel or supergroup. The link identifies the conversation; the initial scan snapshots the latest visible message ID and indexes the complete visible ID range. Submitting another link for the same Telegram `chat_id` opens the existing library and its persisted checkpoint.
 
-The initial full scan requests 50 consecutive message IDs per batch and waits a randomized 4-6 seconds between successful batches. Deleted or unavailable IDs are normal gaps, so elapsed time follows the highest snapshotted ID rather than the number of visible messages. Incremental and repair scans also use 50-ID batches with 1-2 second delays. These are validated server settings loaded from `config.yaml`; changing them requires a restart.
+The initial full scan requests 50 consecutive message IDs per batch and waits a randomized 4-6 seconds between successful batches. Work is charged by the snapshotted ID range, not by visible-message count; deleted or unavailable gaps do not reduce the number of batches. A 15,000-ID range is exactly 300 batches and 299 inter-batch delays, so delay alone is theoretically 19 minutes 56 seconds to 29 minutes 54 seconds (about 20-30 minutes). This is not a completion promise: Telegram API latency, FloodWait, transient retries, automatic download priority, and user pause all extend elapsed time. Incremental and repair scans also use 50-ID batches with 1-2 second delays. These are validated server settings loaded from `config.yaml`; changing them requires a restart.
 
 The scheduler runs one channel scan at a time. A queued or active Telegram media download takes priority: the current scan finishes its API call, moves to `auto_paused_download` at the batch boundary, and returns to the queue when Telegram download activity is idle. Upload-only work does not hold the Telegram activity gate. User pause and stop also take effect at a committed batch boundary, preserving metadata and the next-message checkpoint.
 
@@ -49,7 +49,7 @@ Duplicate protection applies at three levels: channel links deduplicate by Teleg
 
 The channel library uses the existing Web login session. Call `GET /api/csrf-token` after login and send its `csrf_token` value in `X-CSRF-Token` on every mutating channel-library request. The token is bound to that browser session. Only this authenticated GET mints a token; missing, wrong, and cross-session mutation attempts return `403` without creating or rotating session state. Read and write channel routes return `503 service_unavailable` until Telegram has started and the single channel-library service is running.
 
-Errors use one JSON envelope: `{"error_code": "<stable_code>", "message": "<safe summary>"}`. Supported status classes are `400 invalid_request` or `invalid_link`, `403 csrf_failed`, `404 not_found`, `409 state_conflict`, and `503 service_unavailable` or `service_timeout`. Raw exceptions, Telegram session details, tokens, and configuration secrets are not returned.
+Errors use one JSON envelope: `{"error_code": "<stable_code>", "message": "<safe summary>"}`. Supported status classes are `400 invalid_request` or `invalid_link`, `403 csrf_failed`, `404 not_found`, `409 state_conflict` or `redownload_required`, and `503 service_unavailable` or `service_timeout`. Raw exceptions, Telegram session details, tokens, and configuration secrets are not returned.
 
 Channel and scan routes:
 
