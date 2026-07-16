@@ -854,3 +854,35 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^feat: add recoverable low-rate channel scans$')"` 回滚 Task 5 全部改动。
+
+## 2026-07-16 - Task: Harden Channel Scan Recovery Invariants
+
+### What was done
+
+- 增加按 canonical SQLite 路径加锁的进程内 service owner guard，在恢复前拒绝第二个 live service，并在 scheduler 正常、异常或取消停止的 finally 中释放所有权。
+- 将普通重试改为消费持久化 `retry_count` 的剩余 `[5, 15, 45]` 预算；成功批或耗尽后跳过批在 checkpoint 同事务中归零，FloodWait 保持独立且不计数。
+- 新增 library 与首次 full job 的单事务创建/去重，重复提交返回既有 job，legacy `new` 无 job 记录在同事务修复，job insert 失败回滚新 library。
+- 增加 v1 无 `control_requested` 数据库到 schema v2 的双次初始化迁移证据，验证既有 library/job 行保留且版本记录不重复。
+
+### Testing
+
+- RED ownership：同路径第二个 service 未拒绝启动，`1 failed in 0.72s`；修复后 `1 passed in 0.57s`。
+- RED durable retry：恢复后从 5 秒重新开始、重复重启重复消费首档且成功后计数不清零，`4 failed in 0.76s`；修复后 `4 passed in 0.62s`。
+- RED atomic creation：缺少 library+initial-job 单事务 API，`3 failed in 0.08s`；修复后连同迁移证据 `4 passed in 0.03s`。
+- Migration evidence：v1→v2 幂等迁移测试首跑即通过，`1 passed in 0.04s`，确认是测试缺口而非新增实现缺陷。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_service.py tests/module/test_channel_library_store.py tests/module/test_channel_library_workflow.py tests/module/test_telegram_activity.py -q`：`83 passed in 1.00s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`319 passed, 1 skipped in 24.12s`。
+- `py_compile` 与 `git diff --check`：通过；新 service 无 mypy 诊断，依赖模块仍有既存 24 条基线错误。
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`: 增加同路径 live service ownership，并从持久化计数恢复剩余重试预算，解析提交改用原子 store API。
+- `module/channel_library_store.py`: 增加 library+initial-job 单事务创建/去重/孤儿修复，并在 fetched checkpoint 事务内归零 retry_count。
+- `tests/module/test_channel_library_service.py`: 覆盖双 service 互斥与释放、跨重启剩余预算、重复重启上限、成功后新批预算和 duplicate job 返回。
+- `tests/module/test_channel_library_store.py`: 覆盖原子创建回滚、重复/孤儿修复、retry reset 事务性及 v1→v2 双初始化迁移。
+- `.superpowers/sdd/task-5-report.md`: 追加 review RED/GREEN、ownership、retry、atomicity 和 migration 审计。
+- `progress.md`: 追加本次 review 修复、验证和回滚记录。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: harden channel scan recovery invariants$')"` 回滚本次 review 修复。

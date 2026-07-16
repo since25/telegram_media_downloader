@@ -6,6 +6,7 @@ import pytest
 
 from module.channel_library_store import (
     ALLOWED_SCAN_TRANSITIONS,
+    SCHEMA_VERSION,
     ChannelLibraryStore,
 )
 
@@ -122,6 +123,52 @@ def test_store_initializes_secure_wal_schema(tmp_path):
     assert REQUIRED_TABLES <= tables
 
 
+def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
+    path = tmp_path / "channel_library.sqlite3"
+    store = ChannelLibraryStore(path)
+    store.initialize()
+    library = make_library(store)
+    job = store.create_scan_job(library["id"], "full", 1, 100, now=2.0)
+    with store.connect() as connection:
+        connection.execute(
+            "ALTER TABLE channel_scan_jobs DROP COLUMN control_requested"
+        )
+        connection.execute("DELETE FROM schema_meta")
+        connection.execute(
+            "INSERT INTO schema_meta (version, applied_at) VALUES (1, 1.0)"
+        )
+
+    migrated = ChannelLibraryStore(path)
+    migrated.initialize()
+    migrated.initialize()
+
+    with migrated.connect() as connection:
+        versions = [
+            row[0]
+            for row in connection.execute(
+                "SELECT version FROM schema_meta ORDER BY version"
+            )
+        ]
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(channel_scan_jobs)")
+        }
+        library_count = connection.execute(
+            "SELECT COUNT(*) FROM channel_libraries WHERE id = ?",
+            (library["id"],),
+        ).fetchone()[0]
+        job_count = connection.execute(
+            "SELECT COUNT(*) FROM channel_scan_jobs WHERE id = ?",
+            (job["id"],),
+        ).fetchone()[0]
+
+    assert SCHEMA_VERSION == 2
+    assert versions == [1, 2]
+    assert "control_requested" in columns
+    assert library_count == 1
+    assert job_count == 1
+
+
 def test_library_is_unique_by_chat_id(tmp_path):
     store = ChannelLibraryStore(tmp_path / "library.sqlite3")
     store.initialize()
@@ -133,6 +180,87 @@ def test_library_is_unique_by_chat_id(tmp_path):
     )
     assert created is True and created_again is False
     assert second["id"] == first["id"] and second["title"] == "Renamed"
+
+
+def test_atomic_library_creation_rolls_back_when_initial_job_insert_fails(
+    store, monkeypatch
+):
+    def fail_job_insert(*_args, **_kwargs):
+        raise sqlite3.OperationalError("job insert failed")
+
+    monkeypatch.setattr(store, "_insert_scan_job", fail_job_insert)
+
+    with pytest.raises(sqlite3.OperationalError, match="job insert failed"):
+        store.create_or_get_library_with_full_job(
+            -2001,
+            "channel",
+            "atomic",
+            "Atomic",
+            "https://t.me/atomic/1",
+            80,
+        )
+
+    with store.connect() as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM channel_libraries WHERE chat_id = -2001"
+        ).fetchone()[0] == 0
+
+
+def test_atomic_library_creation_returns_existing_job_without_replacing_snapshot(store):
+    first_library, first_job, first_created = (
+        store.create_or_get_library_with_full_job(
+            -2001,
+            "channel",
+            "atomic",
+            "Atomic",
+            "https://t.me/atomic/1",
+            80,
+            now=1.0,
+        )
+    )
+
+    library, job, created = store.create_or_get_library_with_full_job(
+        -2001,
+        "channel",
+        "atomic",
+        "Renamed",
+        "https://t.me/atomic/2",
+        120,
+        now=2.0,
+    )
+
+    assert first_created is True and created is False
+    assert library["id"] == first_library["id"]
+    assert library["title"] == "Renamed"
+    assert job["id"] == first_job["id"]
+    assert job["snapshot_max_message_id"] == 80
+
+
+def test_atomic_library_creation_repairs_legacy_new_library_without_job(store):
+    orphan, created = store.create_or_get_library(
+        -2001,
+        "channel",
+        "orphan",
+        "Orphan",
+        "https://t.me/orphan/1",
+    )
+    assert created is True and orphan["status"] == "new"
+
+    library, job, library_created = store.create_or_get_library_with_full_job(
+        -2001,
+        "channel",
+        "orphan",
+        "Orphan",
+        "https://t.me/orphan/2",
+        90,
+        now=2.0,
+    )
+
+    assert library_created is False
+    assert library["id"] == orphan["id"]
+    assert library["status"] == "indexing"
+    assert job["library_id"] == orphan["id"]
+    assert job["snapshot_max_message_id"] == 90
 
 
 def test_repair_target_enforces_library_ownership(tmp_path):
@@ -349,6 +477,7 @@ def test_incremental_job_requires_finished_full_scan(store):
 def test_fetched_batch_and_checkpoint_commit_together(store):
     job = make_full_job(store, snapshot_max_id=100)
     store.transition_job(job["id"], "running", now=1.0)
+    store.record_job_retry(job["id"], "temporary failure", now=1.5)
 
     store.commit_fetched_batch(job["id"], [media_row(50)], end_id=50)
 
@@ -356,12 +485,14 @@ def test_fetched_batch_and_checkpoint_commit_together(store):
     assert current["fetched_through_message_id"] == 50
     assert current["indexed_through_message_id"] == 0
     assert current["next_message_id"] == 51
+    assert current["retry_count"] == 0
     assert store.get_media(job["library_id"], 50) is not None
 
 
 def test_fetched_batch_rolls_back_media_when_checkpoint_fails(store):
     job = make_full_job(store, snapshot_max_id=100)
     store.transition_job(job["id"], "running", now=1.0)
+    store.record_job_retry(job["id"], "temporary failure", now=1.5)
     with store.connect() as connection:
         connection.execute(
             """
@@ -377,7 +508,9 @@ def test_fetched_batch_rolls_back_media_when_checkpoint_fails(store):
     with pytest.raises(sqlite3.IntegrityError, match="checkpoint update blocked"):
         store.commit_fetched_batch(job["id"], [media_row(50)], end_id=50)
 
-    assert store.get_job(job["id"])["fetched_through_message_id"] == 0
+    current = store.get_job(job["id"])
+    assert current["fetched_through_message_id"] == 0
+    assert current["retry_count"] == 1
     assert store.get_library(job["library_id"])["fetched_through_message_id"] == 0
     assert store.get_media(job["library_id"], 50) is None
 

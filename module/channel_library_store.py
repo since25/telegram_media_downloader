@@ -475,6 +475,86 @@ class ChannelLibraryStore:
             ).fetchone()
         return dict(row), created
 
+    def create_or_get_library_with_full_job(
+        self,
+        chat_id: int,
+        chat_type: str,
+        username: Optional[str],
+        title: str,
+        source_link: str,
+        snapshot_max_message_id: int,
+        now: Optional[float] = None,
+    ) -> tuple[dict, dict, bool]:
+        """Atomically create/deduplicate a library and its initial full job."""
+
+        if snapshot_max_message_id < 0:
+            raise ValueError("Invalid scan message range")
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                """
+                INSERT INTO channel_libraries (
+                    chat_id, chat_type, username, title, source_link,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id) DO NOTHING
+                """,
+                (chat_id, chat_type, username, title, source_link, now, now),
+            )
+            created = cursor.rowcount == 1
+            if not created:
+                connection.execute(
+                    """
+                    UPDATE channel_libraries
+                    SET chat_type = ?, username = ?, title = ?, source_link = ?,
+                        updated_at = ?
+                    WHERE chat_id = ?
+                    """,
+                    (chat_type, username, title, source_link, now, chat_id),
+                )
+            library = connection.execute(
+                "SELECT * FROM channel_libraries WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+            job = connection.execute(
+                """
+                SELECT * FROM channel_scan_jobs
+                WHERE library_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (library["id"],),
+            ).fetchone()
+            if job is None:
+                if not created and library["status"] != "new":
+                    raise ValueError(
+                        f"Library {library['id']} has no initial scan job"
+                    )
+                job_id = self._insert_scan_job(
+                    connection,
+                    library,
+                    "full",
+                    1,
+                    snapshot_max_message_id,
+                    now,
+                )
+                connection.execute(
+                    """
+                    UPDATE channel_libraries
+                    SET status = 'indexing', updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now, library["id"]),
+                )
+                library = connection.execute(
+                    "SELECT * FROM channel_libraries WHERE id = ?",
+                    (library["id"],),
+                ).fetchone()
+                job = connection.execute(
+                    "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
+                ).fetchone()
+        return dict(library), dict(job), created
+
     def get_library(self, library_id: int) -> Optional[dict]:
         with self.connect() as connection:
             row = connection.execute(
@@ -1007,7 +1087,7 @@ class ChannelLibraryStore:
                     fetched_through_message_id = ?,
                     scanned_id_count = scanned_id_count + ?,
                     visible_message_count = MAX(visible_message_count, ?),
-                    media_count = ?, updated_at = ?
+                    media_count = ?, retry_count = 0, updated_at = ?
                 WHERE id = ?
                 """,
                 (

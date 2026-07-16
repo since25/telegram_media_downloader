@@ -38,6 +38,12 @@ class SleepRecorder:
         self.delays.append(delay)
 
 
+class InterruptingSleep(SleepRecorder):
+    async def __call__(self, delay):
+        await super().__call__(delay)
+        raise asyncio.CancelledError
+
+
 def fake_media(message_id, caption=None):
     video = SimpleNamespace(
         file_name=f"lesson-{message_id}.mp4",
@@ -95,7 +101,9 @@ class FakeClient:
         if self.on_request is not None:
             self.on_request()
         if self.failures:
-            raise self.failures.pop(0)
+            failure = self.failures.pop(0)
+            if failure is not None:
+                raise failure
         messages = [fake_media(message_id) for message_id in message_ids]
         return messages[0] if len(messages) == 1 else messages
 
@@ -255,7 +263,83 @@ async def test_transient_errors_retry_with_configured_delays(tmp_path):
     assert service.client.requested_ids == [list(range(1, 51))] * 4
     assert sleep.delays == [5.0, 15.0, 45.0]
     current = service.store.get_job(job["id"])
-    assert current["retry_count"] == 3
+    assert current["retry_count"] == 0
+    assert current["status"] == "completed"
+
+
+@async_test
+async def test_retry_resume_uses_only_remaining_persisted_delays(tmp_path):
+    service, library, sleep = make_service(tmp_path)
+    job = service.store.create_scan_job(library["id"], "full", 1, 50)
+    service.store.transition_job(job["id"], "running")
+    service.store.record_job_retry(job["id"], "interrupted first retry")
+    service.store.transition_job(job["id"], "queued")
+    service.client.failures = [
+        errors.InternalServerError(),
+        errors.InternalServerError(),
+    ]
+
+    await service._run_job(service.store.get_job(job["id"]))
+
+    assert service.client.requested_ids == [list(range(1, 51))] * 3
+    assert sleep.delays == [15.0, 45.0]
+    current = service.store.get_job(job["id"])
+    assert current["retry_count"] == 0
+    assert current["status"] == "completed"
+
+
+@async_test
+async def test_repeated_restarts_cannot_exceed_batch_retry_budget(tmp_path):
+    service, library, _sleep = make_service(tmp_path)
+    job = service.store.create_scan_job(library["id"], "full", 1, 50)
+    service.client.failures = [errors.InternalServerError()] * 4
+
+    for expected_count, expected_delay in [(1, 5.0), (2, 15.0), (3, 45.0)]:
+        interrupted_sleep = InterruptingSleep()
+        service.sleep = interrupted_sleep
+        with pytest.raises(asyncio.CancelledError):
+            await service._run_job(service.store.get_job(job["id"]))
+        current = service.store.get_job(job["id"])
+        assert current["status"] == "queued"
+        assert current["retry_count"] == expected_count
+        assert interrupted_sleep.delays == [expected_delay]
+
+    service.sleep = SleepRecorder()
+    await service._run_job(service.store.get_job(job["id"]))
+
+    current = service.store.get_job(job["id"])
+    assert len(service.client.requested_ids) == 4
+    assert current["status"] == "partial"
+    assert current["retry_count"] == 0
+
+
+@async_test
+async def test_success_resets_retry_budget_before_next_batch(tmp_path):
+    config = ChannelLibraryConfig(
+        full_scan_batch_size=50,
+        full_scan_delay_min_sec=7.0,
+        full_scan_delay_max_sec=7.0,
+        transient_retry_delays_sec=(5.0, 15.0, 45.0),
+    )
+    service, library, sleep = make_service(tmp_path, config=config)
+    service.client.failures = [
+        errors.InternalServerError(),
+        None,
+        errors.InternalServerError(),
+    ]
+    job = service.store.create_scan_job(library["id"], "full", 1, 100)
+
+    await service._run_job(job)
+
+    assert service.client.requested_ids == [
+        list(range(1, 51)),
+        list(range(1, 51)),
+        list(range(51, 101)),
+        list(range(51, 101)),
+    ]
+    assert sleep.delays == [5.0, 7.0, 5.0]
+    current = service.store.get_job(job["id"])
+    assert current["retry_count"] == 0
     assert current["status"] == "completed"
 
 
@@ -289,6 +373,7 @@ async def test_flood_wait_persists_absolute_deadline_without_retry(tmp_path):
     assert before + 22 <= current["wait_until"] <= time.time() + 22
     assert current["wait_reason"] == "FloodWait"
     assert current["fetched_through_message_id"] == 0
+    assert current["retry_count"] == 0
     assert sleep.delays == []
 
 
@@ -366,6 +451,39 @@ async def test_start_stop_are_idempotent_and_recover_interrupted_job(tmp_path):
 
 
 @async_test
+async def test_second_service_cannot_recover_store_owned_by_live_service(
+    tmp_path, monkeypatch
+):
+    first, library, _sleep = make_service(tmp_path)
+    await first.start()
+    job = first.store.create_scan_job(library["id"], "full", 1, 50)
+    first.store.transition_job(job["id"], "running")
+    before = first.store.get_job(job["id"])
+
+    second, _library, _sleep = make_service(tmp_path)
+    original_recover = second.store.recover_interrupted_jobs
+    recovery_calls = []
+
+    def tracked_recover(*args, **kwargs):
+        recovery_calls.append(True)
+        return original_recover(*args, **kwargs)
+
+    monkeypatch.setattr(second.store, "recover_interrupted_jobs", tracked_recover)
+
+    with pytest.raises(RuntimeError, match="already owned"):
+        await second.start()
+
+    assert recovery_calls == []
+    assert second.store.get_job(job["id"]) == before
+
+    await first.stop()
+    await second.start()
+    assert recovery_calls == [True]
+    assert second.store.get_job(job["id"])["status"] == "queued"
+    await second.stop()
+
+
+@async_test
 async def test_stop_waits_for_active_request_and_checkpoint_boundary(tmp_path):
     client = BlockingClient()
     service, library, _sleep = make_service(tmp_path, client=client)
@@ -428,7 +546,7 @@ async def test_resolve_creates_snapshot_once_and_duplicate_returns_existing(tmp_
     assert created.job["snapshot_max_message_id"] == 87
     assert duplicate.created is False
     assert duplicate.library["id"] == created.library["id"]
-    assert duplicate.job is None
+    assert duplicate.job["id"] == created.job["id"]
     assert client.call_loops and set(client.call_loops) == {service.owner_loop}
     await service.stop()
 

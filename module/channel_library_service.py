@@ -7,6 +7,7 @@ import concurrent.futures
 import logging
 import random
 import sqlite3
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
@@ -20,6 +21,8 @@ from module.telegram_activity import get_telegram_activity_gate
 
 
 LOGGER = logging.getLogger(__name__)
+_SERVICE_OWNER_LOCK = threading.Lock()
+_SERVICE_OWNERS: dict[str, Any] = {}
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,7 @@ class ChannelLibraryService:
         self._stopping = False
         self._telegram_request_active = False
         self._telegram_request_finished: Optional[asyncio.Event] = None
+        self._ownership_key: Optional[str] = None
 
     async def start(self) -> None:
         """Initialize recovery and start exactly one scheduler task."""
@@ -81,37 +85,48 @@ class ChannelLibraryService:
             raise RuntimeError("ChannelLibraryService must start on Application.loop")
         if self.scheduler_task is not None and not self.scheduler_task.done():
             return
-        self.owner_loop = loop
-        self.store.initialize()
-        self.store.recover_interrupted_jobs()
-        self._wake_event = asyncio.Event()
-        self._telegram_request_finished = asyncio.Event()
-        self._telegram_request_finished.set()
-        self._stopping = False
-        self.scheduler_task = loop.create_task(
-            self._run_scheduler(), name="channel-library-scheduler"
-        )
+        self._acquire_store_ownership()
+        try:
+            self.owner_loop = loop
+            self.store.initialize()
+            self.store.recover_interrupted_jobs()
+            self._wake_event = asyncio.Event()
+            self._telegram_request_finished = asyncio.Event()
+            self._telegram_request_finished.set()
+            self._stopping = False
+            self.scheduler_task = loop.create_task(
+                self._run_scheduler(), name="channel-library-scheduler"
+            )
+        except BaseException:
+            self._release_store_ownership()
+            raise
 
     async def stop(self) -> None:
         """Stop the scheduler without cancelling an active Telegram request."""
 
-        task = self.scheduler_task
-        if task is None or task.done():
-            if task is not None:
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
-            return
-        self._stopping = True
-        await self.wake()
-        if self._telegram_request_active and self._telegram_request_finished is not None:
-            await self._telegram_request_finished.wait()
-        task.cancel()
         try:
-            await task
-        except asyncio.CancelledError:
-            pass
+            task = self.scheduler_task
+            if task is None or task.done():
+                if task is not None:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                return
+            self._stopping = True
+            await self.wake()
+            if (
+                self._telegram_request_active
+                and self._telegram_request_finished is not None
+            ):
+                await self._telegram_request_finished.wait()
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            self._release_store_ownership()
 
     async def wake(self) -> None:
         """Wake the owner-loop scheduler after a persisted command."""
@@ -177,18 +192,15 @@ class ChannelLibraryService:
                     snapshot_max = int(message.id)
                     break
 
-        library, created = self.store.create_or_get_library(
+        library, job, created = self.store.create_or_get_library_with_full_job(
             int(chat.id),
             chat_type,
             getattr(chat, "username", None),
             str(getattr(chat, "title", None) or getattr(chat, "username", None) or chat.id),
             request.url,
+            snapshot_max,
         )
-        job = None
-        if created:
-            job = self.store.create_scan_job(
-                library["id"], "full", 1, snapshot_max
-            )
+        if job["status"] == "queued":
             await self.wake()
         return SubmitLibraryResult(library=library, created=created, job=job)
 
@@ -386,7 +398,9 @@ class ChannelLibraryService:
         if library is None:
             raise KeyError(f"Channel library {library_id} does not exist")
         retry_delays = tuple(self.config.transient_retry_delays_sec)
-        for attempt in range(len(retry_delays) + 1):
+        job = self._get_required_job(job_id)
+        retries_used = int(job["retry_count"])
+        while True:
             try:
                 async with self.gate.scan_permit():
                     self._mark_request_started()
@@ -399,12 +413,12 @@ class ChannelLibraryService:
             except (errors.FloodWait,) + self._permanent_errors():
                 raise
             except self._transient_errors() as error:
-                if attempt >= len(retry_delays):
+                if retries_used >= len(retry_delays):
                     raise _TransientBatchFailure(str(error)) from error
-                self.store.record_job_retry(job_id, str(error))
-                delay = float(retry_delays[attempt]) + self.random_uniform(0, 1)
+                updated = self.store.record_job_retry(job_id, str(error))
+                delay = float(retry_delays[retries_used]) + self.random_uniform(0, 1)
+                retries_used = int(updated["retry_count"])
                 await self.sleep(delay)
-        raise AssertionError("unreachable retry state")
 
     def _mark_request_started(self) -> None:
         self._telegram_request_active = True
@@ -427,6 +441,24 @@ class ChannelLibraryService:
         if job is None:
             raise KeyError(f"Scan job {job_id} does not exist")
         return job
+
+    def _acquire_store_ownership(self) -> None:
+        key = str(self.store.path.expanduser().resolve())
+        with _SERVICE_OWNER_LOCK:
+            owner = _SERVICE_OWNERS.get(key)
+            if owner is not None and owner is not self:
+                raise RuntimeError(f"Channel library store is already owned: {key}")
+            _SERVICE_OWNERS[key] = self
+            self._ownership_key = key
+
+    def _release_store_ownership(self) -> None:
+        key = self._ownership_key
+        if key is None:
+            return
+        with _SERVICE_OWNER_LOCK:
+            if _SERVICE_OWNERS.get(key) is self:
+                del _SERVICE_OWNERS[key]
+        self._ownership_key = None
 
     @staticmethod
     def _chat_type_name(value: Any) -> str:
