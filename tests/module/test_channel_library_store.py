@@ -237,11 +237,35 @@ def test_create_and_claim_oldest_queued_job(store):
     second = make_full_job(store, chat_id=-1002)
 
     claimed = store.claim_next_job(now=10.0)
+    blocked = store.claim_next_job(now=11.0)
 
     assert claimed["id"] == first["id"]
     assert claimed["status"] == "running"
     assert claimed["started_at"] == 10.0
+    assert blocked is None
     assert store.get_job(second["id"])["status"] == "queued"
+
+    store.transition_job(first["id"], "stopped", now=12.0)
+    next_claimed = store.claim_next_job(now=13.0)
+    assert next_claimed["id"] == second["id"]
+
+
+def test_transition_job_acquires_write_lock_before_read(store, monkeypatch):
+    job = make_full_job(store)
+    statements = []
+    original_connect = store.connect
+
+    def traced_connect():
+        connection = original_connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(store, "connect", traced_connect)
+
+    store.transition_job(job["id"], "running", now=1.0)
+
+    assert statements[0] == "BEGIN IMMEDIATE"
+    assert statements[1].lstrip().startswith("SELECT * FROM channel_scan_jobs")
 
 
 def test_illegal_scan_transition_is_rejected(store):
@@ -283,6 +307,7 @@ def test_incremental_job_requires_finished_full_scan(store):
 
 def test_fetched_batch_and_checkpoint_commit_together(store):
     job = make_full_job(store, snapshot_max_id=100)
+    store.transition_job(job["id"], "running", now=1.0)
 
     store.commit_fetched_batch(job["id"], [media_row(50)], end_id=50)
 
@@ -295,19 +320,30 @@ def test_fetched_batch_and_checkpoint_commit_together(store):
 
 def test_fetched_batch_rolls_back_media_when_checkpoint_fails(store):
     job = make_full_job(store, snapshot_max_id=100)
-    invalid = media_row(51, media_type=None)
-
-    with pytest.raises(sqlite3.IntegrityError):
-        store.commit_fetched_batch(
-            job["id"], [media_row(50), invalid], end_id=51
+    store.transition_job(job["id"], "running", now=1.0)
+    with store.connect() as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER abort_fetch_checkpoint
+            BEFORE UPDATE OF fetched_through_message_id ON channel_scan_jobs
+            WHEN NEW.fetched_through_message_id > OLD.fetched_through_message_id
+            BEGIN
+                SELECT RAISE(ABORT, 'checkpoint update blocked');
+            END
+            """
         )
 
+    with pytest.raises(sqlite3.IntegrityError, match="checkpoint update blocked"):
+        store.commit_fetched_batch(job["id"], [media_row(50)], end_id=50)
+
     assert store.get_job(job["id"])["fetched_through_message_id"] == 0
+    assert store.get_library(job["library_id"])["fetched_through_message_id"] == 0
     assert store.get_media(job["library_id"], 50) is None
 
 
 def test_fetch_and_index_watermarks_advance_independently(store):
     job = make_full_job(store, snapshot_max_id=100)
+    store.transition_job(job["id"], "running", now=1.0)
     store.commit_fetched_batch(job["id"], [media_row(50)], end_id=50)
 
     indexed = store.commit_indexed_revision(job["id"], 25, now=10.0)
@@ -322,6 +358,7 @@ def test_fetch_and_index_watermarks_advance_independently(store):
 
 def test_index_checkpoint_cannot_advance_past_fetched_data(store):
     job = make_full_job(store, snapshot_max_id=100)
+    store.transition_job(job["id"], "running", now=1.0)
 
     with pytest.raises(ValueError, match="fetched watermark"):
         store.commit_indexed_revision(job["id"], 1)
@@ -329,6 +366,44 @@ def test_index_checkpoint_cannot_advance_past_fetched_data(store):
     current = store.get_job(job["id"])
     assert current["indexed_through_message_id"] == 0
     assert current["index_revision"] == 0
+
+
+@pytest.mark.parametrize("blocked_status", ["queued", "stopped", "failed"])
+def test_non_running_job_rejects_checkpoint_writes(store, blocked_status):
+    job = make_full_job(store, snapshot_max_id=10)
+    if blocked_status != "queued":
+        store.transition_job(job["id"], blocked_status, now=1.0)
+    before_job = store.get_job(job["id"])
+    before_library = store.get_library(job["library_id"])
+
+    with pytest.raises(ValueError, match="running"):
+        store.commit_fetched_batch(job["id"], [media_row(5)], end_id=5)
+    with pytest.raises(ValueError, match="running"):
+        store.commit_indexed_revision(job["id"], 0)
+
+    assert store.get_job(job["id"]) == before_job
+    assert store.get_library(job["library_id"]) == before_library
+    assert store.get_media(job["library_id"], 5) is None
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "partial"])
+def test_terminal_job_rejects_stale_checkpoint_writes(store, terminal_status):
+    job = make_full_job(store, snapshot_max_id=10)
+    store.transition_job(job["id"], "running", now=1.0)
+    store.commit_fetched_batch(job["id"], [], end_id=10, now=2.0)
+    store.commit_indexed_revision(job["id"], 10, now=3.0)
+    store.transition_job(job["id"], terminal_status, now=4.0)
+    before_job = store.get_job(job["id"])
+    before_library = store.get_library(job["library_id"])
+
+    with pytest.raises(ValueError, match="running"):
+        store.commit_fetched_batch(job["id"], [media_row(5)], end_id=10)
+    with pytest.raises(ValueError, match="running"):
+        store.commit_indexed_revision(job["id"], 10)
+
+    assert store.get_job(job["id"]) == before_job
+    assert store.get_library(job["library_id"]) == before_library
+    assert store.get_media(job["library_id"], 5) is None
 
 
 @pytest.mark.parametrize("final_status,library_status", [("completed", "ready"), ("partial", "partial")])
@@ -346,6 +421,30 @@ def test_terminal_status_requires_both_watermarks(
     finished = store.transition_job(job["id"], final_status, now=5.0)
     assert finished["status"] == final_status
     assert store.get_library(job["library_id"])["status"] == library_status
+
+
+def test_completed_job_rejects_open_failure_and_publishes_partial(store):
+    job = make_full_job(store, snapshot_max_id=10)
+    store.transition_job(job["id"], "running", now=1.0)
+    store.record_failed_range(
+        job["id"],
+        5,
+        5,
+        "missing message",
+        reindex_anchor_start=1,
+        uncertain_through_message_id=10,
+        now=2.0,
+    )
+    store.commit_fetched_batch(job["id"], [], end_id=10, now=3.0)
+    store.commit_indexed_revision(job["id"], 10, now=4.0)
+
+    with pytest.raises(ValueError, match="unresolved failures"):
+        store.transition_job(job["id"], "completed", now=5.0)
+
+    assert store.get_job(job["id"])["status"] == "running"
+    partial = store.transition_job(job["id"], "partial", now=6.0)
+    assert partial["status"] == "partial"
+    assert store.get_library(job["library_id"])["status"] == "partial"
 
 
 def test_adjacent_failed_ranges_merge_but_separate_ranges_do_not(store):
@@ -418,6 +517,43 @@ def test_repair_job_persists_independent_target_cursors(store):
     assert updated[0]["failure_status"] == "repairing"
     assert updated[1]["status"] == "completed"
     assert updated[1]["failure_status"] == "resolved"
+
+
+def test_repair_job_cannot_publish_until_its_targets_complete(store):
+    original, first, _second = make_partial_job_with_failures(store)
+    repair = store.create_repair_job(
+        original["library_id"], failure_ids=[first["id"]], now=10.0
+    )
+    store.transition_job(repair["id"], "running", now=11.0)
+
+    with pytest.raises(ValueError, match="repair targets"):
+        store.transition_job(repair["id"], "partial", now=12.0)
+
+    assert store.get_job(repair["id"])["status"] == "running"
+
+
+def test_repair_with_other_open_failures_must_remain_partial(store):
+    original, first, second = make_partial_job_with_failures(store)
+    repair = store.create_repair_job(
+        original["library_id"], failure_ids=[first["id"]], now=10.0
+    )
+    store.transition_job(repair["id"], "running", now=11.0)
+    store.resolve_repair_target(
+        repair["id"], first["id"], next_message_id=11, now=12.0
+    )
+
+    with pytest.raises(ValueError, match="unresolved failures"):
+        store.transition_job(repair["id"], "completed", now=13.0)
+
+    partial = store.transition_job(repair["id"], "partial", now=14.0)
+    assert partial["status"] == "partial"
+    assert store.get_library(original["library_id"])["status"] == "partial"
+    with store.connect() as connection:
+        remaining = connection.execute(
+            "SELECT status FROM channel_scan_failures WHERE id = ?",
+            (second["id"],),
+        ).fetchone()[0]
+    assert remaining == "open"
 
 
 def test_recovery_respects_rate_limit_deadline(store):

@@ -581,6 +581,15 @@ class ChannelLibraryStore:
         now = time.time() if now is None else now
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            running = connection.execute(
+                """
+                SELECT id FROM channel_scan_jobs
+                WHERE status = 'running'
+                LIMIT 1
+                """
+            ).fetchone()
+            if running is not None:
+                return None
             row = connection.execute(
                 """
                 SELECT * FROM channel_scan_jobs
@@ -627,6 +636,7 @@ class ChannelLibraryStore:
             raise ValueError(f"Unsupported scan job status: {new_status}")
         now = time.time() if now is None else now
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             job = connection.execute(
                 "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
             ).fetchone()
@@ -655,6 +665,32 @@ class ChannelLibraryStore:
                 raise ValueError(
                     "Cannot finish scan before fetch and index watermarks reach snapshot"
                 )
+            if new_status in {"completed", "partial"} and job["kind"] == "repair":
+                incomplete_target = connection.execute(
+                    """
+                    SELECT id FROM channel_scan_repair_targets
+                    WHERE job_id = ? AND status != 'completed'
+                    LIMIT 1
+                    """,
+                    (job_id,),
+                ).fetchone()
+                if incomplete_target is not None:
+                    raise ValueError(
+                        "Cannot finish repair before all repair targets complete"
+                    )
+            if new_status == "completed":
+                unresolved_failure = connection.execute(
+                    """
+                    SELECT id FROM channel_scan_failures
+                    WHERE library_id = ? AND status != 'resolved'
+                    LIMIT 1
+                    """,
+                    (job["library_id"],),
+                ).fetchone()
+                if unresolved_failure is not None:
+                    raise ValueError(
+                        "Cannot complete library while unresolved failures remain"
+                    )
 
             next_wait_until = job["wait_until"]
             next_wait_reason = job["wait_reason"]
@@ -735,11 +771,14 @@ class ChannelLibraryStore:
     ) -> dict:
         now = time.time() if now is None else now
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             job = connection.execute(
                 "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
             ).fetchone()
             if job is None:
                 raise KeyError(f"Scan job {job_id} does not exist")
+            if job["status"] != "running":
+                raise ValueError("Checkpoint writes require a running scan job")
             if end_id < job["start_message_id"] - 1:
                 raise ValueError("Fetch checkpoint precedes the scan range")
             if end_id > job["snapshot_max_message_id"]:
@@ -851,11 +890,14 @@ class ChannelLibraryStore:
     ) -> dict:
         now = time.time() if now is None else now
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             job = connection.execute(
                 "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
             ).fetchone()
             if job is None:
                 raise KeyError(f"Scan job {job_id} does not exist")
+            if job["status"] != "running":
+                raise ValueError("Checkpoint writes require a running scan job")
             if through_message_id > job["fetched_through_message_id"]:
                 raise ValueError("Index checkpoint exceeds the fetched watermark")
             if through_message_id > job["snapshot_max_message_id"]:

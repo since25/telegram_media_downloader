@@ -681,3 +681,29 @@ Changed files:
 
 Rollback:
 - 执行 `git revert "$(git rev-list -1 --all --grep='^feat: persist channel scan recovery state$')"` 回滚 Task 2 全部改动。
+
+## 2026-07-16 - Task: Review Fixes For Channel Scan State Mutations
+
+### What was done
+
+- 将扫描领取收紧为全局单运行任务，并在状态迁移读取前取得 SQLite 写锁，避免多任务并行领取和并发控制覆盖。
+- 禁止未解决失败区间发布 ready，要求 repair job 的全部 target 完成后才能进入完成/部分终态；仍有未解决失败时只允许发布 partial。
+- 抓取与索引检查点只接受 running job，并在同一写事务内校验状态；用更新阶段中止触发器验证已插入媒体与检查点完整回滚。
+
+### Testing
+
+- RED：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py -q`：按预期覆盖全局领取、写锁顺序、非运行任务写入、失败区间终态和 repair target 守卫，`10 failed, 25 passed in 0.21s`。
+- GREEN store：同一命令通过，`35 passed in 0.16s`。
+- GREEN focused：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest tests/module/test_channel_library_store.py tests/module/test_task_state.py -q`：`43 passed in 0.68s`。
+- Full suite：`/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader/.venv/bin/python -m pytest -q`：`263 passed, 1 skipped in 23.70s`。
+- `py_compile` 与 `git diff --check`：通过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: 增加全局单扫描、原子状态迁移、终态失败区间和 running 检查点守卫。
+- `tests/module/test_channel_library_store.py`: 增加五项 review 发现的确定性回归与更新阶段事务回滚证据。
+- `progress.md`: 追加 Task 2 review 修复与验证证据。
+
+Rollback:
+- 执行 `git revert "$(git rev-list -1 --all --grep='^fix: harden channel scan state mutations$')"` 回滚本次 review 修复。
