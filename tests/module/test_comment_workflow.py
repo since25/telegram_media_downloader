@@ -1571,7 +1571,7 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         self,
     ):
         from media_downloader import download_prepared_messages
-        from module.app import TaskNode
+        from module.app import DownloadStatus, TaskNode
 
         messages = [
             MockMessage(
@@ -1601,6 +1601,7 @@ class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
         async def fake_sleep(seconds):
             sleep_calls.append(seconds)
             node.success_download_task += 1
+            node.download_status[120] = DownloadStatus.SuccessDownload
 
         with patch(
             "media_downloader.add_download_task", new=fake_add_download_task
