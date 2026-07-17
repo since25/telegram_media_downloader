@@ -2413,8 +2413,8 @@ async def download_prescan_packages(
 
     When ``prepare_package`` is given, ``packages`` may be lightweight
     descriptors: each is materialized into a full package (fetching its media)
-    immediately before its own download and released afterwards, so only one
-    package is ever held in memory at a time.
+    immediately before its own download and released afterwards, so the batch
+    never holds every package's media in memory at once.
     """
 
     from module.comment_workflow import NamingStrategy, PackageNamingContext

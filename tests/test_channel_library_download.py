@@ -166,8 +166,6 @@ def test_streaming_batch_accessors_avoid_full_materialization(tmp_path):
             item["message_id"]
             for item in store.get_download_batch_package_items(batch_id, 20)
         ] == [201, 202]
-
-        assert store.count_download_batch_items(batch_id) == 4
     finally:
         loop.close()
 

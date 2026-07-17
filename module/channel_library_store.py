@@ -1627,16 +1627,6 @@ class ChannelLibraryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def count_download_batch_items(self, batch_id: int) -> int:
-        """Return the total item count for a batch without materializing rows."""
-
-        with self.connect() as connection:
-            row = connection.execute(
-                "SELECT COUNT(*) FROM channel_download_batch_items WHERE batch_id = ?",
-                (batch_id,),
-            ).fetchone()
-        return int(row[0])
-
     def get_download_batch_by_idempotency_key(
         self, library_id: int, idempotency_key: str
     ) -> Optional[dict]:
