@@ -1237,10 +1237,15 @@
       }
     }
     $('#channel_download_selection').addEventListener('click', async () => {
-      const selected = state.channel.packages.filter(pkg => pkg.selected);
-      const redownload = selected.some(pkg => Number(pkg.has_successful_attempt) === 1 || ['completed','outdated'].includes(pkg.current_download_status));
-      if (redownload && !confirm('所选包包含已成功下载或内容已更新的版本。确认重新下载？')) return;
-      await submitChannelDownload(redownload);
+      const libraryId = state.channel.selectedLibraryId;
+      await loadChannelSelection();                       // 拉取权威摘要
+      const sel = state.channel.selection || {};
+      const n = Number(sel.selected_count) || 0;
+      const m = Number(sel.media_count) || 0;
+      if (n <= 0) { showChannelNotice('请先选择稳定包', 'error'); return; }
+      if (!confirm(`即将下载 ${n} 个包 · ${m} 个文件（可能包含当前筛选下未显示的已选包）。确认下载？`)) return;
+      // redownload 判定改用服务端信号：有失效/需重下由后端 409 redownload_required 驱动
+      await submitChannelDownload(false);
     });
     $('#channel_library_scan_controls').addEventListener('click', async e => {
       const button = e.target.closest('[data-channel-action]');
