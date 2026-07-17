@@ -980,6 +980,11 @@ async def download_task(
         node.failed_download_task += 1
         logger.info(f"download_task: 异常导致任务失败 - 失败计数={node.failed_download_task}")
 
+        # 确保该消息 id 的下载状态被置为终态，否则 package 完成屏障
+        # （_package_download_complete）会因为状态永远停留在 Downloading 而卡死。
+        if message_id:
+            node.download_status[message_id] = DownloadStatus.FailedDownload
+
         # 在异常情况下也尝试报告状态
         if message_id and node.bot:
             try:

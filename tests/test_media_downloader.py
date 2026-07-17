@@ -2175,6 +2175,37 @@ class MediaDownloaderTestCase(unittest.TestCase):
 
         self.loop.run_until_complete(scenario())
 
+    def test_download_task_sets_terminal_status_on_unexpected_exception(self):
+        """An unexpected exception raised after enqueue must not leave
+        node.download_status stuck at Downloading, or the package completion
+        barrier (`_package_download_complete`) would wait forever."""
+        import media_downloader
+
+        async def scenario():
+            rest_app(MOCK_CONF)
+            message = MockMessage(id=707, media=True)
+            node = TaskNode(chat_id=-1001)
+            # Simulate what add_download_task does at enqueue time.
+            node.download_status[message.id] = DownloadStatus.Downloading
+
+            async def fake_download_media(*_args, **_kwargs):
+                raise RuntimeError("unexpected failure")
+
+            with mock.patch.object(
+                media_downloader, "download_media", new=fake_download_media
+            ):
+                await media_downloader.download_task(MockClient(), message, node)
+
+            self.assertIn(message.id, node.download_status)
+            self.assertNotEqual(
+                node.download_status[message.id], DownloadStatus.Downloading
+            )
+            self.assertEqual(
+                node.download_status[message.id], DownloadStatus.FailedDownload
+            )
+
+        self.loop.run_until_complete(scenario())
+
     # @mock.patch(
     #     "media_downloader.queue",
     #     new=MyQueue(
