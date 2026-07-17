@@ -1556,6 +1556,10 @@ class ChannelLibraryStore:
                         """,
                         (task_id, now, library_id, package_id),
                     )
+                connection.execute(
+                    "DELETE FROM channel_package_selections WHERE library_id = ?",
+                    (library_id,),
+                )
         return self.get_download_batch(batch_id), created
 
     def get_download_batch(self, batch_id: int) -> Optional[dict]:

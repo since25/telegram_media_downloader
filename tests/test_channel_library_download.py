@@ -96,6 +96,19 @@ def make_download_service(tmp_path, *, task_store=None, client=None):
     return service, library, loop
 
 
+def test_create_download_batch_clears_selection(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        assert service.store.selection_summary(library["id"])["selected_count"] > 0
+        service.create_download_batch(library["id"], "clear-key")
+        assert service.store.selection_summary(library["id"])["selected_count"] == 0
+        # 幂等命中不报错、仍为已清空态
+        service.create_download_batch(library["id"], "clear-key")
+        assert service.store.selection_summary(library["id"])["selected_count"] == 0
+    finally:
+        loop.close()
+
+
 def test_create_download_batch_is_idempotent_and_snapshots_selected_revision(tmp_path):
     service, library, loop = make_download_service(tmp_path)
     try:
@@ -210,6 +223,10 @@ def test_create_download_batch_rejects_package_in_an_active_batch(tmp_path):
 
         replay = service.create_download_batch(library["id"], "active-request")
         assert replay["id"] == first["id"]
+        # A successful batch clears the persisted selection; re-select so the
+        # active-batch guard (not "no packages selected") is what's exercised.
+        service.store.set_package_selected(library["id"], 10, True)
+        service.store.set_package_selected(library["id"], 20, True)
         with pytest.raises(ValueError, match="active download batch"):
             service.create_download_batch(library["id"], "different-request")
 
@@ -244,15 +261,10 @@ def test_active_attempt_survives_index_summary_revision_and_blocks_new_key(tmp_p
                 """,
                 (library["id"],),
             )
-            connection.execute(
-                """
-                UPDATE channel_package_selections
-                SET selected = CASE WHEN package_id = 10 THEN 1 ELSE 0 END,
-                    package_revision = CASE WHEN package_id = 10 THEN 8 ELSE package_revision END
-                WHERE library_id = ?
-                """,
-                (library["id"],),
-            )
+        # A successful batch clears the persisted selection; re-select package
+        # 10 at its bumped revision so the active-attempt guard is exercised
+        # again instead of failing on "no packages selected".
+        service.store.set_package_selected(library["id"], 10, True)
 
         with pytest.raises(ValueError, match="active download batch"):
             service.create_download_batch(
@@ -460,6 +472,10 @@ def test_failed_redownload_preserves_historical_success_duplicate_protection(tmp
             library["id"], PackageFilter(), limit=10
         ).items[0]
         assert package["has_successful_attempt"] == 1
+        # A successful batch clears the persisted selection; re-select the
+        # failed package so the redownload-confirmation guard is exercised
+        # again instead of failing on "no packages selected".
+        service.store.set_package_selected(library["id"], 10, True)
         with pytest.raises(ValueError, match="redownload"):
             service.create_download_batch(
                 library["id"], "retry-without-confirmation", redownload=False
@@ -868,15 +884,10 @@ def test_reconcile_download_batches_uses_file_evidence_and_cancel_status(tmp_pat
             for package in completed_stored["packages"]
         )
 
-        with service.store.connect() as connection:
-            connection.execute(
-                """
-                UPDATE channel_package_selections
-                SET selected = 1, package_revision = 7, invalidation_reason = NULL
-                WHERE library_id = ?
-                """,
-                (library["id"],),
-            )
+        # A successful batch clears the persisted selection; re-select both
+        # packages so the second batch has something to work with.
+        service.store.set_package_selected(library["id"], 10, True)
+        service.store.set_package_selected(library["id"], 20, True)
         cancelled = service.create_download_batch(
             library["id"], "reconcile-cancelled", redownload=True
         )
