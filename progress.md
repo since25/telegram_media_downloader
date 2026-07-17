@@ -1552,3 +1552,23 @@ Changed files:
 Rollback:
 - `git revert` 本分支合并（无 schema/数据迁移，保留 `*.sqlite3`）。
 - 数据清理回滚：云盘 `_quarantine/misfiled-b5f6741d-2025_12-129365/` 40 文件移回原路径；DB 用 `web_tasks.sqlite3.bak-20260717-085320` 覆盖。
+
+## 2026-07-17 - Task: Deploy channel batch misfiling + selection scope fix
+
+### What was done
+
+- 合并 `fix/channel-batch-misfiling-and-selection-scope` 到 master（快进 38bd2cb..df1ac9a），推送 origin。
+- 部署 RackNerd：`git pull --ff-only` 到 df1ac9a，`systemctl restart tg-downloader.service`。
+
+### Testing
+
+- 部署后：服务 `active`，新进程启动无 error 级日志，Flask `module.web` 正常、4 个下载 worker 已起；`https://tgdn.wyichuan.cc/` 返回 302 → /login。
+- 合并前全量 `pytest tests/ -q` → 487 passed, 1 skipped；pylint 无新增错误；final whole-branch review（opus）READY TO MERGE。
+
+### Notes
+
+Changed files:
+- 无新增代码改动（本轮仅合并+部署）。
+
+Rollback:
+- 服务器：`git reset --hard 38bd2cb && systemctl restart tg-downloader.service`（保留 `*.sqlite3`）；或 `git revert df1ac9a`。参考回滚基线提交 `38bd2cb`。
