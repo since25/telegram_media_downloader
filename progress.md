@@ -1519,3 +1519,36 @@ Changed files:
 
 Rollback:
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 5f1a037 && systemctl restart tg-downloader.service'` or `git revert 48224dc..HEAD` + push + server ff. No schema change was made; preserve both SQLite databases.
+
+## 2026-07-17 - Task: Fix channel batch misfiling + selection scope
+
+### What was done
+
+- 修复频道批量下载的两个独立缺陷（线上 library 4、批次 b5f6741d 实锤）：
+  - **错位归档（数据损坏）**：一个批次里 40 个文件（消息 121120–121159，属包 17899）被写进了另一个包 #18277 的文件夹。根因是 `download_prepared_messages` 用可溢出的聚合计数器判"包下完"（日志 96/90 提前放行），主循环随即覆盖共享的 `parent_node.package_naming_context`，队列里残留消息按下一个包命名。
+  - **选择作用域（下载了没勾的包）**：下载请求不带包 ID、服务端下整份持久 `selected=1`、批次后不清空、列表带筛选分页导致残留勾选不可见。
+- **B1**：`download_prepared_messages` 的完成屏障改为按本包精确 message_id 集合判终态（新增 `_package_download_complete`），本包消息全部落地前主循环不前进；对计数溢出免疫。
+- **B2（纵深防御）**：入队时把包命名上下文快照进队列条目，出队命名优先用条目自带快照（经 `download_media` 的固定签名装饰器，用仅本次调用生效的 ContextVar 桥接），缺省回退旧字段，非批量路径行为不变。
+- **A2**：`create_download_batch_result` 新建批次成功后在同一事务内清空该库 `channel_package_selections`（批次快照自包含，不影响执行/重试）。
+- **A1**：前端"下载所选"改为下载前用服务端真实数字弹确认"即将下载 N 包 · M 文件（可能含未显示的已选包）"，并加刷新失败/中途切库守卫；移除按可见子集预判 redownload，改由后端 `redownload_required` 驱动。
+- 线上受损数据已单独清理（40 个错位文件云盘移入 `_quarantine/`、`task_files` 40 行错位记录删除，均可回滚；正确副本齐全）。
+
+### Testing
+
+- 全量测试 `.venv/bin/python -m pytest tests/ -q` → **486 passed, 1 skipped**（含新增 B1 helper+集成、B2 命名快照、A2 清空选择测试；B1 修正一处共享函数的过时测试夹具）。
+- 每个任务先构造会 RED 的复现测试再修（B1 集成测试证明旧逻辑把 121120–121159 记到 #18277 上下文、修后归位）。
+- 前端 A1 用 scratchpad 浏览器 harness + mock 验证 4/4 用例（真实计数确认文案、取消不 POST、0 选不弹、刷新失败不用陈旧值）。
+- `pylint --errors-only`（改动的 4 个 py 模块）无新增错误（仅既有 `os`/`pyrogram` E1101、`STARTUP_SCAN_WINDOW_SEC` E0602 误报）；`git diff --check` 干净。
+- 子代理驱动：每任务实现者+复审者，复审独立复现 RED/GREEN 与并发隔离（ContextVar per-Task）、事务原子性（AST 核验）。
+
+### Notes
+
+Changed files:
+- `media_downloader.py`: B1 精确 message_id 完成屏障 + `_package_download_complete`；B2 队列条目命名快照 + `_get_media_meta` 覆盖参数 + ContextVar 桥接。
+- `module/channel_library_store.py`: A2 新建批次事务内清空该库选择。
+- `module/templates/index.html`: A1 下载前真实数量确认 + 刷新失败/切库守卫 + 移除可见子集 redownload 预判。
+- `tests/*`: 新增 B1/B2/A2 测试；对齐 4 个受新语义影响的既有选择测试（改用公开 API 复现同状态，未放宽守卫）与 1 个共享函数完成语义测试。
+
+Rollback:
+- `git revert` 本分支合并（无 schema/数据迁移，保留 `*.sqlite3`）。
+- 数据清理回滚：云盘 `_quarantine/misfiled-b5f6741d-2025_12-129365/` 40 文件移回原路径；DB 用 `web_tasks.sqlite3.bak-20260717-085320` 覆盖。
