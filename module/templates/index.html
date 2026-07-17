@@ -1238,8 +1238,12 @@
     }
     $('#channel_download_selection').addEventListener('click', async () => {
       const libraryId = state.channel.selectedLibraryId;
+      const generation = state.channel.generation;
+      state.channel.selection = null;                     // 丢弃缓存，强制以本次刷新结果为准
       await loadChannelSelection();                       // 拉取权威摘要
-      const sel = state.channel.selection || {};
+      if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
+      if (!state.channel.selection) { showChannelNotice('无法读取服务端选择，请重试', 'error'); return; }
+      const sel = state.channel.selection;
       const n = Number(sel.selected_count) || 0;
       const m = Number(sel.media_count) || 0;
       if (n <= 0) { showChannelNotice('请先选择稳定包', 'error'); return; }
