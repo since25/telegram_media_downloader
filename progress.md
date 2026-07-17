@@ -1493,3 +1493,29 @@ Changed files:
 
 Rollback:
 - `git revert` the commit `perf: stream channel download batches to bound memory`; preserve `channel_library.sqlite3` and `web_tasks.sqlite3` (no schema change was made).
+
+## 2026-07-17 - Task: Deploy streaming channel download batches
+
+### What was done
+
+- Merged the streaming download-batch change to `master`, pushed, and deployed to the RackNerd production host for real-device testing.
+- Adversarial correctness review of the streaming diff returned PASS (no correctness bugs). Two minor review notes were applied: removed the production-dead `count_download_batch_items` helper (commit `1c70fa9`) and corrected a docstring; a third note (a claimed test-isolation failure) did not reproduce — `tests/test_media_downloader.py` passes both alone (33) and in the full suite.
+- Deployed commit: `1c70fa9` (pushed `5f1a037..1c70fa9`; `origin/master` and server `HEAD` both `1c70fa9`).
+- Rollback point recorded before deploy: server was at `5f1a037`.
+
+### Testing
+
+- Full suite (pre-deploy, on master): `480 passed, 1 skipped`; `git diff --check` clean.
+- Consistent backup (service stopped, WAL-safe Python `sqlite3.backup`): `backups/web_tasks-20260716-214400.sqlite3` and `backups/channel_library-20260716-214400.sqlite3` both integrity `ok`; `backups/config-20260716-214400.yaml`.
+- Deploy: `git pull --ff-only origin master` -> `1c70fa9`; `systemctl restart` -> `active`.
+- Smoke test: `curl -I https://tgdn.wyichuan.cc/` and `/api/channel-libraries` -> `302` to `/login`; `channel_library.sqlite3` mode `600`, integrity `ok`, journal `wal`; post-restart `journalctl` shows a clean startup with no traceback/channel-library error (the ERROR lines in the log window are pre-deploy Werkzeug HTTP access logs from internet scanners).
+
+### Notes
+
+Awaiting the user's real-device test of a large-channel "download all" to confirm bounded memory in production.
+
+Changed files:
+- `progress.md`: Appended this deployment record.
+
+Rollback:
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 5f1a037 && systemctl restart tg-downloader.service'` or `git revert 48224dc..HEAD` + push + server ff. No schema change was made; preserve both SQLite databases.
