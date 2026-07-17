@@ -1,5 +1,6 @@
 """Downloads media from telegram."""
 import asyncio
+import contextvars
 import datetime
 import json
 import logging
@@ -276,6 +277,15 @@ QUEUE_ENTRY_TIMES: dict[
     tuple[Union[int, str], int], float
 ] = {}  # (chat_id, message_id) -> queue_entry_time
 
+# 携带单次 download_task -> download_media -> _get_media_meta 调用链的命名快照。
+# download_media 被 module.pyrogram_extension.record_download_status 装饰，
+# 装饰器只透传固定的位置参数、不支持额外关键字参数，因此用 ContextVar 在
+# 同一个 asyncio 调用链内传递命名快照；每次调用后立即 reset，不做跨调用的
+# 持久/全局状态。
+_naming_snapshot_ctx: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "_naming_snapshot_ctx", default=None
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
@@ -405,6 +415,7 @@ async def _get_media_meta(
     media_obj: Union[Audio, Document, Photo, Video, VideoNote, Voice],
     _type: str,
     node: Optional["TaskNode"] = None,
+    naming_snapshot: Optional[dict] = None,
 ) -> Tuple[str, str, Optional[str]]:
     """Extract file name and file id from media object.
 
@@ -414,6 +425,12 @@ async def _get_media_meta(
         Media object to be extracted.
     _type: str
         Type of media object.
+    naming_snapshot: Optional[dict]
+        Optional per-queue-item naming context captured at enqueue time
+        (``{"context": PackageNamingContext, "item": PackageMediaItem|None}``).
+        When provided, it takes precedence over ``node.package_naming_context``
+        / ``node.package_media_items`` so a stray message is always named by
+        the package it was actually enqueued for.
 
     Returns
     -------
@@ -554,32 +571,32 @@ async def _get_media_meta(
                 message, node.comment_naming_context
             )
 
-        if node and getattr(node, "package_naming_context", None):
+        context = (naming_snapshot or {}).get("context") or getattr(
+            node, "package_naming_context", None
+        )
+        if node and context:
             from module.comment_workflow import (
                 PackageMediaItem,
                 build_package_name_for_strategy,
             )
 
-            package_item = None
-            package_media_items = getattr(node, "package_media_items", None)
-            if isinstance(package_media_items, dict):
-                package_item = package_media_items.get(message.id)
+            package_item = (naming_snapshot or {}).get("item")
+            if package_item is None:
+                package_media_items = getattr(node, "package_media_items", None)
+                if isinstance(package_media_items, dict):
+                    package_item = package_media_items.get(message.id)
 
             if package_item is None:
                 raw_caption = getattr(message, "caption", None)
                 package_item = PackageMediaItem(
                     message=message,
                     media_type=_type,
-                    caption_for_naming=(
-                        raw_caption or node.package_naming_context.package_title
-                    ),
+                    caption_for_naming=(raw_caption or context.package_title),
                     original_caption=raw_caption,
                     inherited_caption=not bool(raw_caption),
                 )
 
-            gen_file_name = build_package_name_for_strategy(
-                package_item, node.package_naming_context
-            )
+            gen_file_name = build_package_name_for_strategy(package_item, context)
 
         file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
 
@@ -652,9 +669,17 @@ async def add_download_task(
         queue_entry_time = time.time()
         QUEUE_ENTRY_TIMES[(node.chat_id, msg_id)] = queue_entry_time
 
+        # 绑定命名快照：把 node 当前的包命名上下文固化到本条队列条目上，
+        # 避免队列条目在等待期间被后续包的 node 状态覆盖导致误命名。
+        naming_snapshot = None
+        ctx = getattr(node, "package_naming_context", None)
+        if ctx is not None:
+            items = getattr(node, "package_media_items", None) or {}
+            naming_snapshot = {"context": ctx, "item": items.get(msg_id)}
+
         download_intent = await get_telegram_activity_gate().register_download_intent()
         try:
-            await queue.put((message, node, download_intent))
+            await queue.put((message, node, download_intent, naming_snapshot))
             enqueued = True
         except BaseException:
             download_intent.cancel()
@@ -742,6 +767,7 @@ async def download_task(
     message: pyrogram.types.Message,
     node: TaskNode,
     telegram_permit: Optional[DownloadIntent] = None,
+    naming_snapshot: Optional[dict] = None,
 ):
     """Download and Forward media"""
     # 初始化变量，确保在任何情况下都有定义
@@ -793,9 +819,18 @@ async def download_task(
             )
 
         # 下载媒体
-        download_status, file_name = await download_media(
-            client, message, app.media_types, app.file_formats, node
-        )
+        # download_media 被 module.pyrogram_extension.record_download_status
+        # 装饰，装饰器只透传固定的 5 个位置参数，不支持额外关键字参数。
+        # 因此命名快照通过一个仅在本次调用期间生效的 ContextVar 传递给
+        # download_media 内部对 _get_media_meta 的调用，调用结束后立即重置，
+        # 不构成跨调用的持久/全局状态，也不需要改动 module/pyrogram_extension.py。
+        naming_snapshot_token = _naming_snapshot_ctx.set(naming_snapshot)
+        try:
+            download_status, file_name = await download_media(
+                client, message, app.media_types, app.file_formats, node
+            )
+        finally:
+            _naming_snapshot_ctx.reset(naming_snapshot_token)
 
         if app.enable_download_txt and message.text and not message.media:
             download_status, file_name = await save_msg_to_file(
@@ -1130,7 +1165,12 @@ async def download_media(
             if _media is None:
                 continue
             file_name, temp_file_name, file_format = await _get_media_meta(
-                node.chat_id, message, _media, _type, node
+                node.chat_id,
+                message,
+                _media,
+                _type,
+                node,
+                naming_snapshot=_naming_snapshot_ctx.get(),
             )
             media_size = getattr(_media, "file_size", 0)
 
@@ -1483,6 +1523,7 @@ async def worker(client: PyrogramClient):
         node = None
         real_client = None
         download_intent = None
+        naming_snapshot = None
 
         try:
             logger.info(
@@ -1490,9 +1531,12 @@ async def worker(client: PyrogramClient):
                 f"queue_id={id(queue)} item_type={type(item)}"
             )
 
-            # New queue items carry their pre-enqueue priority intent. Keep
-            # accepting legacy two-tuples constructed by tests and callers.
-            if isinstance(item, (tuple, list)) and len(item) == 3:
+            # New queue items carry their pre-enqueue priority intent and a
+            # naming snapshot bound at enqueue time. Keep accepting legacy
+            # two/three-tuples constructed by tests and callers.
+            if isinstance(item, (tuple, list)) and len(item) == 4:
+                message, node, download_intent, naming_snapshot = item
+            elif isinstance(item, (tuple, list)) and len(item) == 3:
                 message, node, download_intent = item
             elif isinstance(item, (tuple, list)) and len(item) == 2:
                 message, node = item
@@ -1527,11 +1571,20 @@ async def worker(client: PyrogramClient):
                 await download_intent.activate()
 
             # ✅ 这里必须 await（你说“缺了一部分 await”，核心就在这里）
+            # naming_snapshot 只在存在包命名快照时才透传，保持旧的
+            # download_task(client, message, node, telegram_permit=...)
+            # 调用签名对遗留测试/调用方的兼容。
+            extra_kwargs = (
+                {"naming_snapshot": naming_snapshot}
+                if naming_snapshot is not None
+                else {}
+            )
             await download_task(
                 real_client,
                 message,
                 node,
                 telegram_permit=download_intent,
+                **extra_kwargs,
             )
 
             logger.info(f"worker: 完成下载任务 - message_id={msg_id}, task_id={task_id}")

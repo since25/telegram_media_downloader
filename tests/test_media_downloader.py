@@ -751,6 +751,69 @@ class MediaDownloaderTestCase(unittest.TestCase):
             ),
         )
 
+    def test_get_media_meta_naming_snapshot_overrides_node_package_context(self):
+        from module.comment_workflow import (
+            NamingStrategy,
+            PackageMediaItem,
+            PackageNamingContext,
+        )
+
+        rest_app(MOCK_CONF)
+        app.save_path = MOCK_DIR
+        app.temp_save_path = os.path.join(MOCK_DIR, "temp")
+        app.file_path_prefix = ["chat_title", "media_datetime"]
+        app.file_name_prefix = ["message_id", "file_name"]
+        app.file_name_prefix_split = " - "
+
+        message = MockMessage(
+            id=126711,
+            chat_id=-1001,
+            chat_title="Private",
+            media="video",
+            video=MockVideo(file_name="bad/name?.mp4", mime_type="video/mp4"),
+            caption="课程/第01章",
+            from_user=MockUser(username="user123"),
+            date=datetime(2026, 6, 7),
+        )
+        node = TaskNode(chat_id=-1001)
+        node.package_naming_context = PackageNamingContext(
+            strategy=NamingStrategy.RECOMMENDED,
+            channel="私密频道",
+            start_message_id=222,
+            package_title="P2",
+        )
+        node.package_media_items = {}
+
+        p1_context = PackageNamingContext(
+            strategy=NamingStrategy.RECOMMENDED,
+            channel="私密频道",
+            start_message_id=111,
+            package_title="P1",
+        )
+        p1_item = PackageMediaItem(
+            message=message,
+            media_type="video",
+            caption_for_naming="P1",
+            original_caption="课程/第01章",
+        )
+        naming_snapshot = {"context": p1_context, "item": p1_item}
+
+        file_name, _temp_file_name, file_format = self.loop.run_until_complete(
+            _get_media_meta(
+                -1001,
+                message,
+                message.video,
+                "video",
+                node=node,
+                naming_snapshot=naming_snapshot,
+            )
+        )
+
+        self.assertEqual(file_format, "mp4")
+        # 期望 gen_file_name 以 "111-" 开头（P1），即使 node.package_naming_context 是 P2
+        self.assertIn("111-", file_name)
+        self.assertNotIn("222-", file_name)
+
     def test_scan_comment_range_keeps_only_comments_from_discussion_root(self):
         from media_downloader import scan_comment_range
         from module.comment_workflow import filter_media_comments
@@ -1896,6 +1959,155 @@ class MediaDownloaderTestCase(unittest.TestCase):
                 worker_task.cancel()
                 with self.assertRaises(asyncio.CancelledError):
                     await worker_task
+
+        self.loop.run_until_complete(scenario())
+
+    def test_worker_binds_naming_snapshot_through_download_media_to_media_meta(self):
+        import media_downloader
+        from module.comment_workflow import NamingStrategy, PackageNamingContext
+        from module.telegram_activity import TelegramActivityGate
+
+        async def scenario():
+            rest_app(MOCK_CONF)
+            app.save_path = MOCK_DIR
+
+            gate = TelegramActivityGate()
+            test_queue = asyncio.Queue()
+
+            node = TaskNode(chat_id=-1001)
+            node.package_naming_context = PackageNamingContext(
+                strategy=NamingStrategy.RECOMMENDED,
+                channel="ch",
+                start_message_id=111,
+                package_title="P1",
+            )
+            node.package_media_items = {}
+
+            message = MockMessage(
+                id=126711,
+                chat_id=-1001,
+                media="video",
+                video=MockVideo(file_name="a.mp4", mime_type="video/mp4"),
+                caption="c",
+            )
+
+            with mock.patch.object(
+                media_downloader, "queue", test_queue
+            ), mock.patch.object(
+                media_downloader, "get_telegram_activity_gate", return_value=gate
+            ):
+                queued = await media_downloader.add_download_task(message, node)
+            self.assertTrue(queued)
+
+            # 模拟 stray/leftover 场景：条目入队后，node 被复用于下一个包（P2）。
+            # 队列条目已经绑定了 P1 的命名快照，处理时不应受此影响。
+            node.package_naming_context = PackageNamingContext(
+                strategy=NamingStrategy.RECOMMENDED,
+                channel="ch",
+                start_message_id=222,
+                package_title="P2",
+            )
+
+            captured = {}
+            real_get_media_meta = media_downloader._get_media_meta
+
+            async def spy_get_media_meta(*args, **kwargs):
+                captured["naming_snapshot"] = kwargs.get("naming_snapshot")
+                result = await real_get_media_meta(*args, **kwargs)
+                captured["file_name"] = result[0]
+                # 拿到需要的数据后中断，避免真的走到网络下载逻辑
+                raise RuntimeError("stop-after-capture")
+
+            with mock.patch.object(
+                media_downloader, "queue", test_queue
+            ), mock.patch.object(
+                media_downloader, "get_telegram_activity_gate", return_value=gate
+            ), mock.patch.object(
+                media_downloader, "_get_media_meta", new=spy_get_media_meta
+            ):
+                worker_task = asyncio.create_task(media_downloader.worker(MockClient()))
+                await asyncio.wait_for(test_queue.join(), 1)
+                await gate.wait_until_idle()
+                worker_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await worker_task
+
+            self.assertIsNotNone(captured.get("naming_snapshot"))
+            self.assertEqual(
+                captured["naming_snapshot"]["context"].start_message_id, 111
+            )
+            self.assertIn("111-", captured["file_name"])
+            self.assertNotIn("222-", captured["file_name"])
+
+            scan = await asyncio.wait_for(gate.acquire_scan(), 1)
+            scan.release()
+            await gate.wait_until_idle()
+
+        self.loop.run_until_complete(scenario())
+
+    def test_worker_legacy_three_tuple_falls_back_to_node_package_naming_context(self):
+        import media_downloader
+        from module.comment_workflow import NamingStrategy, PackageNamingContext
+        from module.telegram_activity import TelegramActivityGate
+
+        async def scenario():
+            rest_app(MOCK_CONF)
+            app.save_path = MOCK_DIR
+
+            gate = TelegramActivityGate()
+            test_queue = asyncio.Queue()
+
+            node = TaskNode(chat_id=-1001)
+            node.package_naming_context = PackageNamingContext(
+                strategy=NamingStrategy.RECOMMENDED,
+                channel="ch",
+                start_message_id=333,
+                package_title="P3",
+            )
+            node.package_media_items = {}
+
+            message = MockMessage(
+                id=999,
+                chat_id=-1001,
+                media="video",
+                video=MockVideo(file_name="a.mp4", mime_type="video/mp4"),
+                caption="c",
+            )
+
+            # 手动构造遗留 3 元组（无命名快照），worker 必须继续兼容
+            intent = await gate.register_download_intent()
+            await test_queue.put((message, node, intent))
+
+            captured = {}
+            real_get_media_meta = media_downloader._get_media_meta
+
+            async def spy_get_media_meta(*args, **kwargs):
+                captured["naming_snapshot"] = kwargs.get("naming_snapshot")
+                result = await real_get_media_meta(*args, **kwargs)
+                captured["file_name"] = result[0]
+                raise RuntimeError("stop-after-capture")
+
+            with mock.patch.object(
+                media_downloader, "queue", test_queue
+            ), mock.patch.object(
+                media_downloader, "get_telegram_activity_gate", return_value=gate
+            ), mock.patch.object(
+                media_downloader, "_get_media_meta", new=spy_get_media_meta
+            ):
+                worker_task = asyncio.create_task(media_downloader.worker(MockClient()))
+                await asyncio.wait_for(test_queue.join(), 1)
+                await gate.wait_until_idle()
+                worker_task.cancel()
+                with self.assertRaises(asyncio.CancelledError):
+                    await worker_task
+
+            # 无快照时，退回到 node.package_naming_context（P3）
+            self.assertIsNone(captured.get("naming_snapshot"))
+            self.assertIn("333-", captured["file_name"])
+
+            scan = await asyncio.wait_for(gate.acquire_scan(), 1)
+            scan.release()
+            await gate.wait_until_idle()
 
         self.loop.run_until_complete(scenario())
 
