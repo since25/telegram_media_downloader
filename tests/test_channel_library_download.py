@@ -583,6 +583,145 @@ def test_run_download_batch_streams_one_package_into_memory_at_a_time(tmp_path):
         loop.close()
 
 
+def test_run_download_batch_cross_package_no_misfile(tmp_path):
+    """A package's terminal message must land under its OWN naming context,
+    even when its worker settles late relative to the parent loop.
+
+    Under the old aggregate-counter completion barrier, package A's last
+    message (102) could still be mid-flight when the aggregate
+    success/failed/skip counter (inflated here to stand in for a real
+    worker-pool race) already satisfied package A's expected task count.
+    download_prepared_messages would then return early for package A, the
+    parent loop would advance and overwrite node.package_naming_context with
+    package B's context, and only then would message 102 actually settle -
+    landing under package B's start_message_id instead of its own.
+    """
+
+    class CompleteClient:
+        async def get_messages(self, _chat_id, message_ids):
+            return [
+                SimpleNamespace(
+                    id=message_id,
+                    empty=False,
+                    caption=f"live-{message_id}",
+                    media="video",
+                    media_group_id=None,
+                    video=SimpleNamespace(
+                        file_name=f"{message_id}.mp4",
+                        file_size=100,
+                        mime_type="video/mp4",
+                    ),
+                )
+                for message_id in message_ids
+            ]
+
+    import media_downloader
+    import module.task_state as task_state_module
+
+    from module.app import DownloadStatus
+    from module.download_stat import get_active_task_nodes
+    from module.task_state import FileStatus
+
+    client = CompleteClient()
+    service, library, loop = make_download_service(tmp_path, client=client)
+    try:
+        batch = service.create_download_batch(
+            library["id"], "cross-package-no-misfile"
+        )
+
+        # message_id -> the PackageNamingContext object active when that
+        # message's terminal status actually landed.
+        recorded = {}
+        # media_downloader.asyncio IS the asyncio module (shared object), so
+        # patching media_downloader.asyncio.sleep below patches asyncio.sleep
+        # globally. Keep a direct reference to the real sleep so this fake's
+        # own yields don't recurse into the patched fast_sleep.
+        real_sleep = asyncio.sleep
+
+        async def fake_add_download_task(message, node):
+            message_id = message.id
+            # Mirror the real add_download_task: it enqueues and returns
+            # immediately (yielding once, like the real queue.put suspension
+            # point); the worker settles the terminal status separately.
+            await real_sleep(0)
+            node.total_task += 1
+            node.total_download_task += 1
+            node.download_status[message_id] = DownloadStatus.Downloading
+
+            def finalize():
+                node.download_status[message_id] = DownloadStatus.SuccessDownload
+                node.stat(
+                    DownloadStatus.SuccessDownload,
+                    node.chat_id,
+                    message_id,
+                    f"/{message_id}.mp4",
+                )
+                recorded[message_id] = node.package_naming_context
+                service.task_store.upsert_file(
+                    node.task_id,
+                    message_id,
+                    status=FileStatus.DOWNLOADED,
+                    filename=f"/{message_id}.mp4",
+                )
+
+            if message_id == 102:
+                # Package A's last message: its worker has not settled yet.
+                # Give it several event-loop turns before it settles - more
+                # than the couple of incidental yields the real refetch gate
+                # (TelegramActivityGate.download_permit) spends preparing
+                # package B - so the settle reliably lands only once package
+                # B's own processing is underway.
+                async def deferred_finalize():
+                    for _ in range(3):
+                        await real_sleep(0)
+                    finalize()
+
+                asyncio.ensure_future(deferred_finalize())
+            else:
+                finalize()
+                if message_id == 101:
+                    # Stand-in for a real worker-pool race: the aggregate
+                    # success counter reaches package A's expected total
+                    # (baseline 0 + 2 messages) before message 102's own
+                    # terminal status has actually landed.
+                    node.success_download_task += 1
+            return True
+
+        async def fake_report(*_args, **_kwargs):
+            return None
+
+        async def fast_sleep(_seconds):
+            # Preserve the wait loop's yield-to-event-loop behavior (so the
+            # deferred settle above gets its scheduled turns) without a real
+            # 5s wait.
+            await real_sleep(0)
+
+        old_store = task_state_module._TASK_STORE
+        task_state_module._TASK_STORE = service.task_store
+        try:
+            with patch.object(
+                media_downloader, "add_download_task", new=fake_add_download_task
+            ), patch(
+                "module.pyrogram_extension.report_bot_status", new=fake_report
+            ), patch(
+                "media_downloader.asyncio.sleep", new=fast_sleep
+            ):
+                loop.run_until_complete(service.run_download_batch(batch["id"]))
+        finally:
+            task_state_module._TASK_STORE = old_store
+            get_active_task_nodes().pop(batch["task_id"], None)
+
+        expected_start_message_id = {101: 101, 102: 101, 201: 201, 202: 201}
+        for message_id, start_message_id in expected_start_message_id.items():
+            assert recorded[message_id].start_message_id == start_message_id, (
+                f"message {message_id} landed under package starting at "
+                f"{recorded[message_id].start_message_id}, expected "
+                f"{start_message_id}"
+            )
+    finally:
+        loop.close()
+
+
 def test_run_download_batch_refetches_exact_snapshot_and_writes_package_results(
     tmp_path,
 ):

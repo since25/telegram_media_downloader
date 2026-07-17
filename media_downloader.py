@@ -2126,6 +2126,16 @@ async def download_prepared_comments(
         remove_active_task_node(node.task_id)
 
 
+def _package_download_complete(node, message_ids) -> bool:
+    """True when every message_id has reached a terminal download status."""
+    status = getattr(node, "download_status", None) or {}
+    for message_id in message_ids:
+        state = status.get(message_id)
+        if state is None or state == DownloadStatus.Downloading:
+            return False
+    return True
+
+
 async def download_prepared_messages(
     messages,
     download_filter,
@@ -2196,6 +2206,10 @@ async def download_prepared_messages(
                     filtered_messages.append(message)
 
             media_messages = filtered_messages
+
+        package_message_ids = {message.id for message in media_messages} | set(
+            failed_message_ids
+        )
 
         completed_tasks_baseline = (
             node.success_download_task
@@ -2287,7 +2301,7 @@ async def download_prepared_messages(
             )
             logger.info(f"下载进度: 已完成 {completed_tasks}/{expected_message_tasks} 个任务")
 
-            if completed_tasks >= expected_message_tasks:
+            if _package_download_complete(node, package_message_ids):
                 logger.info("所有下载任务已完成")
                 break
 

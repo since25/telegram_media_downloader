@@ -1003,6 +1003,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
                     task_node.total_task += 1
                     task_node.total_download_task += 1
                     task_node.success_download_task += 1
+                    task_node.download_status[message.id] = DownloadStatus.SuccessDownload
                     return True
 
                 async def fake_report_bot_status(bot, task_node):
@@ -1067,6 +1068,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
             task_node.total_task += 1
             task_node.total_download_task += 1
             task_node.success_download_task += 1
+            task_node.download_status[message.id] = DownloadStatus.SuccessDownload
             return True
 
         async def fake_report_bot_status(bot, task_node):
@@ -1207,6 +1209,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
             task_node.total_task += 1
             task_node.total_download_task += 1
             task_node.success_download_task += 1
+            task_node.download_status[message.id] = DownloadStatus.SuccessDownload
             return True
 
         async def fake_report_bot_status(bot, task_node):
@@ -2437,6 +2440,26 @@ class MediaDownloaderTestCase(unittest.TestCase):
                 results[4].message_results[5].status, "completed_file_skip"
             )
             self.assertEqual(results[5].message_results[6].status, "cancelled")
+
+    def test_package_download_complete_waits_for_exact_message_ids(self):
+        import media_downloader
+        from module.app import DownloadStatus
+
+        class N:
+            pass
+        node = N()
+        node.download_status = {
+            101: DownloadStatus.Downloading,
+            102: DownloadStatus.SuccessDownload,
+        }
+        ids = {101, 102}
+        # 101 仍在下载中 -> 未完成
+        self.assertFalse(media_downloader._package_download_complete(node, ids))
+        # 全部终态（含 Failed/Skip）-> 完成
+        node.download_status[101] = DownloadStatus.FailedDownload
+        self.assertTrue(media_downloader._package_download_complete(node, ids))
+        # 缺失的 id 视为未完成
+        self.assertFalse(media_downloader._package_download_complete(node, {101, 102, 103}))
 
     @classmethod
     def tearDownClass(cls):
