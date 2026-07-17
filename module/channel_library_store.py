@@ -1519,15 +1519,18 @@ class ChannelLibraryStore:
                     ).fetchall()
                     if not item_rows:
                         raise ValueError("Selected package has no media items")
-                    for item in item_rows:
-                        connection.execute(
-                            """
-                            INSERT INTO channel_download_batch_items (
-                                batch_id, package_id, library_id, message_id,
-                                ordinal, media_type, caption_for_naming,
-                                original_caption, inherited_caption
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
+                    # Insert this package's items in one round-trip: for a large
+                    # selection a per-row loop holds the write lock long enough to
+                    # time out a concurrent scan commit.
+                    connection.executemany(
+                        """
+                        INSERT INTO channel_download_batch_items (
+                            batch_id, package_id, library_id, message_id,
+                            ordinal, media_type, caption_for_naming,
+                            original_caption, inherited_caption
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
                             (
                                 batch_id,
                                 package_id,
@@ -1538,8 +1541,10 @@ class ChannelLibraryStore:
                                 item["caption_for_naming"],
                                 item["original_caption"],
                                 item["inherited_caption"],
-                            ),
-                        )
+                            )
+                            for item in item_rows
+                        ],
+                    )
                     connection.execute(
                         """
                         UPDATE channel_packages
@@ -1583,6 +1588,54 @@ class ChannelLibraryStore:
         result = dict(batch)
         result["packages"] = packages
         return result
+
+    def get_download_batch_header(self, batch_id: int) -> Optional[dict]:
+        """Return one batch row without its (potentially huge) package snapshot."""
+
+        with self.connect() as connection:
+            batch = connection.execute(
+                "SELECT * FROM channel_download_batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+        return dict(batch) if batch is not None else None
+
+    def list_download_batch_package_summaries(self, batch_id: int) -> list[dict]:
+        """Return batch package rows in order, without their item snapshots."""
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM channel_download_batch_packages
+                WHERE batch_id = ? ORDER BY ordinal, package_id
+                """,
+                (batch_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_download_batch_package_items(
+        self, batch_id: int, package_id: int
+    ) -> list[dict]:
+        """Return one package's immutable item snapshots for streamed download."""
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM channel_download_batch_items
+                WHERE batch_id = ? AND package_id = ?
+                ORDER BY ordinal, message_id
+                """,
+                (batch_id, package_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def count_download_batch_items(self, batch_id: int) -> int:
+        """Return the total item count for a batch without materializing rows."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) FROM channel_download_batch_items WHERE batch_id = ?",
+                (batch_id,),
+            ).fetchone()
+        return int(row[0])
 
     def get_download_batch_by_idempotency_key(
         self, library_id: int, idempotency_key: str

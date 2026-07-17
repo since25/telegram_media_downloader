@@ -141,6 +141,37 @@ def test_create_download_batch_is_idempotent_and_snapshots_selected_revision(tmp
         loop.close()
 
 
+def test_streaming_batch_accessors_avoid_full_materialization(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "stream-key")
+        store = service.store
+        batch_id = batch["id"]
+
+        header = store.get_download_batch_header(batch_id)
+        assert header is not None
+        assert header["id"] == batch_id
+        assert header["task_id"] == batch["task_id"]
+        assert "packages" not in header
+
+        summaries = store.list_download_batch_package_summaries(batch_id)
+        assert [summary["package_id"] for summary in summaries] == [10, 20]
+        assert all("items" not in summary for summary in summaries)
+
+        assert [
+            item["message_id"]
+            for item in store.get_download_batch_package_items(batch_id, 10)
+        ] == [101, 102]
+        assert [
+            item["message_id"]
+            for item in store.get_download_batch_package_items(batch_id, 20)
+        ] == [201, 202]
+
+        assert store.count_download_batch_items(batch_id) == 4
+    finally:
+        loop.close()
+
+
 def test_list_active_download_batches_excludes_terminal_and_undispatched(tmp_path):
     service, library, loop = make_download_service(tmp_path)
     try:
@@ -468,6 +499,92 @@ def test_create_download_batch_rejects_nonterminal_library_and_stale_selection(t
         loop.close()
 
 
+def test_run_download_batch_streams_one_package_into_memory_at_a_time(tmp_path):
+    order = []
+
+    class TrackingClient:
+        async def get_messages(self, _chat_id, message_ids):
+            order.append(("refetch", list(message_ids)))
+            return [
+                SimpleNamespace(
+                    id=message_id,
+                    empty=False,
+                    caption=f"live-{message_id}",
+                    media="video",
+                    media_group_id=None,
+                    video=SimpleNamespace(
+                        file_name=f"{message_id}.mp4",
+                        file_size=100,
+                        mime_type="video/mp4",
+                    ),
+                )
+                for message_id in message_ids
+            ]
+
+    import media_downloader
+    import module.task_state as task_state_module
+
+    from module.app import DownloadStatus
+    from module.download_stat import get_active_task_nodes
+    from module.task_state import FileStatus
+
+    client = TrackingClient()
+    service, library, loop = make_download_service(tmp_path, client=client)
+    try:
+        batch = service.create_download_batch(library["id"], "stream-run")
+
+        async def fake_add_download_task(message, node):
+            order.append(("download", message.id))
+            node.total_task += 1
+            node.total_download_task += 1
+            node.download_status[message.id] = DownloadStatus.SuccessDownload
+            node.stat(
+                DownloadStatus.SuccessDownload,
+                node.chat_id,
+                message.id,
+                f"/{message.id}.mp4",
+            )
+            service.task_store.upsert_file(
+                node.task_id,
+                message.id,
+                status=FileStatus.DOWNLOADED,
+                filename=f"/{message.id}.mp4",
+            )
+            return True
+
+        async def fake_report(*_args, **_kwargs):
+            return None
+
+        old_store = task_state_module._TASK_STORE
+        task_state_module._TASK_STORE = service.task_store
+        try:
+            with patch.object(
+                media_downloader, "add_download_task", new=fake_add_download_task
+            ), patch(
+                "module.pyrogram_extension.report_bot_status", new=fake_report
+            ):
+                results = loop.run_until_complete(
+                    service.run_download_batch(batch["id"])
+                )
+        finally:
+            task_state_module._TASK_STORE = old_store
+            get_active_task_nodes().pop(batch["task_id"], None)
+
+        # Each package is refetched immediately before its own download; the
+        # next package is not refetched until the previous one has downloaded.
+        assert order == [
+            ("refetch", [101, 102]),
+            ("download", 101),
+            ("download", 102),
+            ("refetch", [201, 202]),
+            ("download", 201),
+            ("download", 202),
+        ]
+        assert [result.status for result in results] == ["completed", "completed"]
+    finally:
+        loop.close()
+
+
 def test_run_download_batch_refetches_exact_snapshot_and_writes_package_results(
     tmp_path,
 ):
@@ -513,13 +630,15 @@ def test_run_download_batch_refetches_exact_snapshot_and_writes_package_results(
             on_package_started=None,
             on_package_finished=None,
             manage_parent_lifecycle=True,
+            prepare_package=None,
         ):
             from media_downloader import PackageDownloadResult, PackageMessageResult
 
             assert channel == "Demo Channel"
             assert selected_package_ids == {10, 20}
             results = []
-            for package in packages:
+            for descriptor in packages:
+                package = await prepare_package(descriptor)
                 captured.append(
                     (
                         package.package_id,
@@ -711,12 +830,14 @@ def test_run_download_batch_contains_refetch_error_to_affected_package(tmp_path)
             selected_package_ids=None,
             on_package_started=None,
             on_package_finished=None,
+            prepare_package=None,
             **_kwargs,
         ):
             from media_downloader import PackageDownloadResult, PackageMessageResult
 
             results = []
-            for package in packages:
+            for descriptor in packages:
+                package = await prepare_package(descriptor)
                 await on_package_started(package.attempt_id, package)
                 status = "failed" if package.fetch_error else "completed"
                 message_results = {
@@ -966,7 +1087,10 @@ def test_same_batch_concurrent_runner_is_rejected_before_second_refetch(tmp_path
             task_store=TaskStateStore(storage_path=service.task_store.storage_path),
         )
 
-        async def no_download(**_kwargs):
+        async def no_download(packages, prepare_package=None, **_kwargs):
+            # Materialize the first package so its (blocking) refetch runs, which
+            # is what holds the first runner busy while the second is rejected.
+            await prepare_package(packages[0])
             return []
 
         async def scenario():
@@ -1042,6 +1166,7 @@ def test_restart_normalizes_stale_downloading_attempt_before_resume(tmp_path):
             packages,
             on_package_started=None,
             on_package_finished=None,
+            prepare_package=None,
             **_kwargs,
         ):
             from media_downloader import PackageDownloadResult, PackageMessageResult
@@ -1053,7 +1178,8 @@ def test_restart_normalizes_stale_downloading_attempt_before_resume(tmp_path):
                 ]
             )
             results = []
-            for package in packages:
+            for descriptor in packages:
+                package = await prepare_package(descriptor)
                 await on_package_started(package.attempt_id, package)
                 message_results = {
                     message_id: PackageMessageResult(message_id, "completed")
@@ -1165,10 +1291,9 @@ def test_inherited_caption_snapshot_reconstructs_text_zero_and_one(tmp_path):
         batch = service.create_download_batch(library["id"], "caption-bool")
         captured = []
 
-        async def capture_packages(packages, **_kwargs):
-            captured.extend(
-                [item.inherited_caption for item in packages[0].items]
-            )
+        async def capture_packages(packages, prepare_package=None, **_kwargs):
+            package = await prepare_package(packages[0])
+            captured.extend([item.inherited_caption for item in package.items])
             return []
 
         with patch(

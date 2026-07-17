@@ -891,6 +891,40 @@ def test_selection_single_filtered_clear_and_summary(web_env):
     assert cleared.get_json()["cleared_count"] == 1
 
 
+def test_create_download_batch_response_is_a_lightweight_summary(web_env):
+    env = web_env
+    library, job = create_library(env)
+    package_id = insert_package(env.store, library["id"], 10)
+    insert_package_item(env.store, library["id"], package_id, 10)
+    env.store.set_package_selected(library["id"], package_id, True)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
+            (job["id"],),
+        )
+    env.service.schedule_download_batch_threadsafe = lambda *_a, **_k: None
+    headers = {**csrf_headers(env), "Idempotency-Key": "summary-key"}
+
+    response = env.client.post(
+        f"/api/channel-libraries/{library['id']}/download-batches",
+        json={"redownload": False},
+        headers=headers,
+    )
+
+    assert response.status_code == 202
+    batch = response.get_json()["batch"]
+    assert batch["task_id"].startswith("channel-batch-")
+    assert batch["package_count"] == 1
+    assert batch["item_count"] == 1
+    # The response must not carry the full (potentially huge) package/item snapshot.
+    assert "packages" not in batch
+    assert "items" not in batch
+
+
 def test_download_batch_requires_key_is_idempotent_and_schedules_once(web_env):
     env = web_env
     library, job = create_library(env)

@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Callable, Optional, Sequence
 
 from pyrogram import errors
@@ -400,23 +401,29 @@ class ChannelLibraryService:
                 _DOWNLOAD_BATCH_RUNNERS.discard(runner_key)
 
     def _cancel_unfinished_download_batch(self, batch_id: int) -> None:
-        batch = self.store.get_download_batch(batch_id)
-        if batch is None:
+        header = self.store.get_download_batch_header(batch_id)
+        if header is None:
             return
-        for package in batch["packages"]:
-            if package["status"] in {"queued", "downloading"}:
+        for summary in self.store.list_download_batch_package_summaries(batch_id):
+            if summary["status"] in {"queued", "downloading"}:
                 self.store.finish_download_batch_package(
                     batch_id,
-                    int(package["package_id"]),
+                    int(summary["package_id"]),
                     "cancelled",
                     last_error="cancelled",
                 )
         self.task_store.update_task(
-            batch["task_id"], status=TaskStatus.CANCELLED, error="cancelled"
+            header["task_id"], status=TaskStatus.CANCELLED, error="cancelled"
         )
 
     async def _run_download_batch_owned(self, batch_id: int) -> list[Any]:
-        """Refetch and serially download one committed immutable batch snapshot."""
+        """Serially download one committed immutable batch snapshot.
+
+        Each package is materialized (its item snapshots loaded and its Telegram
+        messages refetched) immediately before its own download and released
+        afterwards, so a large batch never holds every package's messages in
+        memory at once.
+        """
 
         from media_downloader import PackageCallbackError, download_prescan_packages
         from module.app import TaskNode
@@ -428,33 +435,56 @@ class ChannelLibraryService:
         )
         from module.prescan_workflow import PrescanPackage
 
-        batch = self.store.get_download_batch(batch_id)
+        batch = self.store.get_download_batch_header(batch_id)
         if batch is None:
             raise KeyError(f"Download batch {batch_id} does not exist")
         library = self.store.get_library(int(batch["library_id"]))
         if library is None:
             raise KeyError(f"Channel library {batch['library_id']} does not exist")
-        packages = []
+
+        descriptors = []
         attempt_packages = {}
-        attempt_errors = {}
-        for package_snapshot in batch["packages"]:
-            if package_snapshot["status"] not in {"queued", "downloading"}:
+        attempt_errors: dict[str, Optional[str]] = {}
+        for summary in self.store.list_download_batch_package_summaries(batch_id):
+            if summary["status"] not in {"queued", "downloading"}:
                 continue
-            message_ids = [
-                int(item["message_id"]) for item in package_snapshot["items"]
-            ]
-            fetch_error = None
+            attempt_id = f"{batch_id}:{int(summary['package_id'])}"
+            descriptor = SimpleNamespace(
+                package_id=int(summary["package_id"]),
+                package_revision=int(summary["package_revision"]),
+                title=summary["title"],
+                start_message_id=int(summary["start_message_id"]),
+                end_message_id=int(summary["end_message_id"]),
+                attempt_id=attempt_id,
+            )
+            descriptors.append(descriptor)
+            attempt_packages[attempt_id] = descriptor.package_id
+
+        node = TaskNode(
+            chat_id=int(library["chat_id"]),
+            bot=None,
+            task_id=batch["task_id"],
+        )
+        node.client = self.client
+        node.preserve_task_identity = True
+
+        async def prepare_package(descriptor: Any) -> Any:
+            item_snapshots = self.store.get_download_batch_package_items(
+                batch_id, descriptor.package_id
+            )
+            message_ids = [int(item["message_id"]) for item in item_snapshots]
+            fetch_error: Optional[str] = None
             try:
                 async with self.gate.download_permit():
                     raw_messages = await self.client.get_messages(
                         int(library["chat_id"]), message_ids
                     )
-            except Exception as error:
+            except Exception:  # noqa: BLE001 - contained to one package
                 raw_messages = []
                 fetch_error = "telegram_refetch_failed"
                 LOGGER.exception(
                     "Telegram refetch failed for channel package %s",
-                    package_snapshot["package_id"],
+                    descriptor.package_id,
                 )
             found_by_id = {
                 int(message.id): message
@@ -463,7 +493,7 @@ class ChannelLibraryService:
             }
             media_items = []
             failed_message_ids = []
-            for item_snapshot in package_snapshot["items"]:
+            for item_snapshot in item_snapshots:
                 message_id = int(item_snapshot["message_id"])
                 message = found_by_id.get(message_id)
                 if message is None or getattr(message, "empty", False):
@@ -483,38 +513,29 @@ class ChannelLibraryService:
             messages = [item.message for item in media_items]
             package_plan = MessagePackagePlan(
                 items=media_items,
-                package_title=package_snapshot["title"],
+                package_title=descriptor.title,
                 summary=summarize_comments(messages),
                 size_summary=build_size_summary(messages),
             )
             package = PrescanPackage(
-                package_id=int(package_snapshot["package_id"]),
-                title=package_snapshot["title"],
-                start_message_id=int(package_snapshot["start_message_id"]),
-                end_message_id=int(package_snapshot["end_message_id"]),
+                package_id=descriptor.package_id,
+                title=descriptor.title,
+                start_message_id=descriptor.start_message_id,
+                end_message_id=descriptor.end_message_id,
                 items=media_items,
                 package_plan=package_plan,
                 messages=messages,
                 failed_message_ids=failed_message_ids,
                 expected_message_ids=message_ids,
             )
-            package.package_revision = int(package_snapshot["package_revision"])
-            package.attempt_id = f"{batch_id}:{package.package_id}"
+            package.package_revision = descriptor.package_revision
+            package.attempt_id = descriptor.attempt_id
             package.not_found_message_ids = (
                 set(failed_message_ids) if fetch_error is None else set()
             )
             package.fetch_error = fetch_error
-            packages.append(package)
-            attempt_packages[package.attempt_id] = package.package_id
-            attempt_errors[package.attempt_id] = fetch_error
-
-        node = TaskNode(
-            chat_id=int(library["chat_id"]),
-            bot=None,
-            task_id=batch["task_id"],
-        )
-        node.client = self.client
-        node.preserve_task_identity = True
+            attempt_errors[descriptor.attempt_id] = fetch_error
+            return package
 
         async def on_package_started(attempt_id: Any, _package: Any) -> None:
             self.store.mark_download_batch_package_started(
@@ -543,19 +564,22 @@ class ChannelLibraryService:
                 status,
                 last_error=(
                     "telegram_refetch_failed"
-                    if attempt_errors[attempt_id]
+                    if attempt_errors.get(attempt_id)
                     else _package_error_code(status)
                 ),
             )
 
         try:
             results = await download_prescan_packages(
-                packages,
+                descriptors,
                 channel=batch["channel_title"],
                 parent_node=node,
-                selected_package_ids={package.package_id for package in packages},
+                selected_package_ids={
+                    descriptor.package_id for descriptor in descriptors
+                },
                 on_package_started=on_package_started,
                 on_package_finished=on_package_finished,
+                prepare_package=prepare_package,
             )
         except Exception as error:
             error_code = (
@@ -564,11 +588,11 @@ class ChannelLibraryService:
                 else "download_failed"
             )
             LOGGER.exception("Channel package batch download failed")
-            for package in self.store.get_download_batch(batch_id)["packages"]:
-                if package["status"] in {"queued", "downloading"}:
+            for summary in self.store.list_download_batch_package_summaries(batch_id):
+                if summary["status"] in {"queued", "downloading"}:
                     self.store.finish_download_batch_package(
                         batch_id,
-                        int(package["package_id"]),
+                        int(summary["package_id"]),
                         "failed",
                         last_error=error_code,
                     )
@@ -578,12 +602,12 @@ class ChannelLibraryService:
             raise
         completed_package_ids = {result.package_id for result in results}
         remaining_status = "cancelled" if node.is_stop_transmission else "failed"
-        for package in packages:
-            if package.package_id in completed_package_ids:
+        for descriptor in descriptors:
+            if descriptor.package_id in completed_package_ids:
                 continue
             self.store.finish_download_batch_package(
                 batch_id,
-                package.package_id,
+                descriptor.package_id,
                 remaining_status,
                 last_error=(
                     "cancelled" if remaining_status == "cancelled" else "download_failed"

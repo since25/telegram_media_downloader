@@ -2137,6 +2137,126 @@ class MediaDownloaderTestCase(unittest.TestCase):
                 real_store.get_task(node.task_id).status, TaskStatus.COMPLETED
             )
 
+    def test_download_prescan_packages_materializes_each_package_lazily_with_prepare_hook(self):
+        import media_downloader
+        import module.task_state as task_state_module
+
+        from types import SimpleNamespace
+
+        from module.comment_workflow import plan_message_package
+        from module.download_stat import get_active_task_nodes
+        from module.prescan_workflow import PrescanPackage
+        from module.task_state import FileStatus, TaskStateStore
+
+        # Descriptors carry only routing metadata; no messages/items are held.
+        descriptors = [
+            SimpleNamespace(
+                package_id=11,
+                start_message_id=101,
+                title="Lesson 1",
+                attempt_id="attempt-11",
+            ),
+            SimpleNamespace(
+                package_id=22,
+                start_message_id=202,
+                title="Lesson 2",
+                attempt_id="attempt-22",
+            ),
+        ]
+        events = []
+        live = {"count": 0, "max": 0}
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            real_store = TaskStateStore(storage_path=Path(tmp_dir) / "tasks.sqlite3")
+            node = TaskNode(chat_id=-1001, bot=None, task_id="channel-batch-stream")
+            node.client = object()
+
+            async def prepare_package(descriptor):
+                live["count"] += 1
+                live["max"] = max(live["max"], live["count"])
+                events.append(("prepare", descriptor.package_id))
+                message = MockMessage(
+                    id=descriptor.start_message_id,
+                    media="video",
+                    caption=descriptor.title,
+                    video=MockVideo(
+                        file_name=f"{descriptor.start_message_id}.mp4",
+                        mime_type="video/mp4",
+                    ),
+                )
+                plan = plan_message_package([message], message.id)
+                package = PrescanPackage(
+                    descriptor.package_id,
+                    descriptor.title,
+                    descriptor.start_message_id,
+                    descriptor.start_message_id,
+                    plan.items,
+                    plan,
+                    [message],
+                )
+                package.attempt_id = descriptor.attempt_id
+                return package
+
+            async def fake_add_download_task(message, package_node):
+                events.append(("download", message.id))
+                package_node.total_task += 1
+                package_node.total_download_task += 1
+                package_node.download_status[message.id] = DownloadStatus.SuccessDownload
+                package_node.stat(
+                    DownloadStatus.SuccessDownload,
+                    package_node.chat_id,
+                    message.id,
+                    f"/{message.id}.mp4",
+                )
+                real_store.upsert_file(
+                    package_node.task_id,
+                    message.id,
+                    status=FileStatus.DOWNLOADED,
+                    filename=f"/{message.id}.mp4",
+                )
+                live["count"] -= 1
+                return True
+
+            async def fake_report(*_args, **_kwargs):
+                return None
+
+            old_store = task_state_module._TASK_STORE
+            task_state_module._TASK_STORE = real_store
+            try:
+                with mock.patch.object(
+                    media_downloader, "add_download_task", new=fake_add_download_task
+                ), mock.patch(
+                    "module.pyrogram_extension.report_bot_status", new=fake_report
+                ):
+                    results = self.loop.run_until_complete(
+                        media_downloader.download_prescan_packages(
+                            descriptors,
+                            channel="Course",
+                            parent_node=node,
+                            selected_package_ids={11, 22},
+                            prepare_package=prepare_package,
+                        )
+                    )
+            finally:
+                task_state_module._TASK_STORE = old_store
+                get_active_task_nodes().pop(node.task_id, None)
+
+            # Each package is built immediately before its own download, so only
+            # one package is ever materialized at a time.
+            self.assertEqual(live["max"], 1)
+            self.assertEqual(
+                events,
+                [
+                    ("prepare", 11),
+                    ("download", 101),
+                    ("prepare", 22),
+                    ("download", 202),
+                ],
+            )
+            self.assertEqual(
+                [result.status for result in results], ["completed", "completed"]
+            )
+
     def test_download_prescan_packages_preserves_snapshot_result_order_with_missing_middle(self):
         import media_downloader
         import module.task_state as task_state_module

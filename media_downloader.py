@@ -120,6 +120,7 @@ class PackageDownloadResult:
 
 PackageStartedCallback = Callable[[Any, Any], Any]
 PackageFinishedCallback = Callable[[Any, dict[int, PackageMessageResult]], Any]
+PreparePackageCallback = Callable[[Any], Any]
 
 
 class PackageCallbackError(RuntimeError):
@@ -2406,8 +2407,15 @@ async def download_prescan_packages(
     on_package_started: Optional[PackageStartedCallback] = None,
     on_package_finished: Optional[PackageFinishedCallback] = None,
     manage_parent_lifecycle: bool = True,
+    prepare_package: Optional[PreparePackageCallback] = None,
 ) -> list[PackageDownloadResult]:
-    """Download selected prescan packages one by one using recommended naming."""
+    """Download selected prescan packages one by one using recommended naming.
+
+    When ``prepare_package`` is given, ``packages`` may be lightweight
+    descriptors: each is materialized into a full package (fetching its media)
+    immediately before its own download and released afterwards, so only one
+    package is ever held in memory at a time.
+    """
 
     from module.comment_workflow import NamingStrategy, PackageNamingContext
     from module.download_stat import (
@@ -2442,13 +2450,18 @@ async def download_prescan_packages(
         ):
             add_active_task_node(parent_node)
 
-        for index, package in enumerate(ordered_packages, start=1):
+        for index, descriptor in enumerate(ordered_packages, start=1):
             if not parent_node.is_running or parent_node.is_stop_transmission:
                 logger.info(
-                    f"Prescan parent task stopped before package {package.package_id}"
+                    f"Prescan parent task stopped before package {descriptor.package_id}"
                 )
                 break
 
+            package = (
+                descriptor
+                if prepare_package is None
+                else await prepare_package(descriptor)
+            )
             parent_node.package_naming_context = PackageNamingContext(
                 strategy=NamingStrategy.RECOMMENDED,
                 channel=channel,

@@ -540,14 +540,23 @@ def _safe_overview(overview: dict) -> dict:
     return result
 
 
-def _safe_batch(batch: dict) -> dict:
-    result = dict(batch)
-    result["packages"] = []
-    for package in batch.get("packages", []):
-        safe_package = dict(package)
-        safe_package["items"] = [dict(item) for item in package.get("items", [])]
-        result["packages"].append(safe_package)
-    return result
+def _batch_summary(batch: dict) -> dict:
+    """Return only batch-level fields; never the full package/item snapshot.
+
+    A "download all" batch can hold tens of thousands of items, so serializing
+    the whole snapshot into the HTTP response is a needless memory/transfer cost.
+    """
+
+    packages = batch.get("packages", [])
+    return {
+        "id": batch["id"],
+        "task_id": batch["task_id"],
+        "status": batch["status"],
+        "dispatch_status": batch["dispatch_status"],
+        "channel_title": batch["channel_title"],
+        "package_count": len(packages),
+        "item_count": sum(len(package.get("items", [])) for package in packages),
+    }
 
 
 @_flask_app.route("/api/csrf-token")
@@ -928,7 +937,7 @@ def create_channel_download_batch(library_id: int):
             "service_unavailable",
             "Download batch was persisted and will resume when service is available",
         )
-    return jsonify({"batch": _safe_batch(batch), "created": created}), (
+    return jsonify({"batch": _batch_summary(batch), "created": created}), (
         202 if created else 200
     )
 

@@ -1457,3 +1457,39 @@ Changed files:
 
 Rollback:
 - `git revert --no-commit c388685..HEAD && git commit -m "revert: roll back full channel library" && git push origin master`, then on the server `git pull --ff-only origin master && systemctl restart tg-downloader.service`. Preserve `channel_library.sqlite3` and `web_tasks.sqlite3`; never delete them during rollback. Server rollback reference commit: `339efc1`.
+
+## 2026-07-17 - Task: Stream channel download batches to bound memory
+
+### What was done
+
+- Fixed the "download all → OOM on 1 GiB" risk on the channel-library download path by materializing one package at a time instead of pre-building every package's Telegram messages up front.
+- `download_prescan_packages` gained an optional async `prepare_package` hook: when provided, `packages` may be lightweight descriptors that are materialized (item snapshots loaded, messages refetched) immediately before each package's own download and released afterward. Default (no hook) behavior is unchanged for existing prescan/bot callers.
+- `ChannelLibraryService._run_download_batch_owned` now streams package summaries from SQL and refetches each package inside the hook, so only one package's messages are ever in memory. The single `download_prescan_packages` call still owns the parent-node lifecycle and `prescan_batch_in_progress` guard exactly once, so package-scoped completion is unchanged. Cancel/exception paths use package summaries instead of the full batch.
+- Added store accessors `get_download_batch_header`, `list_download_batch_package_summaries`, `get_download_batch_package_items`, `count_download_batch_items`.
+- Batch creation now inserts each package's items with one `executemany` instead of a per-row loop, shrinking the write-lock window so a large "select all" batch cannot time out a concurrent scan commit.
+- The `POST /download-batches` response now returns a lightweight batch summary (id, task_id, status, dispatch_status, channel_title, package_count, item_count) instead of the full package/item snapshot; the frontend only reads `created`/`id`.
+
+### Testing
+
+- New tests (TDD, each watched RED first):
+  - `tests/test_media_downloader.py::...materializes_each_package_lazily_with_prepare_hook` — proves one package materialized at a time and lazy interleaving.
+  - `tests/test_channel_library_download.py::...streams_one_package_into_memory_at_a_time` — proves refetch of package N+1 only after package N downloads.
+  - `tests/test_channel_library_download.py::...streaming_batch_accessors_avoid_full_materialization` — header/summaries/per-package-items/count accessors.
+  - `tests/module/test_channel_library_web.py::...response_is_a_lightweight_summary` — response omits packages/items, carries counts.
+- Updated the run-path test fakes that replace `download_prescan_packages` to call the new `prepare_package` hook (assertions on refetch IDs, package fields, statuses unchanged).
+- Full suite: `.venv/bin/python -m pytest tests/ -q` -> `480 passed, 1 skipped`.
+- `pylint --errors-only` on the 4 changed modules -> no new errors (only the pre-existing `STARTUP_SCAN_WINDOW_SEC` E0602 and known `os`/`pyrogram` E1101 false positives). `git diff --check` clean.
+
+### Notes
+
+Deferred (documented, not OOM): `create_download_batch_result`/`get_download_batch` still materialize the whole batch once at creation (bounded DB-row dicts, a few MB — not the Pyrogram-message OOM); `reconcile_download_batches` still materializes an active batch's items for file-evidence repair. These are follow-up efficiency items, not crash risks.
+
+Changed files:
+- `media_downloader.py`: `download_prescan_packages` optional `prepare_package` lazy-materialization hook.
+- `module/channel_library_service.py`: streamed `_run_download_batch_owned` + summary-based cancel/exception paths.
+- `module/channel_library_store.py`: streaming batch accessors + `executemany` item inserts.
+- `module/web.py`: `_batch_summary` lightweight create response.
+- `tests/*`: new streaming tests + updated run-path fakes.
+
+Rollback:
+- `git revert` the commit `perf: stream channel download batches to bound memory`; preserve `channel_library.sqlite3` and `web_tasks.sqlite3` (no schema change was made).
