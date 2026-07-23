@@ -32,8 +32,8 @@ def test_channel_library_config_is_clamped():
     assert app.channel_library_config.full_scan_batch_size == 100
     assert app.channel_library_config.full_scan_delay_min_sec == 2.0
     assert app.channel_library_config.incremental_scan_delay_min_sec == 0.5
-    assert app.channel_library_config.incremental_scan_cron == "*/15 * * * *"
-    assert app.channel_library_config.incremental_scan_timezone == "Asia/Shanghai"
+    assert not hasattr(app.channel_library_config, "incremental_scan_cron")
+    assert not hasattr(app.channel_library_config, "incremental_scan_timezone")
 
 
 class AppTestCase(unittest.TestCase):

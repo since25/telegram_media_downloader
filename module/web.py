@@ -646,6 +646,63 @@ def csrf_token():
     return jsonify({"csrf_token": _csrf_token()})
 
 
+@_flask_app.route("/api/channel-library-settings/incremental-scan", methods=["GET"])
+@login_required
+@_channel_api
+def incremental_scan_settings():
+    """Return the persisted global automatic incremental-scan schedule."""
+
+    _require_query_fields()
+    _require_no_body()
+    return jsonify(_channel_service().get_incremental_scan_settings())
+
+
+@_flask_app.route("/api/channel-library-settings/incremental-scan", methods=["PUT"])
+@login_required
+@_channel_api
+@_require_csrf
+def update_incremental_scan_settings():
+    """Persist and hot-apply the global automatic incremental-scan schedule."""
+
+    fields = frozenset({"enabled", "cron", "timezone"})
+    payload = _json_object(fields)
+    if set(payload) != fields:
+        _invalid_request("enabled, cron, and timezone are required")
+    enabled = payload["enabled"]
+    expression = payload["cron"]
+    timezone = payload["timezone"]
+    if type(enabled) is not bool:
+        _invalid_request("enabled must be a boolean")
+    if not isinstance(expression, str):
+        _invalid_request("cron must be a string")
+    if not isinstance(timezone, str) or not timezone.strip():
+        _invalid_request("timezone must be a non-empty string")
+    try:
+        future = _channel_service().submit_incremental_scan_settings_threadsafe(
+            enabled, expression, timezone
+        )
+        settings = future.result(timeout=10)
+    except concurrent.futures.TimeoutError:
+        raise _ChannelApiError(
+            503,
+            "service_timeout",
+            "Incremental scan settings are still being applied",
+        )
+    except ValueError:
+        raise _ChannelApiError(
+            400,
+            "invalid_request",
+            "Cron expression or timezone is invalid",
+        )
+    except RuntimeError:
+        raise _ChannelApiError(
+            503,
+            "service_unavailable",
+            "Channel library service is unavailable",
+        )
+    return jsonify(settings)
+
+
 @_flask_app.route("/api/channel-libraries", methods=["GET"])
 @login_required
 @_channel_api

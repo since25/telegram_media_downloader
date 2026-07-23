@@ -35,18 +35,23 @@ search and download controls live only in Resources; the selected channel worksp
 shows stable/available, downloaded, pending, media, known-size, and failure counts plus
 the stable-package distribution for enabled keyword monitor groups and match terms.
 
-The initial full scan requests 50 consecutive message IDs per batch and waits a randomized 4-6 seconds between successful batches. Work is charged by the snapshotted ID range, not by visible-message count; deleted or unavailable gaps do not reduce the number of batches. A 15,000-ID range is exactly 300 batches and 299 inter-batch delays, so delay alone is theoretically 19 minutes 56 seconds to 29 minutes 54 seconds (about 20-30 minutes). This is not a completion promise: Telegram API latency, FloodWait, transient retries, automatic download priority, and user pause all extend elapsed time. Incremental and repair scans also use 50-ID batches with 1-2 second delays. These are validated server settings loaded from `config.yaml`; changing them requires a restart.
+The initial full scan requests 50 consecutive message IDs per batch and waits a randomized 4-6 seconds between successful batches. Work is charged by the snapshotted ID range, not by visible-message count; deleted or unavailable gaps do not reduce the number of batches. A 15,000-ID range is exactly 300 batches and 299 inter-batch delays, so delay alone is theoretically 19 minutes 56 seconds to 29 minutes 54 seconds (about 20-30 minutes). This is not a completion promise: Telegram API latency, FloodWait, transient retries, automatic download priority, and user pause all extend elapsed time. Incremental and repair scans also use 50-ID batches with 1-2 second delays. Batch sizes, delays, and retry timing are validated server settings loaded from `config.yaml`; changing them requires a restart.
 
 The scheduler runs one channel scan at a time. A queued or active Telegram media download takes priority: the current scan finishes its API call, moves to `auto_paused_download` at the batch boundary, and returns to the queue when Telegram download activity is idle. Upload-only work does not hold the Telegram activity gate. User pause and stop also take effect at a committed batch boundary, preserving metadata and the next-message checkpoint.
 
-`channel_library.incremental_scan_cron` is one optional global five-field cron expression
-for all libraries; empty disables it. `channel_library.incremental_scan_timezone`
-defaults to `Asia/Shanghai`. At each tick the owner-loop cron task checks libraries in
-ID order. A library is skipped when it has any queued, running, paused, rate-limited, or
-stopped recoverable scan, including its initial/manual full scan. A latest-message check
-that finds no new ID creates no job. Missed or skipped ticks are not accumulated. New
-tails are persisted into the same FIFO scan scheduler as manual work, so the cron task
-never starts a parallel Telegram scanner.
+The Channels tab manages one optional global five-field cron expression and IANA
+timezone for all libraries. The singleton setting is stored in
+`channel_library.sqlite3`, is disabled after schema-v7 migration, and is never read from
+or written to `config.yaml`. Saving through the Web console wakes the owner-loop watcher
+and applies the new schedule without restarting or cancelling an active Telegram
+request. The disabled state retains its saved expression.
+
+At each tick the watcher checks libraries in ID order. If any initial or manual full scan
+is queued, running, paused, rate-limited, or stopped, the whole automatic sweep yields.
+Otherwise, a library with any recoverable scan is skipped individually. A latest-message
+check that finds no new ID creates no job. Missed or skipped ticks are not accumulated.
+New tails are persisted into the same FIFO scan scheduler as manual work, so the cron
+watcher never starts a parallel Telegram scanner.
 
 Scan states shown by the page are:
 

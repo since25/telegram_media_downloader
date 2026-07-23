@@ -44,11 +44,13 @@ identity remains attached to every package and can be used as an optional multi-
 filter. The Channels tab shows per-channel package/download totals and the distribution
 of stable packages across enabled keyword monitor groups.
 
-Set `channel_library.incremental_scan_cron` to one global five-field cron expression
-and `channel_library.incremental_scan_timezone` to an IANA timezone to check every
-full-scanned channel for new messages. Empty cron disables automation. A scheduled tick
-does not create an empty job when the latest message ID is unchanged, and skips any
-channel that already has recoverable scan work.
+The Channels tab owns one database-backed automatic incremental-scan schedule for all
+indexed channels. Set its five-field cron expression and IANA timezone in the Web
+console; saving enables, disables, or changes the schedule immediately without a
+restart. These settings are not read from `config.yaml`. A scheduled tick creates no
+empty job when the latest message ID is unchanged. The whole sweep yields while any
+recoverable full scan exists, and otherwise skips channels that already have
+recoverable scan work.
 
 ### UI
 

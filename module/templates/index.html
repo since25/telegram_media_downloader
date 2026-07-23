@@ -245,6 +245,30 @@
       </div>
 
       <div class="tab-panel" id="tab_channel-library" role="tabpanel" aria-labelledby="app_tab_channel_library">
+        <form class="channel-cron-band" id="channel_incremental_scan_form">
+          <div class="channel-cron-heading">
+            <strong>自动增量扫描</strong>
+            <span>全部频道共用一套计划</span>
+          </div>
+          <div class="channel-cron-body">
+            <div class="channel-cron-fields">
+              <button type="button" class="sw off channel-cron-toggle" id="channel_incremental_scan_enabled" role="switch" aria-checked="false">
+                <i></i><span>已停用</span>
+              </button>
+              <div class="field">
+                <label for="channel_incremental_scan_cron">Cron 表达式</label>
+                <input class="input nums" id="channel_incremental_scan_cron" type="text" placeholder="0 */6 * * *" autocomplete="off" spellcheck="false">
+              </div>
+              <div class="field">
+                <label for="channel_incremental_scan_timezone">时区</label>
+                <input class="input nums" id="channel_incremental_scan_timezone" type="text" placeholder="Asia/Shanghai" autocomplete="off" spellcheck="false">
+              </div>
+              <button type="submit" class="btn btn-primary" id="channel_incremental_scan_save">保存</button>
+            </div>
+            <div class="channel-cron-status nums" id="channel_incremental_scan_status" aria-live="polite">正在读取设置</div>
+          </div>
+        </form>
+
         <div class="channel-library-layout">
           <aside class="channel-library-sidebar" aria-label="频道库列表">
             <form class="channel-library-add" id="channel_library_add_form">
@@ -269,7 +293,7 @@
                     <span id="channel_library_status"></span>
                   </div>
                   <div class="channel-library-meta nums" id="channel_library_meta">—</div>
-                  <div class="channel-library-rate">首次全量 50 条/批；自动增量按全局 cron 检查，无新消息不建任务</div>
+                  <div class="channel-library-rate">扫描任务按创建时间进入全局队列</div>
                 </div>
                 <div class="channel-library-controls" id="channel_library_scan_controls"></div>
               </header>
@@ -277,6 +301,10 @@
               <div class="channel-library-notice" id="channel_library_notice" hidden></div>
 
               <section class="channel-library-stats" id="channel_library_stats" aria-label="频道统计">
+                <header class="channel-section-heading">
+                  <strong>资源概览</strong>
+                  <span>当前稳定索引</span>
+                </header>
                 <div class="channel-stat-grid">
                   <div class="channel-stat">
                     <span>可用资源包</span>
@@ -290,23 +318,39 @@
                     <span>待下载</span>
                     <strong class="nums" id="channel_stat_pending">0</strong>
                   </div>
-                  <div class="channel-stat">
-                    <span>媒体总量</span>
-                    <strong class="nums" id="channel_stat_media">0</strong>
-                  </div>
-                  <div class="channel-stat">
-                    <span>已知体积</span>
-                    <strong class="nums" id="channel_stat_size">0 B</strong>
-                  </div>
-                  <div class="channel-stat">
-                    <span>待修复区间</span>
-                    <strong class="nums" id="channel_stat_failures">0</strong>
+                </div>
+                <div class="channel-operation-section">
+                  <header class="channel-section-heading">
+                    <strong>运行信息</strong>
+                    <span>索引与扫描状态</span>
+                  </header>
+                  <div class="channel-operation-grid">
+                    <div class="channel-operation">
+                      <span>媒体总量</span>
+                      <strong class="nums" id="channel_stat_media">0</strong>
+                    </div>
+                    <div class="channel-operation">
+                      <span>已知体积</span>
+                      <strong class="nums" id="channel_stat_size">0 B</strong>
+                    </div>
+                    <div class="channel-operation">
+                      <span>待修复区间</span>
+                      <strong class="nums" id="channel_stat_failures">0</strong>
+                    </div>
+                    <div class="channel-operation">
+                      <span>上次全量扫描</span>
+                      <strong class="nums" id="channel_stat_last_full">—</strong>
+                    </div>
+                    <div class="channel-operation">
+                      <span>上次增量扫描</span>
+                      <strong class="nums" id="channel_stat_last_incremental">—</strong>
+                    </div>
                   </div>
                 </div>
                 <div class="channel-keyword-section">
-                  <header>
+                  <header class="channel-section-heading">
                     <strong>监控关键词分布</strong>
-                    <span class="text-muted">按当前启用的监控组统计稳定资源包</span>
+                    <span>当前启用的监控组</span>
                   </header>
                   <div id="channel_keyword_distribution" class="channel-keyword-distribution"></div>
                 </div>
@@ -563,7 +607,7 @@
       prescanRows:{}, prescanSelected:new Set(), sys:null, timers:{}, channel:{
         csrfToken:null, csrfPromise:null, libraries:[], selectedLibraryId:null,
         libraryNextCursor:null, libraryPagesLoaded:0, generation:0,
-        detail:null, polling:false,
+        detail:null, polling:false, cronSettings:null,
       }, aggregate:{items:[],nextCursor:null,expandedItems:{},selection:null,loading:false},
       keywordMonitor:{groups:[],selectedGroupId:null,history:[],historyNextCursor:null,
         draftDirty:false,draft:null} };
@@ -908,6 +952,52 @@
       return channelRequest(url, options);
     }
 
+    function setIncrementalScanToggle(enabled){
+      const toggle = $('#channel_incremental_scan_enabled');
+      toggle.classList.toggle('on', enabled);
+      toggle.classList.toggle('off', !enabled);
+      toggle.setAttribute('aria-checked', enabled ? 'true' : 'false');
+      toggle.querySelector('span').textContent = enabled ? '已启用' : '已停用';
+    }
+    function renderIncrementalScanSettings(settings){
+      state.channel.cronSettings = settings;
+      setIncrementalScanToggle(Boolean(settings.enabled));
+      $('#channel_incremental_scan_cron').value = settings.cron || '';
+      $('#channel_incremental_scan_timezone').value = settings.timezone || 'Asia/Shanghai';
+      const status = $('#channel_incremental_scan_status');
+      const next = settings.enabled ? `下次执行 ${formatChannelTime(settings.next_run_at)}` : '当前不执行';
+      const last = `上次触发 ${formatChannelTime(settings.last_triggered_at)}`;
+      status.dataset.tone = settings.enabled ? 'active' : 'muted';
+      status.textContent = `${settings.enabled ? '计划已启用' : '计划已停用'} · ${next} · ${last}`;
+    }
+    async function loadIncrementalScanSettings(){
+      const settings = await channelRequest('/api/channel-library-settings/incremental-scan');
+      renderIncrementalScanSettings(settings);
+    }
+    async function saveIncrementalScanSettings(){
+      const save = $('#channel_incremental_scan_save');
+      const status = $('#channel_incremental_scan_status');
+      const enabled = $('#channel_incremental_scan_enabled').getAttribute('aria-checked') === 'true';
+      const cron = $('#channel_incremental_scan_cron').value.trim();
+      const timezone = $('#channel_incremental_scan_timezone').value.trim();
+      save.disabled = true;
+      status.dataset.tone = 'muted';
+      status.textContent = '正在保存';
+      try {
+        const settings = await channelApiWrite(
+          'PUT',
+          '/api/channel-library-settings/incremental-scan',
+          {enabled, cron, timezone}
+        );
+        renderIncrementalScanSettings(settings);
+      } catch (error){
+        status.dataset.tone = 'error';
+        status.textContent = `保存失败 · ${error.message}`;
+      } finally {
+        save.disabled = false;
+      }
+    }
+
     function renderChannelLibraries(){
       const rows = $('#channel_library_rows');
       $('#channel_library_empty').hidden = state.channel.libraries.length > 0;
@@ -998,6 +1088,19 @@
       }
       controls.innerHTML = buttons.join('');
     }
+    function renderChannelKeywordGroup(group){
+      const keywords = group.keywords || [];
+      const maxCount = Math.max(1,...keywords.map(item=>Number(item.package_count)||0));
+      const rows = keywords.map(item=>{
+        const count = Number(item.package_count)||0;
+        const width = Math.max(4,Math.round(count/maxCount*100));
+        return `<div class="channel-keyword"><span>${escapeHtml(item.keyword)}</span><span class="channel-keyword-bar"><i style="width:${width}%"></i></span><b class="nums">${count}</b></div>`;
+      }).join('');
+      return `<section class="channel-keyword-group">
+        <header><strong>${escapeHtml(group.group_name)}</strong><span class="nums">${Number(group.package_count)||0} 包</span></header>
+        <div class="channel-keyword-list">${rows}</div>
+      </section>`;
+    }
     function renderChannelDetail(){
       const detail = state.channel.detail;
       if (!detail) return;
@@ -1019,11 +1122,10 @@
         Number(counts.unknown_size_package_count)===0
       );
       $('#channel_stat_failures').textContent = Number(counts.open_failure_count)||0;
+      $('#channel_stat_last_full').textContent = formatChannelTime(library.last_full_scan_at);
+      $('#channel_stat_last_incremental').textContent = formatChannelTime(library.last_incremental_scan_at);
       $('#channel_keyword_distribution').innerHTML = distribution.length
-        ? distribution.map(group=>`<section class="channel-keyword-group">
-            <header><strong>${escapeHtml(group.group_name)}</strong><span class="nums">${Number(group.package_count)||0} 包</span></header>
-            <div>${(group.keywords||[]).map(item=>`<span class="channel-keyword"><span>${escapeHtml(item.keyword)}</span><b class="nums">${Number(item.package_count)||0}</b></span>`).join('')}</div>
-          </section>`).join('')
+        ? distribution.map(renderChannelKeywordGroup).join('')
         : '<div class="channel-keyword-empty">当前频道暂无匹配的启用监控关键词</div>';
       renderChannelScanControls(detail);
       $('#channel_library_delete').disabled = Boolean(scan && CHANNEL_ACTIVE_SCAN.has(scan.status));
@@ -1066,10 +1168,24 @@
     async function activateChannelLibrary(){
       try {
         await ensureChannelCsrf();
+        try { await loadIncrementalScanSettings(); }
+        catch (error){
+          const status = $('#channel_incremental_scan_status');
+          status.dataset.tone = 'error';
+          status.textContent = `读取失败 · ${error.message}`;
+        }
         await pollChannelLibraries();
       } catch (error){ showChannelNotice(error.message, 'error'); }
     }
 
+    $('#channel_incremental_scan_enabled').addEventListener('click', () => {
+      const enabled = $('#channel_incremental_scan_enabled').getAttribute('aria-checked') !== 'true';
+      setIncrementalScanToggle(enabled);
+    });
+    $('#channel_incremental_scan_form').addEventListener('submit', async e => {
+      e.preventDefault();
+      await saveIncrementalScanSettings();
+    });
     $('#channel_library_add_form').addEventListener('submit', async e => {
       e.preventDefault();
       const link = $('#channel_library_link').value.trim();

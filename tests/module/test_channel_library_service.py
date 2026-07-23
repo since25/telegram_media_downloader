@@ -396,6 +396,56 @@ async def test_scheduled_incremental_queues_new_tail_for_each_eligible_channel(
 
 
 @async_test
+async def test_scheduled_incremental_sweep_yields_to_any_recoverable_full_scan(
+    tmp_path,
+):
+    service, first, _sleep = make_service(tmp_path)
+    finish_full_scan(service, first, snapshot_max=40)
+    second, _ = service.store.create_or_get_library(
+        -1002, "channel", "two", "Two", "https://t.me/two/1"
+    )
+    service.store.create_scan_job(second["id"], "full", 1, 50)
+    service.client.latest_message_id = 45
+    service.owner_loop = asyncio.get_running_loop()
+
+    queued = await service.queue_scheduled_incrementals()
+
+    assert queued == []
+    assert service.store.get_latest_job(first["id"])["kind"] == "full"
+
+
+@async_test
+async def test_scheduled_incremental_stops_after_new_full_scan_appears(
+    tmp_path, monkeypatch
+):
+    service, first, _sleep = make_service(tmp_path)
+    finish_full_scan(service, first, snapshot_max=40)
+    second, _ = service.store.create_or_get_library(
+        -1002, "channel", "two", "Two", "https://t.me/two/1"
+    )
+    finish_full_scan(service, second, snapshot_max=40)
+    third, _ = service.store.create_or_get_library(
+        -1003, "channel", "three", "Three", "https://t.me/three/1"
+    )
+    service.client.latest_message_id = 45
+    service.owner_loop = asyncio.get_running_loop()
+    original_queue = service.queue_incremental
+
+    async def queue_then_add_full(library_id, *, skip_if_unchanged=False):
+        job = await original_queue(library_id, skip_if_unchanged=skip_if_unchanged)
+        service.store.create_scan_job(third["id"], "full", 1, 50)
+        return job
+
+    monkeypatch.setattr(service, "queue_incremental", queue_then_add_full)
+
+    queued = await service.queue_scheduled_incrementals()
+
+    assert [job["library_id"] for job in queued] == [first["id"]]
+    assert service.store.get_latest_job(second["id"])["kind"] == "full"
+    assert service.store.get_latest_job(third["id"])["kind"] == "full"
+
+
+@async_test
 async def test_repair_defaults_to_all_failures_and_resolves_complete_closures(
     tmp_path,
 ):
@@ -969,19 +1019,105 @@ async def test_start_stop_are_idempotent_and_recover_interrupted_job(tmp_path):
 
 
 @async_test
-async def test_start_and_stop_own_global_incremental_cron_task(tmp_path):
-    config = ChannelLibraryConfig(incremental_scan_cron="* * * * *")
-    service, _library, _sleep = make_service(tmp_path, config=config)
-
+async def test_start_and_stop_own_disabled_global_incremental_cron_task(tmp_path):
+    service, _library, _sleep = make_service(tmp_path)
     await service.start()
     cron_task = service.incremental_cron_task
 
     assert cron_task is not None and not cron_task.done()
+    assert service.get_incremental_scan_settings()["enabled"] is False
 
     await service.stop()
 
     assert cron_task.done()
     assert service.incremental_cron_task is None
+
+
+@async_test
+async def test_incremental_cron_hot_enable_wakes_without_restart(tmp_path, monkeypatch):
+    service, _library, _sleep = make_service(tmp_path)
+    triggered = asyncio.Event()
+
+    async def queue_once():
+        triggered.set()
+        service.store.save_incremental_scan_settings(False, "* * * * *", "UTC")
+        return []
+
+    monkeypatch.setattr(
+        service, "_seconds_until_next_incremental_scan", lambda _settings: 0
+    )
+    monkeypatch.setattr(service, "queue_scheduled_incrementals", queue_once)
+    await service.start()
+
+    updated = await service.update_incremental_scan_settings(True, "* * * * *", "UTC")
+    await asyncio.wait_for(triggered.wait(), timeout=1)
+
+    assert updated["enabled"] is True
+    assert (
+        service.store.get_incremental_scan_settings()["last_triggered_at"] is not None
+    )
+    await service.stop()
+
+
+@async_test
+async def test_incremental_cron_hot_disable_prevents_pending_tick(
+    tmp_path, monkeypatch
+):
+    service, _library, _sleep = make_service(tmp_path)
+    triggered = asyncio.Event()
+
+    async def record_tick():
+        triggered.set()
+        return []
+
+    monkeypatch.setattr(
+        service, "_seconds_until_next_incremental_scan", lambda _settings: 0.05
+    )
+    monkeypatch.setattr(service, "queue_scheduled_incrementals", record_tick)
+    await service.start()
+    await service.update_incremental_scan_settings(True, "* * * * *", "UTC")
+    await asyncio.sleep(0)
+    disabled = await service.update_incremental_scan_settings(False, "* * * * *", "UTC")
+    await asyncio.sleep(0.1)
+
+    assert disabled["enabled"] is False
+    assert not triggered.is_set()
+    await service.stop()
+
+
+@async_test
+async def test_invalid_incremental_cron_update_does_not_replace_state(tmp_path):
+    service, _library, _sleep = make_service(tmp_path)
+    await service.start()
+    before = service.get_incremental_scan_settings()
+
+    with pytest.raises(ValueError):
+        await service.update_incremental_scan_settings(
+            True, "not a cron", "Asia/Shanghai"
+        )
+
+    assert service.get_incremental_scan_settings() == before
+    await service.stop()
+
+
+@async_test
+async def test_cron_update_does_not_cancel_active_telegram_snapshot(tmp_path):
+    client = BlockingHistoryClient()
+    service, library, _sleep = make_service(tmp_path, client=client)
+    finish_full_scan(service, library, snapshot_max=4)
+    await service.start()
+
+    snapshot_task = asyncio.create_task(service.queue_incremental(library["id"]))
+    await client.history_started.wait()
+    await service.update_incremental_scan_settings(
+        True, "*/15 * * * *", "Asia/Shanghai"
+    )
+
+    assert not snapshot_task.done()
+    client.release_history.set()
+    result = await snapshot_task
+    assert result["kind"] == "incremental"
+    await service.stop()
 
 
 @async_test

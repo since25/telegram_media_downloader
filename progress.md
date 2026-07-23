@@ -1815,3 +1815,36 @@ Changed files:
 Rollback:
 - Revert `cfae59a`, push `master`, fast-forward production, restore the prior dependency set if required, and restart `tg-downloader.service`.
 - Production backup: `/root/telegram_media_downloader/backups/release-20260723-112215-channel-cron`. Preserve both SQLite databases; this release did not migrate their schemas.
+
+## 2026-07-23 - Task: Move incremental cron settings to Web and refine the channel workspace
+
+### What was done
+
+- Added schema v7 with one database-owned global automatic incremental-scan setting. Migration defaults it to disabled, retains saved cron expressions while disabled, and records the last trigger time.
+- Removed cron and timezone ownership from `config.yaml`. The authenticated Channels page now loads, validates, saves, enables, and disables the five-field cron and IANA timezone with immediate owner-loop hot application.
+- Kept one long-running watcher even while disabled. Setting changes wake it without restarting the service or cancelling active Telegram requests; missed ticks are not accumulated.
+- Made automatic incremental sweeps yield globally to recoverable full scans, including a full scan that appears while a sweep is already checking channels. Eligible incrementals still enter the existing FIFO scheduler.
+- Reworked the Channels page into a global schedule band plus channel identity, resource overview, operational scan metadata, and keyword distribution bars while preserving the existing application design language and responsive behavior.
+- Updated operator and configuration documentation to make the database/Web ownership and no-restart behavior explicit.
+
+### Testing
+
+- Full suite: `.venv/bin/python -m pytest tests/ -q` -> `534 passed, 1 skipped`.
+- Targeted store, service, Web, and application tests -> `203 passed`; final service/Web regression subset -> `149 passed`.
+- `.venv/bin/python -m py_compile media_downloader.py module/app.py module/channel_library_store.py module/channel_library_service.py module/web.py` -> passed.
+- `.venv/bin/python check_imports.py` -> public downloader compatibility imports passed.
+- `.venv/bin/pip check` -> no broken requirements.
+- Black check passed for all changed Python implementation and test files; inline Web JavaScript parsed successfully; `git diff --check` passed.
+- Chromium at 1440x1000 and 390x844 saved and hot-applied `*/30 * * * *`, returned the next execution time, rendered populated channel statistics and keyword bars, and showed no console errors or page-level horizontal overflow.
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`, `module/channel_library_service.py`: schema-v7 singleton settings, validation, trigger timestamps, hot-update watcher, next-run calculation, and full-scan yielding.
+- `module/web.py`, `module/templates/index.html`, `module/static/css/index.css`: authenticated settings API, global schedule controls, and responsive channel workspace hierarchy.
+- `config.example.yaml`, `README.md`, `README_CN.md`, `docs/web-control-console.md`: removed YAML cron fields and documented database-backed Web management.
+- `tests/module/test_app.py`, `tests/module/test_channel_library_store.py`, `tests/module/test_channel_library_service.py`, `tests/module/test_channel_library_web.py`: configuration ownership, migration, runtime, API, DOM, and regression coverage.
+
+Rollback:
+- Revert the implementation commit and restart the downloader to restore the prior YAML-owned cron behavior. Schema v7 is additive, so `channel_library_settings` may remain unused after code rollback.
+- Before removing or restoring `channel_library_settings`, stop the service and back up `channel_library.sqlite3`; deleting the table permanently removes the saved Web schedule and trigger timestamp.

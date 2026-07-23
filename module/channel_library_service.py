@@ -106,6 +106,7 @@ class ChannelLibraryService:
         self.scheduler_task: Optional[asyncio.Task[None]] = None
         self.incremental_cron_task: Optional[asyncio.Task[None]] = None
         self._wake_event: Optional[asyncio.Event] = None
+        self._cron_wake_event: Optional[asyncio.Event] = None
         self._stopping = False
         self._telegram_request_active = False
         self._telegram_request_finished: Optional[asyncio.Event] = None
@@ -136,6 +137,7 @@ class ChannelLibraryService:
             self.dispatch_pending_batches()
             self.reconcile_download_batches()
             self._wake_event = asyncio.Event()
+            self._cron_wake_event = asyncio.Event()
             self._telegram_request_finished = asyncio.Event()
             self._telegram_request_finished.set()
             self._stopping = False
@@ -143,11 +145,10 @@ class ChannelLibraryService:
             self.scheduler_task = loop.create_task(
                 self._run_scheduler(), name="channel-library-scheduler"
             )
-            if self.config.incremental_scan_cron:
-                self.incremental_cron_task = loop.create_task(
-                    self._run_incremental_cron(),
-                    name="channel-library-incremental-cron",
-                )
+            self.incremental_cron_task = loop.create_task(
+                self._run_incremental_cron(),
+                name="channel-library-incremental-cron",
+            )
             self.schedule_pending_download_batches()
             with self._command_lock:
                 self._accepting_commands = True
@@ -228,6 +229,7 @@ class ChannelLibraryService:
             self._upload_retry_tasks.clear()
             self._retained_upload_reservations.clear()
             self.incremental_cron_task = None
+            self._cron_wake_event = None
             if task is None or task.done():
                 self._release_store_ownership()
 
@@ -1038,24 +1040,71 @@ class ChannelLibraryService:
     async def _run_incremental_cron(self) -> None:
         """Run the global incremental schedule without accumulating missed ticks."""
 
-        timezone = pytz.timezone(self.config.incremental_scan_timezone)
-        schedule = croniter(
-            self.config.incremental_scan_cron,
-            datetime.datetime.now(timezone),
-        )
         while not self._stopping:
-            next_run = schedule.get_next(datetime.datetime)
-            delay = max(
-                0.0,
-                (next_run - datetime.datetime.now(timezone)).total_seconds(),
-            )
-            await asyncio.sleep(delay)
+            wake_event = self._cron_wake_event
+            if wake_event is None:
+                return
+            wake_event.clear()
+            settings = self.store.get_incremental_scan_settings()
+            if not settings["enabled"]:
+                await wake_event.wait()
+                continue
+            delay = self._seconds_until_next_incremental_scan(settings)
+            try:
+                await asyncio.wait_for(wake_event.wait(), timeout=delay)
+                continue
+            except asyncio.TimeoutError:
+                pass
             if self._stopping:
                 return
+            current = self.store.get_incremental_scan_settings()
+            if (
+                not current["enabled"]
+                or current["updated_at"] != settings["updated_at"]
+            ):
+                continue
+            self.store.mark_incremental_scan_triggered()
             try:
                 await self.queue_scheduled_incrementals()
             except Exception:  # pragma: no cover - keep future cron ticks alive
                 LOGGER.exception("Scheduled incremental scan sweep failed")
+
+    @staticmethod
+    def _next_incremental_scan_at(settings: dict) -> Optional[float]:
+        if not settings["enabled"]:
+            return None
+        timezone = pytz.timezone(settings["timezone"])
+        next_run = croniter(settings["cron"], datetime.datetime.now(timezone)).get_next(
+            datetime.datetime
+        )
+        return next_run.timestamp()
+
+    def _seconds_until_next_incremental_scan(self, settings: dict) -> float:
+        next_run_at = self._next_incremental_scan_at(settings)
+        if next_run_at is None:
+            return 0.0
+        return max(0.0, next_run_at - time.time())
+
+    def get_incremental_scan_settings(self) -> dict:
+        settings = self.store.get_incremental_scan_settings()
+        return {
+            **settings,
+            "next_run_at": self._next_incremental_scan_at(settings),
+        }
+
+    async def update_incremental_scan_settings(
+        self, enabled: bool, expression: str, timezone: str
+    ) -> dict:
+        self._require_owner_loop()
+        settings = self.store.save_incremental_scan_settings(
+            enabled, expression, timezone
+        )
+        if self._cron_wake_event is not None:
+            self._cron_wake_event.set()
+        return {
+            **settings,
+            "next_run_at": self._next_incremental_scan_at(settings),
+        }
 
     async def resolve_and_create_library(self, link: str) -> SubmitLibraryResult:
         """Resolve a Telegram message link and queue a snapshotted full scan."""
@@ -1130,8 +1179,18 @@ class ChannelLibraryService:
         """Queue new tails for every eligible channel at one global cron tick."""
 
         self._require_owner_loop()
+        if self.store.has_recoverable_full_scan():
+            LOGGER.info(
+                "Scheduled incremental scan sweep skipped while a full scan is recoverable"
+            )
+            return []
         queued = []
         for library in self.store.list_scheduled_incremental_libraries():
+            if self.store.has_recoverable_full_scan():
+                LOGGER.info(
+                    "Scheduled incremental scan sweep yielded to a new full scan"
+                )
+                break
             try:
                 job = await self.queue_incremental(
                     int(library["id"]), skip_if_unchanged=True
@@ -1194,6 +1253,15 @@ class ChannelLibraryService:
         """Schedule an incremental snapshot on the service owner loop."""
 
         return self._submit_owner_command(lambda: self.queue_incremental(library_id))
+
+    def submit_incremental_scan_settings_threadsafe(
+        self, enabled: bool, expression: str, timezone: str
+    ) -> concurrent.futures.Future[dict]:
+        """Persist and apply the global incremental schedule on the owner loop."""
+
+        return self._submit_owner_command(
+            lambda: self.update_incremental_scan_settings(enabled, expression, timezone)
+        )
 
     def _submit_owner_command(
         self, coroutine_factory: Callable[[], Any]

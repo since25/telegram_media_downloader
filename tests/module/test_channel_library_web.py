@@ -222,6 +222,8 @@ def test_all_channel_routes_require_existing_login(web_env):
     env.web._flask_app.config["LOGIN_DISABLED"] = False
     routes = [
         ("GET", "/api/csrf-token"),
+        ("GET", "/api/channel-library-settings/incremental-scan"),
+        ("PUT", "/api/channel-library-settings/incremental-scan"),
         ("GET", "/api/channel-libraries"),
         ("POST", "/api/channel-libraries"),
         ("GET", "/api/channel-libraries/1"),
@@ -247,6 +249,7 @@ def test_all_channel_routes_require_existing_login(web_env):
 def test_mutating_routes_require_session_bound_csrf(web_env):
     env = web_env
     routes = [
+        ("PUT", "/api/channel-library-settings/incremental-scan"),
         ("POST", "/api/channel-libraries"),
         ("DELETE", "/api/channel-libraries/1"),
         ("POST", "/api/channel-libraries/1/scans"),
@@ -338,6 +341,99 @@ def test_channel_routes_return_safe_503_until_service_is_available(web_env):
         "error_code": "service_unavailable",
         "message": "Channel library service is unavailable",
     }
+
+
+def test_incremental_scan_settings_get_and_put_contract(web_env):
+    env = web_env
+    current = env.client.get("/api/channel-library-settings/incremental-scan")
+
+    assert current.status_code == 200
+    assert current.get_json()["enabled"] is False
+    assert current.get_json()["cron"] == ""
+    assert current.get_json()["timezone"] == "Asia/Shanghai"
+    assert current.get_json()["next_run_at"] is None
+
+    calls = []
+    saved = {
+        "enabled": True,
+        "cron": "*/15 * * * *",
+        "timezone": "UTC",
+        "last_triggered_at": None,
+        "next_run_at": 1234.0,
+        "created_at": 1.0,
+        "updated_at": 2.0,
+    }
+
+    def submit(enabled, expression, timezone):
+        calls.append((enabled, expression, timezone))
+        return ImmediateFuture(value=saved)
+
+    env.service.submit_incremental_scan_settings_threadsafe = submit
+    response = env.client.put(
+        "/api/channel-library-settings/incremental-scan",
+        json={"enabled": True, "cron": "*/15 * * * *", "timezone": "UTC"},
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == saved
+    assert calls == [(True, "*/15 * * * *", "UTC")]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {},
+        {"enabled": True, "cron": "* * * * *"},
+        {"enabled": 1, "cron": "* * * * *", "timezone": "UTC"},
+        {"enabled": True, "cron": 7, "timezone": "UTC"},
+        {"enabled": False, "cron": "", "timezone": ""},
+        {
+            "enabled": False,
+            "cron": "",
+            "timezone": "UTC",
+            "unexpected": True,
+        },
+    ],
+)
+def test_incremental_scan_settings_put_strictly_validates_json(web_env, payload):
+    response = web_env.client.put(
+        "/api/channel-library-settings/incremental-scan",
+        json=payload,
+        headers=csrf_headers(web_env),
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error_code"] == "invalid_request"
+
+
+def test_incremental_scan_settings_maps_validation_and_timeout(web_env):
+    env = web_env
+    headers = csrf_headers(env)
+    failing = ImmediateFuture(error=ValueError("secret validation details"))
+    env.service.submit_incremental_scan_settings_threadsafe = lambda *_args: failing
+
+    invalid = env.client.put(
+        "/api/channel-library-settings/incremental-scan",
+        json={"enabled": True, "cron": "bad", "timezone": "UTC"},
+        headers=headers,
+    )
+    timeout = ImmediateFuture(error=concurrent.futures.TimeoutError())
+    env.service.submit_incremental_scan_settings_threadsafe = lambda *_args: timeout
+    unavailable = env.client.put(
+        "/api/channel-library-settings/incremental-scan",
+        json={"enabled": True, "cron": "* * * * *", "timezone": "UTC"},
+        headers=headers,
+    )
+
+    assert invalid.status_code == 400
+    assert invalid.get_json()["error_code"] == "invalid_request"
+    assert "secret validation details" not in invalid.get_data(as_text=True)
+    assert unavailable.status_code == 503
+    assert unavailable.get_json()["error_code"] == "service_timeout"
+    assert timeout.timeouts == [10]
+    assert timeout.cancelled is False
 
 
 def test_create_library_returns_202_then_duplicate_200(web_env):
@@ -1529,6 +1625,12 @@ def test_channel_library_tab_has_one_complete_spa_dom_contract():
         "channel_library_rows",
         "channel_library_more",
         "channel_library_empty",
+        "channel_incremental_scan_form",
+        "channel_incremental_scan_enabled",
+        "channel_incremental_scan_cron",
+        "channel_incremental_scan_timezone",
+        "channel_incremental_scan_save",
+        "channel_incremental_scan_status",
         "channel_library_workspace",
         "channel_library_status",
         "channel_library_scan_controls",
@@ -1536,6 +1638,8 @@ def test_channel_library_tab_has_one_complete_spa_dom_contract():
         "channel_library_stats",
         "channel_stat_available",
         "channel_stat_downloaded",
+        "channel_stat_last_full",
+        "channel_stat_last_incremental",
         "channel_keyword_distribution",
         "channel_library_delete",
     }
@@ -1588,6 +1692,9 @@ def test_channel_library_script_has_security_state_and_polling_contracts():
 
     assert "async function channelApiWrite" in html
     assert "'X-CSRF-Token': state.channel.csrfToken" in html
+    assert "async function loadIncrementalScanSettings" in html
+    assert "async function saveIncrementalScanSettings" in html
+    assert "'/api/channel-library-settings/incremental-scan'" in html
     assert "function isChannelLibraryActive" in html
     assert "if (!isChannelLibraryActive()) return" in html
     assert "else if (tab==='channel-library')" in html
@@ -1657,6 +1764,9 @@ def test_channel_library_styles_define_responsive_split_workspace():
     css = INDEX_CSS.read_text(encoding="utf-8")
 
     assert ".channel-library-layout" in css
+    assert ".channel-cron-band" in css
+    assert ".channel-operation-grid" in css
+    assert ".channel-keyword-bar" in css
     assert "grid-template-columns: 248px minmax(0, 1fr)" in css
     assert ".channel-library-sidebar" in css
     assert ".channel-library-workspace" in css

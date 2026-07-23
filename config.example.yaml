@@ -33,9 +33,6 @@ channel_library:
   incremental_scan_batch_size: 50
   incremental_scan_delay_min_sec: 1
   incremental_scan_delay_max_sec: 2
-  # One global 5-field cron for all indexed channels; empty disables automation.
-  incremental_scan_cron: ""
-  incremental_scan_timezone: Asia/Shanghai
   transient_retry_delays_sec: [5, 15, 45]
 # in linux please use /
 # save_path: E:\github\telegram_media_downloader

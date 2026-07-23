@@ -16,7 +16,7 @@ import pytz
 from croniter import croniter
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 LIBRARY_STATUSES = frozenset(
     {"new", "indexing", "ready", "partial", "paused", "stopped", "failed"}
@@ -233,29 +233,12 @@ class ChannelLibraryConfig:
     incremental_scan_delay_max_sec: float = 2.0
     transient_retry_delays_sec: Sequence[float] = (5.0, 15.0, 45.0)
     min_free_disk_bytes: int = 3 * 1024**3
-    incremental_scan_cron: str = ""
-    incremental_scan_timezone: str = "Asia/Shanghai"
 
     @classmethod
     def from_mapping(cls, raw: Optional[dict]) -> "ChannelLibraryConfig":
         raw = raw or {}
         full_min = max(float(raw.get("full_scan_delay_min_sec", 4)), 2.0)
         inc_min = max(float(raw.get("incremental_scan_delay_min_sec", 1)), 0.5)
-        incremental_scan_cron = str(raw.get("incremental_scan_cron", "") or "").strip()
-        if incremental_scan_cron and (
-            len(incremental_scan_cron.split()) != 5
-            or not croniter.is_valid(incremental_scan_cron)
-        ):
-            raise ValueError("incremental_scan_cron must be a valid cron expression")
-        incremental_scan_timezone = str(
-            raw.get("incremental_scan_timezone", "Asia/Shanghai") or "Asia/Shanghai"
-        ).strip()
-        try:
-            pytz.timezone(incremental_scan_timezone)
-        except pytz.UnknownTimeZoneError as error:
-            raise ValueError(
-                "incremental_scan_timezone must be a valid IANA timezone"
-            ) from error
         return cls(
             full_scan_batch_size=min(
                 max(int(raw.get("full_scan_batch_size", 50)), 1), 100
@@ -278,8 +261,6 @@ class ChannelLibraryConfig:
             min_free_disk_bytes=max(
                 int(raw.get("min_free_disk_bytes", 3 * 1024**3)), 0
             ),
-            incremental_scan_cron=incremental_scan_cron,
-            incremental_scan_timezone=incremental_scan_timezone,
         )
 
 
@@ -311,6 +292,17 @@ class ChannelLibraryStore:
                 CREATE TABLE IF NOT EXISTS schema_meta (
                     version INTEGER PRIMARY KEY,
                     applied_at REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS channel_library_settings (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    incremental_scan_enabled INTEGER NOT NULL DEFAULT 0
+                        CHECK (incremental_scan_enabled IN (0, 1)),
+                    incremental_scan_cron TEXT NOT NULL DEFAULT '',
+                    incremental_scan_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+                    incremental_scan_last_triggered_at REAL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS channel_libraries (
@@ -680,6 +672,16 @@ class ChannelLibraryStore:
                     ON keyword_monitor_history(batch_id);
                 """
             )
+            now = time.time()
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO channel_library_settings (
+                    id, incremental_scan_enabled, incremental_scan_cron,
+                    incremental_scan_timezone, created_at, updated_at
+                ) VALUES (1, 0, '', 'Asia/Shanghai', ?, ?)
+                """,
+                (now, now),
+            )
             scan_job_columns = {
                 row[1]
                 for row in connection.execute("PRAGMA table_info(channel_scan_jobs)")
@@ -768,6 +770,100 @@ class ChannelLibraryStore:
                 (SCHEMA_VERSION, time.time()),
             )
         os.chmod(self.path, 0o600)
+
+    @staticmethod
+    def _incremental_scan_settings_row(row: sqlite3.Row) -> dict:
+        return {
+            "enabled": bool(row["incremental_scan_enabled"]),
+            "cron": str(row["incremental_scan_cron"]),
+            "timezone": str(row["incremental_scan_timezone"]),
+            "last_triggered_at": row["incremental_scan_last_triggered_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    @staticmethod
+    def _validate_incremental_scan_settings(
+        enabled: bool, expression: str, timezone: str
+    ) -> tuple[bool, str, str]:
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+        if not isinstance(expression, str):
+            raise ValueError("cron must be a string")
+        expression = expression.strip()
+        if enabled and not expression:
+            raise ValueError("cron is required when automatic scanning is enabled")
+        if expression and (
+            len(expression.split()) != 5 or not croniter.is_valid(expression)
+        ):
+            raise ValueError("cron must be a valid five-field expression")
+        if not isinstance(timezone, str) or not timezone.strip():
+            raise ValueError("timezone must be a non-empty string")
+        timezone = timezone.strip()
+        try:
+            pytz.timezone(timezone)
+        except pytz.UnknownTimeZoneError as error:
+            raise ValueError("timezone must be a valid IANA timezone") from error
+        return enabled, expression, timezone
+
+    def get_incremental_scan_settings(self) -> dict:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM channel_library_settings WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Channel library settings are not initialized")
+        return self._incremental_scan_settings_row(row)
+
+    def save_incremental_scan_settings(
+        self,
+        enabled: bool,
+        expression: str,
+        timezone: str,
+        now: Optional[float] = None,
+    ) -> dict:
+        enabled, expression, timezone = self._validate_incremental_scan_settings(
+            enabled, expression, timezone
+        )
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE channel_library_settings
+                SET incremental_scan_enabled = ?,
+                    incremental_scan_cron = ?,
+                    incremental_scan_timezone = ?,
+                    updated_at = ?
+                WHERE id = 1
+                """,
+                (int(enabled), expression, timezone, now),
+            )
+            row = connection.execute(
+                "SELECT * FROM channel_library_settings WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Channel library settings are not initialized")
+        return self._incremental_scan_settings_row(row)
+
+    def mark_incremental_scan_triggered(self, now: Optional[float] = None) -> dict:
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE channel_library_settings
+                SET incremental_scan_last_triggered_at = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                (now, now),
+            )
+            row = connection.execute(
+                "SELECT * FROM channel_library_settings WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("Channel library settings are not initialized")
+        return self._incremental_scan_settings_row(row)
 
     def create_or_get_library(
         self,
@@ -3069,6 +3165,23 @@ class ChannelLibraryStore:
                 (int(library_id),),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def has_recoverable_full_scan(self) -> bool:
+        """Return whether any full scan still owns recoverable work."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1 FROM channel_scan_jobs
+                WHERE kind = 'full'
+                  AND status IN (
+                      'queued', 'running', 'paused_user',
+                      'auto_paused_download', 'waiting_rate_limit', 'stopped'
+                  )
+                LIMIT 1
+                """
+            ).fetchone()
+        return row is not None
 
     def list_scheduled_incremental_libraries(self) -> list[dict]:
         """Return full-scanned libraries without recoverable scan work."""

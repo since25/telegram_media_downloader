@@ -29,6 +29,7 @@ REQUIRED_TABLES = {
     "keyword_monitor_groups",
     "keyword_monitor_terms",
     "keyword_monitor_history",
+    "channel_library_settings",
 }
 
 
@@ -128,17 +129,16 @@ def test_store_initializes_secure_wal_schema(tmp_path):
     assert REQUIRED_TABLES <= tables
 
 
-@pytest.mark.parametrize(
-    "raw",
-    [
-        {"incremental_scan_cron": "* * * * * *"},
-        {"incremental_scan_cron": "not a cron"},
-        {"incremental_scan_timezone": "Invalid/Timezone"},
-    ],
-)
-def test_channel_library_config_rejects_invalid_cron_settings(raw):
-    with pytest.raises(ValueError):
-        ChannelLibraryConfig.from_mapping(raw)
+def test_channel_library_config_does_not_read_cron_settings():
+    config = ChannelLibraryConfig.from_mapping(
+        {
+            "incremental_scan_cron": "*/15 * * * *",
+            "incremental_scan_timezone": "UTC",
+        }
+    )
+
+    assert not hasattr(config, "incremental_scan_cron")
+    assert not hasattr(config, "incremental_scan_timezone")
 
 
 def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
@@ -198,8 +198,8 @@ def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
             (job["id"],),
         ).fetchone()[0]
 
-    assert SCHEMA_VERSION == 6
-    assert versions == [1, 2, 3, 6]
+    assert SCHEMA_VERSION == 7
+    assert versions == [1, 2, 3, 7]
     assert "control_requested" in columns
     assert "channel_title" in batch_columns
     assert {"rule_key", "matched_keywords", "batch_id"} <= trigger_columns
@@ -217,7 +217,7 @@ def test_v5_database_adds_keyword_monitor_tables_without_losing_rows(tmp_path):
         connection.execute("DROP TABLE keyword_monitor_history")
         connection.execute("DROP TABLE keyword_monitor_terms")
         connection.execute("DROP TABLE keyword_monitor_groups")
-        connection.execute("DELETE FROM schema_meta WHERE version = 6")
+        connection.execute("DELETE FROM schema_meta WHERE version = 7")
         connection.execute(
             "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (5, 1)"
         )
@@ -240,8 +240,76 @@ def test_v5_database_adds_keyword_monitor_tables_without_losing_rows(tmp_path):
         "keyword_monitor_terms",
         "keyword_monitor_history",
     } <= tables
-    assert versions >= {5, 6}
+    assert versions >= {5, 7}
     assert migrated.get_library(library["id"])["title"] == "Demo"
+
+
+def test_v6_database_adds_disabled_incremental_scan_settings_without_losing_rows(
+    tmp_path,
+):
+    path = tmp_path / "channel_library.sqlite3"
+    store = ChannelLibraryStore(path)
+    store.initialize()
+    library = make_library(store)
+    with store.connect() as connection:
+        connection.execute("DROP TABLE channel_library_settings")
+        connection.execute("DELETE FROM schema_meta WHERE version = 7")
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (6, 1)"
+        )
+
+    migrated = ChannelLibraryStore(path)
+    migrated.initialize()
+
+    settings = migrated.get_incremental_scan_settings()
+    assert settings["enabled"] is False
+    assert settings["cron"] == ""
+    assert settings["timezone"] == "Asia/Shanghai"
+    assert settings["last_triggered_at"] is None
+    assert migrated.get_library(library["id"])["title"] == "Demo"
+
+
+@pytest.mark.parametrize(
+    ("enabled", "expression", "timezone"),
+    [
+        (True, "", "Asia/Shanghai"),
+        (True, "* * * * * *", "Asia/Shanghai"),
+        (False, "not a cron", "Asia/Shanghai"),
+        (False, "0 * * * *", "Invalid/Timezone"),
+    ],
+)
+def test_incremental_scan_settings_validate_cron_and_timezone(
+    store, enabled, expression, timezone
+):
+    before = store.get_incremental_scan_settings()
+
+    with pytest.raises(ValueError):
+        store.save_incremental_scan_settings(enabled, expression, timezone)
+
+    assert store.get_incremental_scan_settings() == before
+
+
+def test_disabled_incremental_scan_settings_retain_expression(store):
+    enabled = store.save_incremental_scan_settings(
+        True, "*/15 * * * *", "UTC", now=10.0
+    )
+    disabled = store.save_incremental_scan_settings(
+        False, enabled["cron"], enabled["timezone"], now=20.0
+    )
+
+    assert disabled["enabled"] is False
+    assert disabled["cron"] == "*/15 * * * *"
+    assert disabled["timezone"] == "UTC"
+    assert disabled["updated_at"] == 20.0
+
+
+def test_incremental_scan_settings_record_last_trigger(store):
+    store.save_incremental_scan_settings(True, "0 */6 * * *", "Asia/Shanghai", now=10.0)
+
+    triggered = store.mark_incremental_scan_triggered(now=25.0)
+
+    assert triggered["last_triggered_at"] == 25.0
+    assert triggered["updated_at"] == 25.0
 
 
 def test_library_is_unique_by_chat_id(tmp_path):
