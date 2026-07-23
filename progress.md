@@ -1730,3 +1730,30 @@ Changed files:
 Rollback:
 - Revert the commit containing this task to restore the prior channel-scoped UI and config-rule runtime. The schema-v6 tables are additive and may remain unused after a code rollback.
 - Before physically removing `keyword_monitor_groups`, `keyword_monitor_terms`, or `keyword_monitor_history`, stop the service and back up `channel_library.sqlite3`; dropping those tables permanently removes monitor definitions and history.
+
+## 2026-07-23 - Task: Deploy download refactor, aggregate packages, and keyword monitoring
+
+### What was done
+
+- Committed and pushed the reviewed implementation to GitHub `master` as `a519c0e`.
+- Created a consistent production release backup while `tg-downloader.service` was stopped, then restored the service before deployment.
+- Fast-forwarded the RackNerd checkout from `df1ac9a` to `a519c0e` and restarted `tg-downloader.service`.
+- Confirmed schema v6 initialized the database-owned keyword monitor tables without modifying existing package/library rows.
+
+### Testing
+
+- Pre-deploy full suite: `.venv/bin/python -m pytest tests/ -q` -> `507 passed, 1 skipped`.
+- Production backup: `backups/release-20260723-101058` (158MB); SQLite integrity checks for both backed-up databases -> `ok`.
+- Production service: `active`, commit `a519c0e`, four refactored download workers started, and no traceback/exception/error matches in the post-deploy journal window.
+- Production data: `channel_library.sqlite3` integrity `ok`, journal `wal`, mode `600`, schema versions `[3, 6]`; `keyword_monitor_groups`, `keyword_monitor_terms`, and `keyword_monitor_history` exist. `web_tasks.sqlite3` integrity -> `ok`.
+- Production imports and compile checks passed for the downloader facade, store, service, Web layer, and refactored entrypoint.
+- Public smoke tests: `/` -> `302 /login`, `/login` -> `200`, `/api/packages` and `/api/keyword-monitor-groups` -> authenticated `302 /login`, and `/static/css/index.css` -> `200`.
+
+### Notes
+
+Changed files:
+- `progress.md`: recorded the GitHub push, production backup, deployment, schema migration, and smoke-test evidence.
+
+Rollback:
+- Preferred code rollback: `git revert a519c0e`, push `master`, then run `git pull --ff-only origin master && systemctl restart tg-downloader.service` on RackNerd. Preserve both SQLite databases; schema-v6 tables are additive.
+- Release backup: `/root/telegram_media_downloader/backups/release-20260723-101058`. Stop the service before any database restore and use SQLite backup/copy only after retaining the current databases.
