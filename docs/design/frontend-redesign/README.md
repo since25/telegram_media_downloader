@@ -108,8 +108,8 @@
 ### 4) 登录（Login）
 应用底色居中一张分栏 `.card.blueprint`（宽 820，横向，无填充）：
 - **左栏**（320px，`--color-accent-900` 实底、文字反白 `--color-bg`）：品牌（下载图标 26 + “TG 媒体下载器”）· 大标题「私有部署 / 下载控制台」· 一句说明（72% 透明）· 底部「v2.2.0 · localhost:5000」。
-- **右栏**：kicker「欢迎回来」+ 标题「登录」· 密码 `.input`（type=password，min-height 40）·「确认登录」primary block 按钮（42 高）· 提示「密码在服务端 config.yaml 中设置 · 提交时经 AES 加密」。
-- 行为：沿用现有 `login.html` —— 密码经 CryptoJS AES（CBC/Pkcs7，key `1234123412ABCDEF`、iv `ABCDEF1234123412`）加密后 POST `login`，返回 `code==='1'` 跳转首页，否则提示错误。
+- **右栏**：kicker「欢迎回来」+ 标题「登录」· 密码 `.input`（type=password，min-height 40）·「确认登录」primary block 按钮（42 高）· 提示「密码由服务端验证」。
+- 行为：密码以标准表单 POST 提交给 `login`，由服务端验证；返回 `code==='1'` 跳转首页，否则提示错误。非本机访问必须通过 HTTPS 保护传输。
 
 ---
 

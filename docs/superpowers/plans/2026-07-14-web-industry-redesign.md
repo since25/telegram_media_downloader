@@ -26,7 +26,7 @@
 - Lucide 图标:**stroke-width 1.5**,内联 SVG,`stroke="currentColor"`。
 - 字体:标题 `Barlow Condensed` 600,正文 `Barlow` 400/500/700。
 - 全中文文案;数字/ID/大小/速度加 `.nums`(tabular-nums)。
-- **登录 AES 加密逻辑不改**:key `1234123412ABCDEF`、iv `ABCDEF1234123412`,CBC/Pkcs7,POST `login`,`code==='1'` 跳首页。
+- **登录提交**：密码以标准表单 POST 给 `login`，由服务端验证；非本机访问必须经 HTTPS，`code==='1'` 跳首页。
 - **hide_file_name 脱敏由后端负责**,前端直接展示后端返回的 `filename`/`save_path`,不自行还原。
 - **验证约束**:严禁本地启动下载服务(需真 Telegram 客户端)。后端 = pytest;前端 = scratchpad 静态 harness + mock JSON,浏览器核对像素保真。
 - 每个任务结束提交一次;分支 `feature/web-industry-redesign`;**不 push、不部署**(由 Task 10 统一处理)。
@@ -38,7 +38,7 @@
 | `docs/design/frontend-redesign/*` | 设计源入库(styles.css / prototype.html / README) | T1 |
 | `module/static/css/index.css` | 重写为单一手写 Industry 样式表(DS 变量+组件类+shell 自定义类) | T1 |
 | `module/templates/index.html` | 三屏外壳(nav/body/foot)+ 各屏 markup + 内联渲染 JS | T1,T5–T8 |
-| `module/templates/login.html` | 分栏登录页(沿用 AES) | T9 |
+| `module/templates/login.html` | 分栏登录页（标准表单提交） | T9 |
 | `module/web.py` | `GET /api/system`、`GET /get_upload_list`、dashboard 上传字段、预扫描保留 | T2–T4 |
 | `module/task_state.py` | FileSnapshot/TaskSnapshot 上传字段与 dashboard 输出 | T3 |
 | `requirements.txt` | 加入 `psutil` | T2 |
@@ -121,7 +121,7 @@ Expected: 三个文件就位。
 
 - [ ] **Step 3: 重写 `index.html` 的 `<head>` 与外壳骨架**
 
-移除 layui 的 CSS/JS 引用(`static/layui/css/layui.css`、`layui.js`),保留 `static/aes/...` (登录页用,index 不需要可不引)与 `static/request/index.js`。`<head>` 引 `static/css/index.css`。外壳(逐字结构参照 `prototype.html:73-87` 的 nav+body、`:336-341` 的 foot;图标用 Lucide download / log-out):
+移除 layui 的 CSS/JS 引用(`static/layui/css/layui.css`、`layui.js`)；登录页不再依赖 `static/aes/...`，保留 `static/request/index.js`。`<head>` 引 `static/css/index.css`。外壳(逐字结构参照 `prototype.html:73-87` 的 nav+body、`:336-341` 的 foot;图标用 Lucide download / log-out):
 
 ```html
 <body>
@@ -1172,32 +1172,32 @@ git commit -m "feat(web): advanced config screen — sectioned cards, chips, swi
 ### Task 9: 登录页分栏重构
 
 **Files:**
-- Rewrite: `module/templates/login.html`（沿用 AES,重排版式）
+- Rewrite: `module/templates/login.html`（标准表单提交，重排版式）
 - Verify: `scratchpad/harness/login.html`
 
 **Interfaces:**
-- Consumes:现有 `login` POST + CryptoJS AES(key/iv 见 Global Constraints);`module/static/css/index.css`;`module/static/aes/...`。
+- Consumes：现有 `login` POST（服务端验证，非本机访问经 HTTPS）；`module/static/css/index.css`。
 - Produces:分栏登录页。
 
-- [ ] **Step 1: 先读现有 login.html 保留加密逻辑**
+- [ ] **Step 1: 先读现有 login.html 保留登录提交逻辑**
 
-`cat module/templates/login.html` —— 摘出其 `<script>` 里的 AES 加密 + POST + `code==='1'` 跳转逻辑,**原样保留**。
+`cat module/templates/login.html` —— 摘出其 `<script>` 里的标准表单 POST + `code==='1'` 跳转逻辑，不保留客户端 AES。
 
 - [ ] **Step 2: 重写版式**（结构参照 `prototype.html:569-585`）
 
 `<body>` 用 `.app`(min-height 520,grid place-items center)包一张分栏 `.card.blueprint`(宽 820,横向,无填充,含四角标):
 - 左栏 320px `background:var(--color-accent-900);color:var(--color-bg)`:品牌(download 图标 26 + 「TG 媒体下载器」)· 大标题「私有部署 / 下载控制台」· 说明段(`opacity:.72`)· 底部「v2.2.0 · localhost:5000」。
-- 右栏 padding 大:kicker「欢迎回来」+ 标题「登录」· 密码 `.input`(`type=password`,`id=password`,min-height 40)· 「确认登录」`.btn.btn-primary.btn-block.blueprint`(42 高,四角标)· 提示「密码在服务端 config.yaml 中设置 · 提交时经 AES 加密」· `#login_error`(描边告警,默认 hidden)。
+- 右栏 padding 大:kicker「欢迎回来」+ 标题「登录」· 密码 `.input`(`type=password`,`id=password`,min-height 40)· 「确认登录」`.btn.btn-primary.btn-block.blueprint`(42 高,四角标)· 提示「密码由服务端验证」· `#login_error`(描边告警,默认 hidden)。
 
-引 `static/css/index.css` + `static/aes/crypto-js-master/crypto-js.js`(按现有 login.html 实际引用路径)。把 Step 1 的加密逻辑接到「确认登录」按钮与密码框回车。错误时 `#login_error` 显示(描边 + 三角图标,不用红)。
+引 `static/css/index.css`。把标准表单提交接到「确认登录」按钮与密码框回车；密码由服务端验证，非本机访问经 HTTPS。错误时 `#login_error` 显示(描边 + 三角图标,不用红)。
 
-- [ ] **Step 3: harness 验证** — `scratchpad/harness/login.html` 复制 login body(去 Jinja)核对:左栏深蓝实底反白、右栏表单、角标、primary block 按钮、错误提示样式。**加密逻辑不改**(仅核对按钮触发 POST 的代码路径未动)。
+- [ ] **Step 3: harness 验证** — `scratchpad/harness/login.html` 复制 login body(去 Jinja)核对:左栏深蓝实底反白、右栏表单、角标、primary block 按钮、错误提示样式；核对按钮触发标准 POST。
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add module/templates/login.html
-git commit -m "feat(web): split-panel login in Industry style, AES logic unchanged"
+git commit -m "feat(web): split-panel login in Industry style"
 ```
 
 ---
@@ -1253,7 +1253,7 @@ curl -sI https://tgdn.wyichuan.cc/ | head -1   # 期望 302 → /login
 - §6.2 文件屏三段 → T7 ✓;§6.3 配置七卡 → T8 ✓;§6.4 登录分栏 → T9 ✓
 - §7 状态管理(selectedTaskId/Type、lastTasksById、prescanRows、sys、定时器) → T5 ✓
 - §9 验证(pytest + harness) → 各任务 verify + T10 ✓;§10 部署 → T10 ✓
-- §11 约束(psutil、非阻塞 cpu、AES 不改、脱敏后端) → Global Constraints + T2/T9 ✓
+- §11 约束(psutil、非阻塞 cpu、HTTPS 登录传输、脱敏后端) → Global Constraints + T2/T9 ✓
 
 **已知能力边界(非计划占位,执行时按后端实际决定并记录):**
 - 逐包/逐文件进度(T6 Step 3/4)取决于 T4 后端是否暴露包-文件映射与逐包进度;若仅任务级,退化近似并在 progress 记录。

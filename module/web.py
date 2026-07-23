@@ -46,7 +46,6 @@ from module.download_stat import (
 from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
 from module.task_state import FileStatus, TERMINAL_TASK_STATUSES, mask_display_name
 from module.telegram_activity import get_telegram_activity_gate
-from utils.crypto import AesBase64
 from utils.format import format_byte
 
 log = logging.getLogger("werkzeug")
@@ -55,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 _flask_app = Flask(__name__)
 
-_flask_app.secret_key = "tdl"
+_flask_app.secret_key = secrets.token_urlsafe(32)
 _flask_app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
@@ -69,7 +68,6 @@ _web_task_counter = 0
 _pending_web_task_previews: dict[str, dict] = {}
 _pending_web_prescans: dict[str, dict] = {}
 _scanning_web_task_nodes: dict[str, TaskNode] = {}
-deAesCrypt = AesBase64("1234123412ABCDEF", "ABCDEF1234123412")
 WEB_AUTH_FILE_ENV = "TMD_WEB_AUTH_FILE"
 WEB_AUTH_FILE_NAME = ".web_auth.json"
 SUPPORTED_MEDIA_TYPES = ["audio", "photo", "video", "document", "voice", "video_note"]
@@ -264,14 +262,9 @@ def login():
     """
     if request.method == "POST":
         username = "root"
-        web_login_form = {}
-        for key, value in request.form.items():
-            if value:
-                try:
-                    value = deAesCrypt.decrypt(value)
-                except Exception:
-                    return jsonify({"code": "0"})
-            web_login_form[key] = value
+        web_login_form = {
+            key: value for key, value in request.form.items() if value
+        }
 
         if not web_login_form.get("password"):
             return jsonify({"code": "0"})

@@ -36,22 +36,11 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
         <span id="login_error_text">密码错误</span>
       </div>
-      <p class="text-muted" style="font-size:12px;margin:2px 0 0">密码在服务端 config.yaml 中设置 · 提交时经 AES 加密</p>
+      <p class="text-muted" style="font-size:12px;margin:2px 0 0">密码由服务端验证</p>
     </div>
   </div>
 
-  <script src="static/aes/crypto-js-master/crypto-js.js"></script>
   <script>
-    // 加密方法（与原 login.html 保持一致，未改动）
-    const encrypt = (word) => {
-      const key = CryptoJS.enc.Utf8.parse("1234123412ABCDEF");
-      const iv = CryptoJS.enc.Utf8.parse('ABCDEF1234123412');
-      let srcs = CryptoJS.enc.Utf8.parse(word);
-      let encrypted = CryptoJS.AES.encrypt(srcs, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-      let hexStr = encrypted.ciphertext.toString();
-      return CryptoJS.enc.Base64.stringify(CryptoJS.enc.Hex.parse(hexStr));
-    };
-
     const $password = document.getElementById('password');
     const $loginBtn = document.getElementById('login_btn');
     const $loginError = document.getElementById('login_error');
@@ -70,12 +59,11 @@
         showError('请输入密码');
         return;
       }
-      const encryptData = encrypt(pValue);
       try {
         const res = await fetch('login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: 'password=' + encodeURIComponent(encryptData)
+          body: 'password=' + encodeURIComponent(pValue)
         });
         const { code } = await res.json();
         if (code === '1') {

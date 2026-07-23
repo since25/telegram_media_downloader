@@ -46,6 +46,7 @@ class WebTestCase(unittest.TestCase):
         self.old_auth_env = os.environ.get(web_module.WEB_AUTH_FILE_ENV)
         self.old_current_app = web_module._current_app
         self.old_login_disabled = web_module._flask_app.config.get("LOGIN_DISABLED")
+        self.old_secret_key = web_module._flask_app.secret_key
         web_module._flask_app.config["TESTING"] = True
         web_module._pending_web_task_previews.clear()
         web_module._pending_web_prescans.clear()
@@ -61,6 +62,7 @@ class WebTestCase(unittest.TestCase):
             os.environ[self.web_module.WEB_AUTH_FILE_ENV] = self.old_auth_env
         self.web_module._current_app = self.old_current_app
         self.web_module._flask_app.config["LOGIN_DISABLED"] = self.old_login_disabled
+        self.web_module._flask_app.secret_key = self.old_secret_key
         from module.task_state import get_task_store
 
         self.web_module._pending_web_task_previews.clear()
@@ -70,7 +72,11 @@ class WebTestCase(unittest.TestCase):
         self.web_module.get_download_result().clear()
         get_task_store().clear()
 
-    def test_web_auth_generates_local_password_and_allows_login(self):
+    def test_flask_session_secret_is_not_static(self):
+        self.assertNotEqual(self.web_module._flask_app.secret_key, "tdl")
+        self.assertGreaterEqual(len(self.web_module._flask_app.secret_key), 32)
+
+    def test_web_auth_generates_local_password_and_allows_plaintext_login(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             auth_file = os.path.join(tmp_dir, "web_auth.json")
             os.environ[self.web_module.WEB_AUTH_FILE_ENV] = auth_file
@@ -85,11 +91,8 @@ class WebTestCase(unittest.TestCase):
             self.assertTrue(auth_data["password"])
             self.assertEqual(auth_data["password_source"], "local")
 
-            encrypted_password = self.web_module.deAesCrypt.encrypt(
-                auth_data["password"]
-            ).decode("utf-8")
             client = self.web_module.get_flask_app().test_client()
-            response = client.post("/login", data={"password": encrypted_password})
+            response = client.post("/login", data={"password": auth_data["password"]})
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.get_json()["code"], "1")

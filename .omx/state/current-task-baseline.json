@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "branch_name": "master",
+      "worktree_path": "/Users/wangyichuan/Desktop/wangcodemac/telegram_media_downloader",
+      "status": "active",
+      "created_at": "2026-06-07T06:09:46.572Z",
+      "updated_at": "2026-06-07T06:13:52.849Z"
+    }
+  ]
+}

@@ -192,7 +192,7 @@ max_download_task: 5
 web_host: 127.0.0.1
 web_port: 5000
 language: EN
-web_login_secret: 123
+web_login_secret: set-a-strong-unique-password
 allowed_user_ids:
 - 'me'
 date_format: '%Y_%m'
@@ -231,7 +231,7 @@ enable_download_txt: false
 - **web_host** - Web host
 - **web_port** - Web port
 - **language** - Application language, the default is English (`EN`), optional `ZH`(Chinese),`RU`,`UA`
-- **web_login_secret** - Web page login password, if not configured, no login is required to access the web page
+- **web_login_secret** - Web page login password. Use a strong, unique value. The Web console always requires login and should be exposed through HTTPS when it is reachable beyond localhost.
 - **log_level** - see `logging._nameToLevel`.
 - **forward_limit** - Limit the number of forwards per minute, the default is 33, please do not modify this parameter by default.
 - **allowed_user_ids** - Who is allowed to use the robot? The default login account can be used. Please add single quotes to the name with @.

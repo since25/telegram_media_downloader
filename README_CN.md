@@ -335,7 +335,7 @@ file_name_prefix_split: ' - '
 max_download_task: 5
 web_host: 127.0.0.1
 web_port: 5000
-web_login_secret: 123
+web_login_secret: 请设置高强度且唯一的密码
 allowed_user_ids:
 - 'me'
 date_format: '%Y_%m'
@@ -395,7 +395,7 @@ monitor:
 - **web_host** - web界面地址
 - **web_port** - web界面端口
 - **language** - 应用语言，默认为英文(`EN`),可选`ZH`（中文）,`RU`,`UA`
-- **web_login_secret** - 网页登录密码，如果不配置则访问网页不需要登录
+- **web_login_secret** - 网页登录密码。请使用高强度且唯一的值；Web 控制台暴露到本机以外时应通过 HTTPS 访问。
 - **log_level** - 默认日志等级，请参阅 `logging._nameToLevel`
 - **forward_limit** - 限制每分钟转发次数，默认为33，默认请不要修改该参数
 - **allowed_user_ids** - 允许哪些人使用机器人，默认登录账号可以使用，带@的名称请加单引号

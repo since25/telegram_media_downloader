@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "active": true,
+  "skill": "tdd",
+  "keyword": "TDD",
+  "phase": "planning",
+  "activated_at": "2026-06-07T11:47:29.855Z",
+  "updated_at": "2026-06-07T11:47:29.855Z",
+  "source": "keyword-detector",
+  "session_id": "019ea184-5b63-7841-af45-21aa28457244",
+  "thread_id": "",
+  "turn_id": "019ea1e8-ca35-7732-b847-35c8e10027a2",
+  "active_skills": [
+    {
+      "skill": "tdd",
+      "phase": "planning",
+      "active": true,
+      "activated_at": "2026-06-07T11:47:29.855Z",
+      "updated_at": "2026-06-07T11:47:29.855Z",
+      "session_id": "019ea184-5b63-7841-af45-21aa28457244",
+      "thread_id": "",
+      "turn_id": "019ea1e8-ca35-7732-b847-35c8e10027a2"
+    }
+  ]
+}

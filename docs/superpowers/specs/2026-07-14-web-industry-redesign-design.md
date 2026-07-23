@@ -135,8 +135,8 @@ Lucide(lucide.dev),**stroke-width 1.5**,内联 SVG,`stroke="currentColor"`。需
 
 ### 6.4 登录(Login)——分栏卡片(宽 820 横向)
 - 左栏(320px,`--color-accent-900` 实底、文字反白 `--color-bg`):品牌(download 图标 26 + 「TG 媒体下载器」)· 大标题「私有部署 / 下载控制台」· 一句说明(72% 透明)· 底部「v2.2.0 · localhost:5000」。
-- 右栏:kicker「欢迎回来」+ 标题「登录」· 密码 `.input`(type=password,min-height 40)· 「确认登录」primary block(42 高)· 提示「密码在服务端 config.yaml 中设置 · 提交时经 AES 加密」。
-- 行为:**沿用现有 `login.html`** —— 密码经 CryptoJS AES(CBC/Pkcs7,key `1234123412ABCDEF`、iv `ABCDEF1234123412`)加密后 POST `login`,`code==='1'` 跳首页,否则提示错误。加密逻辑不改。
+- 右栏：kicker「欢迎回来」+ 标题「登录」· 密码 `.input`(type=password,min-height 40)· 「确认登录」primary block(42 高)· 提示「密码由服务端验证」。
+- 行为：密码以标准表单 POST 提交给 `login`，由服务端验证；`code==='1'` 跳首页，否则提示错误。非本机访问必须通过 HTTPS 保护传输。
 
 ## 7. 前端状态管理
 
@@ -159,7 +159,7 @@ Lucide(lucide.dev),**stroke-width 1.5**,内联 SVG,`stroke="currentColor"`。需
 - **T6 任务详情面板**:§6.1.5 按 `selectedTaskType` 三态渲染。
 - **T7 文件页**:§6.2 三段堆叠表。
 - **T8 高级配置页**:§6.3 分区卡片 + 保存,映射 `/api/settings`。
-- **T9 登录页**:§6.4 分栏重构,沿用 AES 加密。
+- **T9 登录页**：§6.4 分栏重构，使用标准表单提交并由服务端验证。
 
 **阶段 3 · 交付**
 - **T10 全屏联调 + 保真核对 + pytest 全绿 + 部署 RackNerd + progress/docs 记录**。
@@ -179,7 +179,7 @@ Lucide(lucide.dev),**stroke-width 1.5**,内联 SVG,`stroke="currentColor"`。需
 - **资源天花板**:1 vCPU / 1 GiB,web 与下载器同进程。前端保持轻量(纯静态、去 layui);`/api/system` 用 `psutil.cpu_percent(interval=None)`(非阻塞)避免占核。
 - **psutil 依赖**:新增运行时依赖,需同步 requirements 并在部署机安装(`git pull` 后确认 venv 装了 psutil)。
 - **预扫描状态保留**:触及 confirm/cancel/清理生命周期,属较高风险区,改动须保证 cancel/clear/terminal 时正确清理,不泄漏内存,不破坏 400/503 回滚行为。
-- **登录加密**:AES key/iv 与 POST 行为**不改**,仅重排版式。
+- **登录传输**：不使用客户端固定密钥；密码由服务端验证，非本机访问必须经 HTTPS。
 - **hide_file_name**:文件名脱敏由后端 `mask_display_name` 负责,前端直接展示后端返回值,不自行还原。
 
 ## 12. 参考文件

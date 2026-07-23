@@ -1572,3 +1572,32 @@ Changed files:
 
 Rollback:
 - 服务器：`git reset --hard 38bd2cb && systemctl restart tg-downloader.service`（保留 `*.sqlite3`）；或 `git revert df1ac9a`。参考回滚基线提交 `38bd2cb`。
+
+## 2026-07-23 - Task: Remediate P1-P3 web credential exposure risks
+
+### What was done
+
+- Ignored the root `.web_auth.json` file so generated Web login credentials and Flask session state cannot be added to Git accidentally.
+- Replaced the static Flask session-secret fallback with a random value, while retaining the persistent random session secret created by Web authentication initialization.
+- Removed the fixed client-side AES key/IV and CryptoJS login dependency; the browser now submits the password for server-side verification, with documentation requiring HTTPS outside localhost.
+- Replaced weak Web password examples and synchronized design documents and the login prototype with the new behavior.
+
+### Testing
+
+- TDD red: `.venv/bin/python -m pytest tests/module/test_web.py -q` failed as expected for the old static secret and AES-only login behavior.
+- Targeted green: `.venv/bin/python -m pytest tests/module/test_web.py -q` -> `28 passed`.
+- Full suite: `.venv/bin/python -m pytest tests/ -q` -> `488 passed, 1 skipped`.
+- Security checks: `.web_auth.json` is ignored; no fixed AES key/IV, client AES references, weak Web-secret examples, or stale AES login documentation remain outside vendored assets.
+- `.venv/bin/python -m compileall -q module/web.py tests/module/test_web.py` and `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `.gitignore`: ignores generated root Web authentication state.
+- `module/web.py` and `module/templates/login.html`: remove fixed client-side AES and static Flask secret fallback.
+- `tests/module/test_web.py`: covers random session secret and plaintext login submission.
+- `config.example.yaml`, `README.md`, `README_CN.md`, and design docs: document strong Web passwords and HTTPS requirements.
+- `progress.md`: records this remediation.
+
+Rollback:
+- `git revert <commit-containing-this-change>` restores the prior Web login path. No database or persistent-data migration was made.
