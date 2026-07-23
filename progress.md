@@ -1789,3 +1789,29 @@ Changed files:
 Rollback:
 - Revert the commit containing this task and restart the downloader. No database schema or stored rows were added or migrated by this change.
 - Remove `channel_library.incremental_scan_cron` and `channel_library.incremental_scan_timezone` from runtime configuration, or leave the cron value empty, before rolling back the dependency if those settings were added later.
+
+## 2026-07-23 - Task: Deploy global incremental cron and channel statistics
+
+### What was done
+
+- Pushed feature commit `cfae59a` to GitHub `master`.
+- Backed up the production configuration, dependency snapshot, and prior commit marker before deployment.
+- Fast-forwarded the RackNerd checkout, installed `croniter==2.0.7` into the service virtual environment, and restarted `tg-downloader.service`.
+- Preserved the production `config.yaml`; global automatic incremental scanning remains disabled until an explicit cron expression is configured.
+
+### Testing
+
+- Production dependency check, Python compile check, and default channel-library configuration import -> passed.
+- `tg-downloader.service` -> `active` on commit `cfae59a`; four download workers started.
+- Post-restart journal scan -> 0 traceback/exception/error lines.
+- Local production smoke: `/` -> `302 /login`, `/login` -> `200`, channel-library and keyword-monitor APIs -> authenticated `302`, static CSS -> `200`.
+- `channel_library.sqlite3` and `web_tasks.sqlite3` integrity checks -> `ok`; schema versions remained `[3, 6]`.
+
+### Notes
+
+Changed files:
+- `progress.md`: recorded the production backup, dependency installation, deployment state, and verification evidence.
+
+Rollback:
+- Revert `cfae59a`, push `master`, fast-forward production, restore the prior dependency set if required, and restart `tg-downloader.service`.
+- Production backup: `/root/telegram_media_downloader/backups/release-20260723-112215-channel-cron`. Preserve both SQLite databases; this release did not migrate their schemas.
