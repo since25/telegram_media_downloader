@@ -25,6 +25,8 @@ web_host: 0.0.0.0
 web_port: 5000
 # web_login_secret: set-a-strong-unique-password
 channel_library:
+  # Packages wait until their full known size fits while this much free disk remains.
+  min_free_disk_bytes: 3221225472
   full_scan_batch_size: 50
   full_scan_delay_min_sec: 4
   full_scan_delay_max_sec: 6
@@ -34,18 +36,3 @@ channel_library:
   transient_retry_delays_sec: [5, 15, 45]
 # in linux please use /
 # save_path: E:\github\telegram_media_downloader
-# 新增监控配置
-monitor:
-  enabled: true
-  webhook_url: "https://discord.com/api/webhooks/你的URL"
-  min_interval: 5
-  window_sec: 300  # 监控窗口，默认5分钟
-  startup_scan_window_sec: 21600   # 启动后回扫频道内消息范围6小时，config只支持改大，改小需要修改主程序
-  startup_scan_sleep_sec: 0.3      # 每页之间 sleep，防止触发限流，config只支持改大，改小需要修改主程序
-  startup_scan_page_size: 100      # 每次 GetHistory 拉多少（pyrogram这边最大常见是100），config只支持改大，改小需要修改主程序
-  keywords:
-  - 里番 #示例
-  chats:
-    #- -1001234567890
-    #- -1009876543210
-   - -1003050259377 #频道编号，可以通过发送给bot/get_info link查询，示例/get_info t.me/channel_name，支持同时监控多个频道

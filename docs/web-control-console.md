@@ -20,9 +20,17 @@ Prescan mode scans a bounded message window, writes package summaries to the Web
 
 Confirming a prescan keeps its package list in Web state instead of discarding it, so `GET /api/prescans/<task_id>/packages` keeps returning `200` (with each package's `selected` flag as of confirmation time) while the download is in progress, which is what backs the prescan download detail view. Cancelling a prescan, or clearing/clear-completing its task once it reaches a terminal state, drops the retained package list so it does not linger in memory.
 
-## Channel Library Workflow
+## Resources And Channel Indexes
 
-Open the Channel Library tab after login and submit any accessible message link from a channel or supergroup. The link identifies the conversation; the initial scan snapshots the latest visible message ID and indexes the complete visible ID range. Submitting another link for the same Telegram `chat_id` opens the existing library and its persisted checkpoint.
+The Resources tab is the primary package interface. It searches, filters, selects, and
+downloads packages across all indexed channels. Each package retains its `library_id`,
+channel title, and Telegram `chat_id`; channels are optional multi-select filters rather
+than the parent navigation required to reach a package.
+
+Open the Channels tab to submit any accessible message link from a channel or supergroup.
+The link identifies the conversation; the initial scan snapshots the latest visible
+message ID and indexes the complete visible ID range. Submitting another link for the
+same Telegram `chat_id` opens the existing library and its persisted checkpoint.
 
 The initial full scan requests 50 consecutive message IDs per batch and waits a randomized 4-6 seconds between successful batches. Work is charged by the snapshotted ID range, not by visible-message count; deleted or unavailable gaps do not reduce the number of batches. A 15,000-ID range is exactly 300 batches and 299 inter-batch delays, so delay alone is theoretically 19 minutes 56 seconds to 29 minutes 54 seconds (about 20-30 minutes). This is not a completion promise: Telegram API latency, FloodWait, transient retries, automatic download priority, and user pause all extend elapsed time. Incremental and repair scans also use 50-ID batches with 1-2 second delays. These are validated server settings loaded from `config.yaml`; changing them requires a restart.
 
@@ -39,11 +47,36 @@ Scan states shown by the page are:
 
 Stable packages are selectable. `provisional` is the current unproven tail, `uncertain` intersects a failed boundary closure, and `superseded` is retained history after a split or merge; these are not selectable. Package download summaries use `never`, `queued`, `downloading`, `completed`, `outdated`, `failed`, and `cancelled`.
 
-Filters cover normalized title substring, UTC publication range, intersecting message-ID range, inclusive media-count and known-size bounds, unknown-size inclusion, and download status. Package and item lists use keyset cursors. “Select all filtered” is evaluated by the server across every matching page, while prior selections survive filter changes and page reloads.
+Aggregate filters cover source channels, normalized title substring, UTC publication
+range, inclusive media-count and known-size bounds, unknown-size inclusion, and download
+status. Package and item lists use keyset cursors. “Select all filtered” is evaluated by
+the server across every matching page and channel. One aggregate download submission is
+split into one existing channel batch per source channel so Telegram refetch identity and
+package naming remain stable.
 
 A `partial` library remains browseable. Stable packages outside uncertain closures can be selected and downloaded; use Repair for all open failure ranges or selected failure IDs. A successful repair rebuilds the complete affected closure before publishing stable packages. After the first full scan finishes, Incremental snapshots and scans only the new ID tail.
 
 Duplicate protection applies at three levels: channel links deduplicate by Telegram `chat_id`, selections bind to a package revision, and every download submission requires an `Idempotency-Key`. A package with any successful attempt, or a changed package marked `outdated`, requires explicit `redownload=true`. A later failed redownload does not erase the successful-download history.
+
+## Keyword Monitor Groups
+
+Keyword rules are stored in the channel-library database and managed only from the
+Keyword Monitor tab. They are not loaded from `config.yaml`. A group contains a name,
+enabled state, required keywords, match keywords, and blacklist keywords:
+
+- every required keyword must occur in the normalized package title;
+- at least one match keyword must occur;
+- any blacklist keyword excludes the package.
+
+Saving an enabled group immediately evaluates the current aggregate index. Full,
+incremental, and repair scan completion evaluates all enabled groups again. Matching uses
+Unicode NFKC plus case folding. Only stable `never` packages without historical success
+are automatic candidates; successful, active, and `outdated` packages are not repeated.
+
+Candidates are merged by package and revision before batch creation. One package matching
+multiple groups creates one exact-package batch in chronological FIFO order, while each
+group receives a separate history row containing its actual matched keyword subset,
+channel, package revision, batch, task, and live download status.
 
 ## Channel Library API
 
@@ -60,7 +93,26 @@ Channel and scan routes:
 - `POST /api/channel-libraries/<library_id>/scans`: `{"mode": "incremental"}`, `{"mode": "repair", "failure_ids": [<id>]}`, or `{"mode": "retry", "failed_job_id": <id>}`; returns `202`.
 - `POST /api/channel-scans/<job_id>/pause`, `/resume`, or `/stop`: persists control at the next safe scan boundary.
 
-Package, selection, and download routes:
+Aggregate package, selection, and download routes:
+
+- `GET /api/packages`: cross-channel package search; accepts repeated or comma-separated
+  `library_ids` plus package filters, `cursor`, and `page_size`.
+- `GET /api/packages/<package_id>/items`: keyset-paginated media metadata.
+- `PUT /api/packages/<package_id>/selection`: `{"selected": true|false}`.
+- `POST /api/packages/selection/select-filtered`: package filters plus optional
+  `library_ids`.
+- `POST /api/packages/selection/clear` and `GET /api/packages/selection`: clear or
+  summarize aggregate selection.
+- `POST /api/packages/download-batches`: optional `{"redownload": true|false}` plus
+  required `Idempotency-Key`; returns one batch summary per selected source channel.
+
+Keyword monitor routes:
+
+- `GET|POST /api/keyword-monitor-groups`.
+- `GET|PUT|DELETE /api/keyword-monitor-groups/<group_id>`.
+- `GET /api/keyword-monitor-groups/<group_id>/history`.
+
+Legacy channel-scoped package routes remain available for compatibility:
 
 - `GET /api/channel-libraries/<library_id>/packages`: accepts `q`, UTC `date_from`/`date_to`, message/media/size min/max bounds, `include_unknown_size=true|false`, `download_status`, `cursor`, and `page_size` (1-200). Returns `next_cursor` and `library_revision` unchanged from the store.
 - `GET /api/channel-libraries/<library_id>/packages/<package_id>/items`: keyset-paginated media metadata; respects `hide_file_name`.
@@ -112,7 +164,9 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 - `POST /api/prescans/<task_id>/packages/select-all`: include or exclude all packages at once with `{"selected": true|false}`.
 - `POST /api/tasks/<task_id>/clear`: clear one terminal task from Web history.
 - `POST /api/tasks/clear-completed`: clear completed task history.
-- `POST /api/tasks/<task_id>/retry`: currently returns `409` until original command metadata is persisted for safe retry.
+- `GET /api/tasks/<task_id>/upload-retries`: returns only files whose retained local copy has an `upload_failed` state.
+- `POST /api/tasks/<task_id>/retry`: channel-library tasks retry only retained cloud uploads. It returns `202` after scheduling; missing local sources remain in the retry list as `upload_source_missing` and are never re-downloaded implicitly. Other task types continue to return `409` because their original command metadata is not persisted.
+- `POST /api/tasks/<task_id>/upload-retries/cleanup`: explicitly deletes retained channel-library upload-failure source files under `save_path`; each row remains visible as `upload_source_removed` and is never re-downloaded automatically.
 - `GET /api/system`: CPU / memory / disk(save_path 卷)/ throughput 快照。
 
 All APIs require the existing Web login session.

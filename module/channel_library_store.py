@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Union
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 6
 
 LIBRARY_STATUSES = frozenset(
     {"new", "indexing", "ready", "partial", "paused", "stopped", "failed"}
@@ -49,7 +49,14 @@ PACKAGE_DOWNLOAD_STATUSES = frozenset(
 SCAN_FAILURE_STATUSES = frozenset({"open", "repairing", "resolved"})
 DOWNLOAD_DISPATCH_STATUSES = frozenset({"pending_dispatch", "dispatched"})
 DOWNLOAD_ATTEMPT_TERMINAL_STATUSES = frozenset(
-    {"completed", "failed", "upload_failed", "cancelled", "not_found"}
+    {
+        "completed",
+        "completed_with_errors",
+        "failed",
+        "upload_failed",
+        "cancelled",
+        "not_found",
+    }
 )
 DOWNLOAD_ERROR_CODES = frozenset(
     {
@@ -60,6 +67,7 @@ DOWNLOAD_ERROR_CODES = frozenset(
         "cancelled",
         "upload_failed",
         "not_found",
+        "unknown_package_size",
     }
 )
 DEFAULT_PAGE_SIZE = 50
@@ -167,9 +175,9 @@ def _normalize_utc_boundary(
 
 
 def _encode_cursor(payload: Mapping[str, int]) -> str:
-    encoded = json.dumps(
-        dict(payload), sort_keys=True, separators=(",", ":")
-    ).encode("ascii")
+    encoded = json.dumps(dict(payload), sort_keys=True, separators=(",", ":")).encode(
+        "ascii"
+    )
     return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
 
 
@@ -191,7 +199,12 @@ def _decode_cursor(cursor: str, required_keys: frozenset[str]) -> dict[str, int]
             return result
 
         payload = json.loads(decoded, object_pairs_hook=reject_duplicate_keys)
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+    except (
+        binascii.Error,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        ValueError,
+    ) as error:
         raise ValueError("Invalid cursor") from error
     if not isinstance(payload, dict) or frozenset(payload) != required_keys:
         raise ValueError("Invalid cursor")
@@ -216,6 +229,7 @@ class ChannelLibraryConfig:
     incremental_scan_delay_min_sec: float = 1.0
     incremental_scan_delay_max_sec: float = 2.0
     transient_retry_delays_sec: Sequence[float] = (5.0, 15.0, 45.0)
+    min_free_disk_bytes: int = 3 * 1024**3
 
     @classmethod
     def from_mapping(cls, raw: Optional[dict]) -> "ChannelLibraryConfig":
@@ -240,6 +254,9 @@ class ChannelLibraryConfig:
             transient_retry_delays_sec=tuple(
                 float(value)
                 for value in raw.get("transient_retry_delays_sec", (5, 15, 45))
+            ),
+            min_free_disk_bytes=max(
+                int(raw.get("min_free_disk_bytes", 3 * 1024**3)), 0
             ),
         )
 
@@ -496,6 +513,8 @@ class ChannelLibraryStore:
                     title TEXT NOT NULL,
                     start_message_id INTEGER NOT NULL,
                     end_message_id INTEGER NOT NULL,
+                    known_total_size INTEGER NOT NULL DEFAULT 0,
+                    unknown_size_count INTEGER NOT NULL DEFAULT 0,
                     ordinal INTEGER NOT NULL,
                     status TEXT NOT NULL DEFAULT 'queued',
                     last_error TEXT,
@@ -530,6 +549,70 @@ class ChannelLibraryStore:
                         ) ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS channel_package_auto_download_triggers (
+                    library_id INTEGER NOT NULL,
+                    package_id INTEGER NOT NULL,
+                    package_revision INTEGER NOT NULL,
+                    rule_key TEXT NOT NULL,
+                    matched_keywords TEXT NOT NULL,
+                    batch_id INTEGER NOT NULL,
+                    created_at REAL NOT NULL,
+                    PRIMARY KEY (
+                        library_id, package_id, package_revision, rule_key
+                    ),
+                    FOREIGN KEY (library_id, package_id)
+                        REFERENCES channel_packages(library_id, id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY (batch_id) REFERENCES channel_download_batches(id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS keyword_monitor_groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1
+                        CHECK (enabled IN (0, 1)),
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS keyword_monitor_terms (
+                    group_id INTEGER NOT NULL,
+                    term_type TEXT NOT NULL
+                        CHECK (term_type IN (
+                            'required', 'match', 'blacklist'
+                        )),
+                    keyword TEXT NOT NULL,
+                    normalized_keyword TEXT NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    PRIMARY KEY (group_id, term_type, normalized_keyword),
+                    UNIQUE (group_id, term_type, ordinal),
+                    FOREIGN KEY (group_id) REFERENCES keyword_monitor_groups(id)
+                        ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS keyword_monitor_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    group_id INTEGER NOT NULL,
+                    library_id INTEGER NOT NULL,
+                    package_id INTEGER NOT NULL,
+                    package_revision INTEGER NOT NULL,
+                    package_title TEXT NOT NULL,
+                    matched_keywords TEXT NOT NULL,
+                    batch_id INTEGER NOT NULL,
+                    task_id TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE (group_id, package_id, package_revision),
+                    FOREIGN KEY (group_id) REFERENCES keyword_monitor_groups(id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY (library_id, package_id)
+                        REFERENCES channel_packages(library_id, id)
+                        ON DELETE CASCADE,
+                    FOREIGN KEY (batch_id) REFERENCES channel_download_batches(id)
+                        ON DELETE CASCADE
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_channel_libraries_status_updated
                     ON channel_libraries(status, updated_at);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_scan_jobs_active_library
@@ -562,6 +645,14 @@ class ChannelLibraryStore:
                     ON channel_download_batches(dispatch_status, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_channel_download_batches_status
                     ON channel_download_batches(library_id, status, created_at);
+                CREATE INDEX IF NOT EXISTS idx_channel_auto_download_triggers_batch
+                    ON channel_package_auto_download_triggers(batch_id);
+                CREATE INDEX IF NOT EXISTS idx_keyword_monitor_groups_enabled
+                    ON keyword_monitor_groups(enabled, updated_at, id);
+                CREATE INDEX IF NOT EXISTS idx_keyword_monitor_history_group
+                    ON keyword_monitor_history(group_id, created_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_keyword_monitor_history_batch
+                    ON keyword_monitor_history(batch_id);
                 """
             )
             scan_job_columns = {
@@ -603,6 +694,49 @@ class ChannelLibraryStore:
                 connection.execute(
                     "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (3, ?)",
                     (time.time(),),
+                )
+            batch_package_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(channel_download_batch_packages)"
+                )
+            }
+            if "known_total_size" not in batch_package_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE channel_download_batch_packages
+                    ADD COLUMN known_total_size INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+                connection.execute(
+                    """
+                    ALTER TABLE channel_download_batch_packages
+                    ADD COLUMN unknown_size_count INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+                connection.execute(
+                    """
+                    UPDATE channel_download_batch_packages AS attempt
+                    SET known_total_size = (
+                            SELECT COALESCE(SUM(media.file_size), 0)
+                            FROM channel_download_batch_items AS item
+                            JOIN channel_media_messages AS media
+                              ON media.library_id = item.library_id
+                             AND media.message_id = item.message_id
+                            WHERE item.batch_id = attempt.batch_id
+                              AND item.package_id = attempt.package_id
+                        ),
+                        unknown_size_count = (
+                            SELECT COUNT(*)
+                            FROM channel_download_batch_items AS item
+                            LEFT JOIN channel_media_messages AS media
+                              ON media.library_id = item.library_id
+                             AND media.message_id = item.message_id
+                            WHERE item.batch_id = attempt.batch_id
+                              AND item.package_id = attempt.package_id
+                              AND (media.file_size IS NULL OR media.file_size <= 0)
+                        )
+                    """
                 )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (?, ?)",
@@ -698,9 +832,7 @@ class ChannelLibraryStore:
             ).fetchone()
             if job is None:
                 if not created and library["status"] != "new":
-                    raise ValueError(
-                        f"Library {library['id']} has no initial scan job"
-                    )
+                    raise ValueError(f"Library {library['id']} has no initial scan job")
                 job_id = self._insert_scan_job(
                     connection,
                     library,
@@ -915,9 +1047,7 @@ class ChannelLibraryStore:
         if package_filter.q is not None:
             normalized_query = _normalize_title(package_filter.q)
             if normalized_query:
-                predicates.append(
-                    "instr(unicode_nfkc_casefold(p.title), ?) > 0"
-                )
+                predicates.append("instr(unicode_nfkc_casefold(p.title), ?) > 0")
                 parameters.append(normalized_query)
         if date_from is not None:
             predicates.append("p.published_at >= ?")
@@ -953,6 +1083,22 @@ class ChannelLibraryStore:
             parameters.append(package_filter.download_status)
         return " AND ".join(predicates), parameters
 
+    @classmethod
+    def _aggregate_package_predicate(
+        cls,
+        library_ids: Sequence[int],
+        package_filter: PackageFilter,
+    ) -> tuple[str, list[object]]:
+        predicate, parameters = cls._package_predicate(0, package_filter)
+        predicate = predicate.replace("p.library_id = ? AND ", "", 1)
+        parameters = parameters[1:]
+        normalized_ids = tuple(dict.fromkeys(int(value) for value in library_ids))
+        if normalized_ids:
+            placeholders = ", ".join("?" for _ in normalized_ids)
+            predicate = f"p.library_id IN ({placeholders}) AND {predicate}"
+            parameters = [*normalized_ids, *parameters]
+        return predicate, parameters
+
     def list_libraries(
         self,
         cursor: Optional[str] = None,
@@ -982,11 +1128,267 @@ class ChannelLibraryStore:
         has_more = len(rows) > page_size
         page_rows = rows[:page_size]
         next_cursor = (
-            _encode_cursor({"id": int(page_rows[-1]["id"])})
-            if has_more
-            else None
+            _encode_cursor({"id": int(page_rows[-1]["id"])}) if has_more else None
         )
         return QueryPage([dict(row) for row in page_rows], next_cursor)
+
+    @staticmethod
+    def _validated_monitor_terms(values: Sequence[object]) -> list[tuple[str, str]]:
+        terms = []
+        seen = set()
+        for value in values:
+            keyword = str(value).strip()
+            normalized = _normalize_title(keyword)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append((keyword, normalized))
+        return terms
+
+    @staticmethod
+    def _monitor_group_from_connection(
+        connection: sqlite3.Connection, group_id: int
+    ) -> Optional[dict]:
+        row = connection.execute(
+            """
+            SELECT g.*,
+                   COUNT(DISTINCT h.id) AS history_count,
+                   MAX(h.created_at) AS last_triggered_at
+            FROM keyword_monitor_groups AS g
+            LEFT JOIN keyword_monitor_history AS h ON h.group_id = g.id
+            WHERE g.id = ?
+            GROUP BY g.id
+            """,
+            (group_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        term_rows = connection.execute(
+            """
+            SELECT term_type, keyword
+            FROM keyword_monitor_terms
+            WHERE group_id = ?
+            ORDER BY term_type, ordinal
+            """,
+            (group_id,),
+        ).fetchall()
+        result["enabled"] = bool(result["enabled"])
+        result["required_keywords"] = [
+            item["keyword"] for item in term_rows if item["term_type"] == "required"
+        ]
+        result["match_keywords"] = [
+            item["keyword"] for item in term_rows if item["term_type"] == "match"
+        ]
+        result["blacklist_keywords"] = [
+            item["keyword"] for item in term_rows if item["term_type"] == "blacklist"
+        ]
+        return result
+
+    def list_keyword_monitor_groups(self) -> list[dict]:
+        """List monitor groups with compact trigger summaries."""
+
+        with self.connect() as connection:
+            group_ids = [
+                int(row["id"])
+                for row in connection.execute(
+                    "SELECT id FROM keyword_monitor_groups ORDER BY updated_at DESC, id DESC"
+                )
+            ]
+            return [
+                self._monitor_group_from_connection(connection, group_id)
+                for group_id in group_ids
+            ]
+
+    def get_keyword_monitor_group(self, group_id: int) -> Optional[dict]:
+        with self.connect() as connection:
+            return self._monitor_group_from_connection(connection, int(group_id))
+
+    def save_keyword_monitor_group(
+        self,
+        name: str,
+        required_keywords: Sequence[object],
+        match_keywords: Sequence[object],
+        blacklist_keywords: Sequence[object],
+        enabled: bool = True,
+        group_id: Optional[int] = None,
+        now: Optional[float] = None,
+    ) -> dict:
+        """Create or replace one database-owned keyword monitor group."""
+
+        group_name = str(name).strip()
+        if not group_name:
+            raise ValueError("Monitor group name is required")
+        if len(group_name) > 120:
+            raise ValueError("Monitor group name is too long")
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a boolean")
+        terms = {
+            "required": self._validated_monitor_terms(required_keywords),
+            "match": self._validated_monitor_terms(match_keywords),
+            "blacklist": self._validated_monitor_terms(blacklist_keywords),
+        }
+        if not terms["match"]:
+            raise ValueError("At least one match keyword is required")
+        if sum(len(items) for items in terms.values()) > 500:
+            raise ValueError("Monitor group has too many keywords")
+
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if group_id is None:
+                group_id = int(
+                    connection.execute(
+                        """
+                        INSERT INTO keyword_monitor_groups (
+                            name, enabled, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (group_name, int(enabled), now, now),
+                    ).lastrowid
+                )
+            else:
+                cursor = connection.execute(
+                    """
+                    UPDATE keyword_monitor_groups
+                    SET name = ?, enabled = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (group_name, int(enabled), now, int(group_id)),
+                )
+                if cursor.rowcount != 1:
+                    raise KeyError(f"Keyword monitor group {group_id} does not exist")
+                connection.execute(
+                    "DELETE FROM keyword_monitor_terms WHERE group_id = ?",
+                    (int(group_id),),
+                )
+            connection.executemany(
+                """
+                INSERT INTO keyword_monitor_terms (
+                    group_id, term_type, keyword, normalized_keyword, ordinal
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (int(group_id), term_type, keyword, normalized, ordinal)
+                    for term_type, values in terms.items()
+                    for ordinal, (keyword, normalized) in enumerate(values, start=1)
+                ],
+            )
+            result = self._monitor_group_from_connection(connection, int(group_id))
+        return result
+
+    def delete_keyword_monitor_group(self, group_id: int) -> bool:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "DELETE FROM keyword_monitor_groups WHERE id = ?", (int(group_id),)
+            )
+        return cursor.rowcount == 1
+
+    def list_keyword_monitor_history(
+        self,
+        group_id: int,
+        cursor: Optional[str] = None,
+        limit: int = DEFAULT_PAGE_SIZE,
+    ) -> QueryPage:
+        """List one group's trigger and live download status history."""
+
+        page_size = self._page_size(limit)
+        parameters: list[object] = [int(group_id)]
+        cursor_sql = ""
+        if cursor is not None:
+            decoded = _decode_cursor(cursor, frozenset({"id"}))
+            cursor_sql = "AND h.id < ?"
+            parameters.append(decoded["id"])
+        parameters.append(page_size + 1)
+        with self.connect() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM keyword_monitor_groups WHERE id = ?",
+                    (int(group_id),),
+                ).fetchone()
+                is None
+            ):
+                raise KeyError(f"Keyword monitor group {group_id} does not exist")
+            rows = connection.execute(
+                f"""
+                SELECT h.*, l.title AS channel_title, l.chat_id,
+                       b.status AS batch_status,
+                       bp.status AS package_download_status,
+                       bp.last_error
+                FROM keyword_monitor_history AS h
+                JOIN channel_libraries AS l ON l.id = h.library_id
+                JOIN channel_download_batches AS b ON b.id = h.batch_id
+                JOIN channel_download_batch_packages AS bp
+                  ON bp.batch_id = h.batch_id AND bp.package_id = h.package_id
+                WHERE h.group_id = ? {cursor_sql}
+                ORDER BY h.id DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        has_more = len(rows) > page_size
+        page_rows = rows[:page_size]
+        items = []
+        for row in page_rows:
+            item = dict(row)
+            item["matched_keywords"] = json.loads(item["matched_keywords"])
+            items.append(item)
+        next_cursor = (
+            _encode_cursor({"id": int(page_rows[-1]["id"])}) if has_more else None
+        )
+        return QueryPage(items, next_cursor)
+
+    def list_keyword_monitor_candidates(self, group_id: int) -> list[dict]:
+        """Return cross-channel stable packages matching one monitor group."""
+
+        group = self.get_keyword_monitor_group(group_id)
+        if group is None:
+            raise KeyError(f"Keyword monitor group {group_id} does not exist")
+        if not group["enabled"]:
+            return []
+        required = [_normalize_title(value) for value in group["required_keywords"]]
+        matches = [_normalize_title(value) for value in group["match_keywords"]]
+        blacklist = [_normalize_title(value) for value in group["blacklist_keywords"]]
+        if not matches:
+            return []
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT p.*, l.chat_id, l.title AS channel_title
+                FROM channel_packages AS p
+                JOIN channel_libraries AS l ON l.id = p.library_id
+                WHERE p.boundary_status = 'stable'
+                  AND p.current_download_status = 'never'
+                  AND p.has_successful_attempt = 0
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM keyword_monitor_history AS h
+                      WHERE h.group_id = ?
+                        AND h.package_id = p.id
+                        AND h.package_revision = p.index_revision
+                  )
+                ORDER BY COALESCE(p.published_at, ''), p.library_id,
+                         p.start_message_id, p.id
+                """,
+                (int(group_id),),
+            ).fetchall()
+        candidates = []
+        for row in rows:
+            normalized_title = _normalize_title(row["title"])
+            if not all(keyword in normalized_title for keyword in required):
+                continue
+            matched = [keyword for keyword in matches if keyword in normalized_title]
+            if not matched or any(keyword in normalized_title for keyword in blacklist):
+                continue
+            item = dict(row)
+            item["matched_keywords"] = [
+                original
+                for original in group["match_keywords"]
+                if _normalize_title(original) in matched
+            ]
+            candidates.append(item)
+        return candidates
 
     def list_packages(
         self,
@@ -1000,9 +1402,7 @@ class ChannelLibraryStore:
         page_size = self._page_size(limit)
         predicate, parameters = self._package_predicate(library_id, package_filter)
         if cursor is not None:
-            decoded = _decode_cursor(
-                cursor, frozenset({"start_message_id", "id"})
-            )
+            decoded = _decode_cursor(cursor, frozenset({"start_message_id", "id"}))
             predicate = (
                 f"{predicate} AND "
                 "(p.start_message_id < ? OR "
@@ -1076,6 +1476,96 @@ class ChannelLibraryStore:
         )
         return QueryPage(items, next_cursor, int(library["index_revision"]))
 
+    def list_packages_aggregate(
+        self,
+        library_ids: Sequence[int],
+        package_filter: PackageFilter,
+        cursor: Optional[str] = None,
+        limit: int = DEFAULT_PAGE_SIZE,
+    ) -> QueryPage:
+        """List packages across all or selected channel libraries."""
+
+        page_size = self._page_size(limit)
+        predicate, parameters = self._aggregate_package_predicate(
+            library_ids, package_filter
+        )
+        if cursor is not None:
+            decoded = _decode_cursor(cursor, frozenset({"id"}))
+            predicate = f"{predicate} AND p.id < ?"
+            parameters.append(decoded["id"])
+        parameters.append(page_size + 1)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT p.*, l.chat_id, l.title AS channel_title,
+                       l.username AS channel_username,
+                       s.package_revision AS selection_revision,
+                       s.selected AS stored_selected,
+                       s.invalidation_reason AS stored_invalidation_reason
+                FROM channel_packages AS p
+                JOIN channel_libraries AS l ON l.id = p.library_id
+                LEFT JOIN channel_package_selections AS s
+                  ON s.library_id = p.library_id AND s.package_id = p.id
+                WHERE {predicate}
+                ORDER BY p.id DESC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        has_more = len(rows) > page_size
+        page_rows = rows[:page_size]
+        items = []
+        for row in page_rows:
+            item = dict(row)
+            item["selected"] = (
+                item.pop("stored_selected") == 1
+                and item["selection_revision"] == item["index_revision"]
+                and item["boundary_status"] == "stable"
+            )
+            invalidation_reason = item.pop("stored_invalidation_reason")
+            if invalidation_reason is None and item["selection_revision"] is not None:
+                if item["selection_revision"] != item["index_revision"]:
+                    invalidation_reason = "package_revision_changed"
+                elif item["boundary_status"] != "stable":
+                    invalidation_reason = "package_not_stable"
+            item["selection_invalidation_reason"] = invalidation_reason
+            item["selectable"] = item["boundary_status"] == "stable"
+            item["unselectable_reason"] = (
+                None if item["selectable"] else "package_not_stable"
+            )
+            item["size_is_exact"] = item["unknown_size_count"] == 0
+            items.append(item)
+        next_cursor = (
+            _encode_cursor({"id": int(page_rows[-1]["id"])}) if has_more else None
+        )
+        return QueryPage(items, next_cursor)
+
+    def get_package(self, package_id: int) -> Optional[dict]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT p.*, l.chat_id, l.title AS channel_title
+                FROM channel_packages AS p
+                JOIN channel_libraries AS l ON l.id = p.library_id
+                WHERE p.id = ?
+                """,
+                (int(package_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_package_items_aggregate(
+        self,
+        package_id: int,
+        cursor: Optional[str] = None,
+        limit: int = DEFAULT_PAGE_SIZE,
+    ) -> QueryPage:
+        package = self.get_package(package_id)
+        if package is None:
+            raise KeyError(f"Channel package {package_id} does not exist")
+        return self.list_package_items(
+            int(package["library_id"]), int(package_id), cursor=cursor, limit=limit
+        )
+
     def list_package_items(
         self,
         library_id: int,
@@ -1089,12 +1579,9 @@ class ChannelLibraryStore:
         cursor_sql = ""
         parameters: list[object] = [library_id, package_id]
         if cursor is not None:
-            decoded = _decode_cursor(
-                cursor, frozenset({"ordinal", "message_id"})
-            )
+            decoded = _decode_cursor(cursor, frozenset({"ordinal", "message_id"}))
             cursor_sql = (
-                "AND (i.ordinal > ? OR "
-                "(i.ordinal = ? AND i.message_id > ?))"
+                "AND (i.ordinal > ? OR " "(i.ordinal = ? AND i.message_id > ?))"
             )
             parameters.extend(
                 [decoded["ordinal"], decoded["ordinal"], decoded["message_id"]]
@@ -1364,12 +1851,145 @@ class ChannelLibraryStore:
             "invalidations": invalidations,
         }
 
+    def set_package_selected_aggregate(self, package_id: int, selected: bool) -> dict:
+        package = self.get_package(package_id)
+        if package is None:
+            raise KeyError(f"Channel package {package_id} does not exist")
+        return self.set_package_selected(
+            int(package["library_id"]), int(package_id), selected
+        )
+
+    def select_filtered_aggregate(
+        self,
+        library_ids: Sequence[int],
+        package_filter: PackageFilter,
+        now: Optional[float] = None,
+    ) -> dict[str, int]:
+        predicate, parameters = self._aggregate_package_predicate(
+            library_ids, package_filter
+        )
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            counts = connection.execute(
+                f"""
+                SELECT COUNT(*) AS matching_count,
+                       COALESCE(SUM(
+                           CASE WHEN p.boundary_status = 'stable' THEN 1 ELSE 0 END
+                       ), 0) AS stable_count
+                FROM channel_packages AS p
+                WHERE {predicate}
+                """,
+                parameters,
+            ).fetchone()
+            connection.execute(
+                f"""
+                INSERT INTO channel_package_selections (
+                    library_id, package_id, package_revision, selected,
+                    invalidation_reason, created_at, updated_at
+                )
+                SELECT p.library_id, p.id, p.index_revision, 1, NULL, ?, ?
+                FROM channel_packages AS p
+                WHERE {predicate} AND p.boundary_status = 'stable'
+                ON CONFLICT(library_id, package_id) DO UPDATE SET
+                    package_revision = excluded.package_revision,
+                    selected = 1, invalidation_reason = NULL,
+                    updated_at = excluded.updated_at
+                """,
+                [now, now, *parameters],
+            )
+        selected_count = int(counts["stable_count"])
+        return {
+            "selected_count": selected_count,
+            "skipped_count": int(counts["matching_count"]) - selected_count,
+        }
+
+    def clear_selection_aggregate(self, library_ids: Sequence[int] = ()) -> int:
+        normalized_ids = tuple(dict.fromkeys(int(value) for value in library_ids))
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if normalized_ids:
+                placeholders = ", ".join("?" for _ in normalized_ids)
+                cursor = connection.execute(
+                    f"""
+                    DELETE FROM channel_package_selections
+                    WHERE library_id IN ({placeholders})
+                    """,
+                    normalized_ids,
+                )
+            else:
+                cursor = connection.execute("DELETE FROM channel_package_selections")
+        return cursor.rowcount
+
+    def selection_summary_aggregate(self, library_ids: Sequence[int] = ()) -> dict:
+        normalized_ids = tuple(dict.fromkeys(int(value) for value in library_ids))
+        scope_sql = ""
+        parameters: list[object] = []
+        if normalized_ids:
+            placeholders = ", ".join("?" for _ in normalized_ids)
+            scope_sql = f"AND s.library_id IN ({placeholders})"
+            parameters.extend(normalized_ids)
+        with self.connect() as connection:
+            totals = connection.execute(
+                f"""
+                SELECT COUNT(*) AS selected_count,
+                       COALESCE(SUM(p.media_count), 0) AS media_count,
+                       COALESCE(SUM(p.known_total_size), 0) AS known_total_size,
+                       COALESCE(SUM(p.unknown_size_count), 0)
+                           AS unknown_size_count,
+                       COUNT(DISTINCT p.library_id) AS channel_count,
+                       COALESCE(SUM(CASE
+                           WHEN p.has_successful_attempt = 1
+                             OR p.current_download_status = 'outdated'
+                           THEN 1 ELSE 0 END), 0) AS redownload_count
+                FROM channel_package_selections AS s
+                JOIN channel_packages AS p
+                  ON p.library_id = s.library_id AND p.id = s.package_id
+                WHERE s.selected = 1
+                  AND s.package_revision = p.index_revision
+                  AND p.boundary_status = 'stable'
+                  {scope_sql}
+                """,
+                parameters,
+            ).fetchone()
+        unknown_size_count = int(totals["unknown_size_count"])
+        return {
+            "selected_count": int(totals["selected_count"]),
+            "channel_count": int(totals["channel_count"]),
+            "media_count": int(totals["media_count"]),
+            "known_total_size": int(totals["known_total_size"]),
+            "unknown_size_count": unknown_size_count,
+            "size_is_exact": unknown_size_count == 0,
+            "redownload_count": int(totals["redownload_count"]),
+            "requires_redownload": int(totals["redownload_count"]) > 0,
+        }
+
+    def selected_library_ids(self) -> list[int]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT DISTINCT s.library_id
+                FROM channel_package_selections AS s
+                JOIN channel_packages AS p
+                  ON p.library_id = s.library_id AND p.id = s.package_id
+                WHERE s.selected = 1
+                  AND s.package_revision = p.index_revision
+                  AND p.boundary_status = 'stable'
+                ORDER BY s.library_id
+                """
+            ).fetchall()
+        return [int(row["library_id"]) for row in rows]
+
     def create_download_batch(
         self,
         library_id: int,
         idempotency_key: str,
         task_id: str,
         allow_redownload: bool = False,
+        package_ids: Optional[Sequence[int]] = None,
+        auto_download_rule_key: Optional[str] = None,
+        matched_keywords: Sequence[str] = (),
+        keyword_monitor_hits: Sequence[Mapping[str, object]] = (),
         now: Optional[float] = None,
     ) -> dict:
         """Return the created or replayed immutable outbox batch."""
@@ -1379,6 +1999,10 @@ class ChannelLibraryStore:
             idempotency_key,
             task_id,
             allow_redownload=allow_redownload,
+            package_ids=package_ids,
+            auto_download_rule_key=auto_download_rule_key,
+            matched_keywords=matched_keywords,
+            keyword_monitor_hits=keyword_monitor_hits,
             now=now,
         )
         return batch
@@ -1389,6 +2013,10 @@ class ChannelLibraryStore:
         idempotency_key: str,
         task_id: str,
         allow_redownload: bool = False,
+        package_ids: Optional[Sequence[int]] = None,
+        auto_download_rule_key: Optional[str] = None,
+        matched_keywords: Sequence[str] = (),
+        keyword_monitor_hits: Sequence[Mapping[str, object]] = (),
         now: Optional[float] = None,
     ) -> tuple[dict, bool]:
         """Atomically validate selections and persist one immutable outbox batch."""
@@ -1396,6 +2024,51 @@ class ChannelLibraryStore:
         key = str(idempotency_key or "").strip()
         if not key:
             raise ValueError("Idempotency key is required")
+        requested_package_ids = None
+        monitor_hits: dict[tuple[int, int], list[str]] = {}
+        for value in keyword_monitor_hits:
+            if not isinstance(value, Mapping):
+                raise ValueError("Keyword monitor hits must be objects")
+            try:
+                group_id = int(value["group_id"])
+                package_id = int(value["package_id"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise ValueError(
+                    "Keyword monitor hit requires group_id and package_id"
+                ) from error
+            raw_keywords = value.get("matched_keywords", ())
+            if isinstance(raw_keywords, (str, bytes)) or not isinstance(
+                raw_keywords, Sequence
+            ):
+                raise ValueError("matched_keywords must be a list")
+            keywords = [
+                keyword
+                for keyword, _normalized in self._validated_monitor_terms(raw_keywords)
+            ]
+            if not keywords:
+                raise ValueError(
+                    "Keyword monitor hit requires at least one matched keyword"
+                )
+            monitor_hits[(group_id, package_id)] = keywords
+        if package_ids is not None:
+            requested_package_ids = tuple(
+                dict.fromkeys(int(value) for value in package_ids)
+            )
+            if not requested_package_ids:
+                raise ValueError("At least one channel package is required")
+            if auto_download_rule_key is None and not monitor_hits:
+                raise ValueError(
+                    "Explicit packages require an automatic-download source"
+                )
+        if auto_download_rule_key is not None and requested_package_ids is None:
+            raise ValueError("Auto-download rule requires explicit packages")
+        if monitor_hits and requested_package_ids is None:
+            raise ValueError("Keyword monitor hits require explicit packages")
+        if monitor_hits and any(
+            package_id not in requested_package_ids
+            for _group_id, package_id in monitor_hits
+        ):
+            raise ValueError("Keyword monitor hit references an unrequested package")
         now = time.time() if now is None else now
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1418,17 +2091,31 @@ class ChannelLibraryStore:
                 if library["status"] not in {"ready", "partial"}:
                     raise ValueError("Channel library is not ready for download")
 
-                selected = connection.execute(
-                    """
-                    SELECT p.*, s.package_revision AS selected_revision
-                    FROM channel_package_selections AS s
-                    JOIN channel_packages AS p
-                      ON p.library_id = s.library_id AND p.id = s.package_id
-                    WHERE s.library_id = ? AND s.selected = 1
-                    ORDER BY p.start_message_id, p.id
-                    """,
-                    (library_id,),
-                ).fetchall()
+                if requested_package_ids is None:
+                    selected = connection.execute(
+                        """
+                        SELECT p.*, s.package_revision AS selected_revision
+                        FROM channel_package_selections AS s
+                        JOIN channel_packages AS p
+                          ON p.library_id = s.library_id AND p.id = s.package_id
+                        WHERE s.library_id = ? AND s.selected = 1
+                        ORDER BY p.start_message_id, p.id
+                        """,
+                        (library_id,),
+                    ).fetchall()
+                else:
+                    placeholders = ", ".join("?" for _ in requested_package_ids)
+                    selected = connection.execute(
+                        f"""
+                        SELECT p.*, p.index_revision AS selected_revision
+                        FROM channel_packages AS p
+                        WHERE p.library_id = ? AND p.id IN ({placeholders})
+                        ORDER BY p.start_message_id, p.id
+                        """,
+                        (library_id, *requested_package_ids),
+                    ).fetchall()
+                    if len(selected) != len(requested_package_ids):
+                        raise ValueError("Channel package does not exist")
                 if not selected:
                     raise ValueError("No channel packages are selected")
                 for package in selected:
@@ -1454,12 +2141,16 @@ class ChannelLibraryStore:
                         (library_id, int(package["id"])),
                     ).fetchone()
                     if active_attempt is not None:
-                        raise ValueError("Selected package is in an active download batch")
+                        raise ValueError(
+                            "Selected package is in an active download batch"
+                        )
                     if package["current_download_status"] in {
                         "queued",
                         "downloading",
                     }:
-                        raise ValueError("Selected package is in an active download batch")
+                        raise ValueError(
+                            "Selected package is in an active download batch"
+                        )
                     if (
                         package["has_successful_attempt"] == 1
                         or package["current_download_status"] == "outdated"
@@ -1492,9 +2183,10 @@ class ChannelLibraryStore:
                         """
                         INSERT INTO channel_download_batch_packages (
                             batch_id, library_id, package_id, package_revision,
-                            title, start_message_id, end_message_id, ordinal,
+                            title, start_message_id, end_message_id,
+                            known_total_size, unknown_size_count, ordinal,
                             created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             batch_id,
@@ -1504,6 +2196,8 @@ class ChannelLibraryStore:
                             package["title"],
                             int(package["start_message_id"]),
                             int(package["end_message_id"]),
+                            int(package["known_total_size"]),
+                            int(package["unknown_size_count"]),
                             package_ordinal,
                             now,
                             now,
@@ -1556,11 +2250,126 @@ class ChannelLibraryStore:
                         """,
                         (task_id, now, library_id, package_id),
                     )
-                connection.execute(
-                    "DELETE FROM channel_package_selections WHERE library_id = ?",
-                    (library_id,),
-                )
+                if requested_package_ids is None:
+                    connection.execute(
+                        "DELETE FROM channel_package_selections WHERE library_id = ?",
+                        (library_id,),
+                    )
+                elif auto_download_rule_key is not None:
+                    for package in selected:
+                        package_id = int(package["id"])
+                        connection.execute(
+                            """
+                            INSERT INTO channel_package_auto_download_triggers (
+                                library_id, package_id, package_revision, rule_key,
+                                matched_keywords, batch_id, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                library_id,
+                                package_id,
+                                int(package["index_revision"]),
+                                auto_download_rule_key,
+                                json.dumps(list(matched_keywords), ensure_ascii=False),
+                                batch_id,
+                                now,
+                            ),
+                        )
+                if monitor_hits:
+                    selected_by_id = {
+                        int(package["id"]): package for package in selected
+                    }
+                    group_ids = tuple(
+                        dict.fromkeys(
+                            group_id for group_id, _package_id in monitor_hits
+                        )
+                    )
+                    placeholders = ", ".join("?" for _ in group_ids)
+                    existing_group_count = int(
+                        connection.execute(
+                            f"""
+                            SELECT COUNT(*)
+                            FROM keyword_monitor_groups
+                            WHERE id IN ({placeholders})
+                            """,
+                            group_ids,
+                        ).fetchone()[0]
+                    )
+                    if existing_group_count != len(group_ids):
+                        raise KeyError("Keyword monitor group does not exist")
+                    connection.executemany(
+                        """
+                        INSERT INTO keyword_monitor_history (
+                            group_id, library_id, package_id, package_revision,
+                            package_title, matched_keywords, batch_id, task_id,
+                            created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            (
+                                group_id,
+                                library_id,
+                                package_id,
+                                int(selected_by_id[package_id]["index_revision"]),
+                                selected_by_id[package_id]["title"],
+                                json.dumps(keywords, ensure_ascii=False),
+                                batch_id,
+                                task_id,
+                                now,
+                                now,
+                            )
+                            for (group_id, package_id), keywords in monitor_hits.items()
+                        ],
+                    )
         return self.get_download_batch(batch_id), created
+
+    def list_auto_download_candidates(
+        self,
+        library_id: int,
+        rule_key: str,
+        keywords: Sequence[str],
+    ) -> list[dict]:
+        """Return stable, never-downloaded packages matching a configured title rule."""
+
+        normalized_keywords = tuple(
+            dict.fromkeys(
+                _normalize_title(keyword)
+                for keyword in keywords
+                if str(keyword).strip()
+            )
+        )
+        if not normalized_keywords:
+            return []
+        title_predicate = " OR ".join(
+            "unicode_nfkc_casefold(p.title) LIKE ?" for _ in normalized_keywords
+        )
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT p.*
+                FROM channel_packages AS p
+                WHERE p.library_id = ?
+                  AND p.boundary_status = 'stable'
+                  AND p.current_download_status = 'never'
+                  AND p.has_successful_attempt = 0
+                  AND ({title_predicate})
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM channel_package_auto_download_triggers AS trigger
+                      WHERE trigger.library_id = p.library_id
+                        AND trigger.package_id = p.id
+                        AND trigger.package_revision = p.index_revision
+                        AND trigger.rule_key = ?
+                  )
+                ORDER BY p.start_message_id, p.id
+                """,
+                (
+                    library_id,
+                    *(f"%{keyword}%" for keyword in normalized_keywords),
+                    rule_key,
+                ),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_download_batch(self, batch_id: int) -> Optional[dict]:
         with self.connect() as connection:
@@ -1601,6 +2410,15 @@ class ChannelLibraryStore:
                 "SELECT * FROM channel_download_batches WHERE id = ?", (batch_id,)
             ).fetchone()
         return dict(batch) if batch is not None else None
+
+    def get_download_batch_by_task_id(self, task_id: str) -> Optional[dict]:
+        """Return one persisted download batch by its deterministic Web task ID."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT id FROM channel_download_batches WHERE task_id = ?", (task_id,)
+            ).fetchone()
+        return self.get_download_batch(int(row["id"])) if row is not None else None
 
     def list_download_batch_package_summaries(self, batch_id: int) -> list[dict]:
         """Return batch package rows in order, without their item snapshots."""
@@ -1657,6 +2475,22 @@ class ChannelLibraryStore:
                 ORDER BY created_at, id
                 """,
                 parameters,
+            ).fetchall()
+        return [self.get_download_batch(int(row["id"])) for row in rows]
+
+    def list_download_batches_by_idempotency_prefix(self, prefix: str) -> list[dict]:
+        """Return batches created by one aggregate Web submission key."""
+
+        value = str(prefix)
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id
+                FROM channel_download_batches
+                WHERE substr(idempotency_key, 1, ?) = ?
+                ORDER BY library_id, id
+                """,
+                (len(value), value),
             ).fetchall()
         return [self.get_download_batch(int(row["id"])) for row in rows]
 
@@ -1793,9 +2627,7 @@ class ChannelLibraryStore:
             if batch is None:
                 raise KeyError(f"Download batch {batch_id} does not exist")
             if batch["status"] not in {"queued", "downloading"}:
-                raise ValueError(
-                    f"Download batch is not resumable: {batch['status']}"
-                )
+                raise ValueError(f"Download batch is not resumable: {batch['status']}")
             connection.execute(
                 """
                 UPDATE channel_packages
@@ -1841,7 +2673,9 @@ class ChannelLibraryStore:
         summary_status = (
             "completed"
             if status == "completed"
-            else "cancelled" if status == "cancelled" else "failed"
+            else "cancelled"
+            if status == "cancelled"
+            else "failed"
         )
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1910,13 +2744,14 @@ class ChannelLibraryStore:
                         (batch_id,),
                     )
                 }
-                batch_status = (
-                    "completed"
-                    if statuses == {"completed"}
-                    else "cancelled"
-                    if statuses <= {"completed", "cancelled"}
-                    else "failed"
-                )
+                if statuses == {"completed"}:
+                    batch_status = "completed"
+                elif statuses <= {"completed", "cancelled"}:
+                    batch_status = "cancelled"
+                elif "completed" in statuses or "completed_with_errors" in statuses:
+                    batch_status = "completed_with_errors"
+                else:
+                    batch_status = "failed"
                 connection.execute(
                     """
                     UPDATE channel_download_batches
@@ -2056,7 +2891,8 @@ class ChannelLibraryStore:
             if job["status"] != "running":
                 raise ValueError("Boundary control requests require a running scan job")
             requested = (
-                "stop" if action == "stop" or job["control_requested"] == "stop"
+                "stop"
+                if action == "stop" or job["control_requested"] == "stop"
                 else "pause"
             )
             connection.execute(
@@ -2292,10 +3128,8 @@ class ChannelLibraryStore:
             if new_status == "waiting_rate_limit" and wait_until is None:
                 raise ValueError("Rate-limited jobs require an absolute wait_until")
             if new_status in {"completed", "partial"} and (
-                job["fetched_through_message_id"]
-                < job["snapshot_max_message_id"]
-                or job["indexed_through_message_id"]
-                < job["snapshot_max_message_id"]
+                job["fetched_through_message_id"] < job["snapshot_max_message_id"]
+                or job["indexed_through_message_id"] < job["snapshot_max_message_id"]
             ):
                 raise ValueError(
                     "Cannot finish scan before fetch and index watermarks reach snapshot"
@@ -2610,9 +3444,7 @@ class ChannelLibraryStore:
             if tail is not None:
                 anchors.append(int(tail["start_message_id"]))
             anchors.extend(int(row["reindex_anchor_start"]) for row in failures)
-            anchors.extend(
-                int(row["reindex_anchor_start"]) for row in repair_anchors
-            )
+            anchors.extend(int(row["reindex_anchor_start"]) for row in repair_anchors)
             if anchors:
                 reindex_anchor_start = min(anchors)
             else:
@@ -2660,7 +3492,9 @@ class ChannelLibraryStore:
         now = time.time() if now is None else now
         desired_packages = [dict(package) for package in packages]
         resolved_ids = list(dict.fromkeys(int(value) for value in resolved_failure_ids))
-        desired_starts = [int(package["start_message_id"]) for package in desired_packages]
+        desired_starts = [
+            int(package["start_message_id"]) for package in desired_packages
+        ]
         if len(desired_starts) != len(set(desired_starts)):
             raise ValueError("Package start message IDs must be unique")
         if any(
@@ -2731,7 +3565,9 @@ class ChannelLibraryStore:
                         int(update["failure_id"]) != repair_failure_id
                         for update in failure_updates
                     )
-                    or any(failure_id != repair_failure_id for failure_id in resolved_ids)
+                    or any(
+                        failure_id != repair_failure_id for failure_id in resolved_ids
+                    )
                 ):
                     raise ValueError(
                         "Repair index updates must be scoped to the active target"
@@ -2751,7 +3587,9 @@ class ChannelLibraryStore:
                 if target is None:
                     raise ValueError("Resolved failure is not a target of this repair")
                 if target["next_message_id"] <= target["end_message_id"]:
-                    raise ValueError("Cannot resolve an incompletely fetched repair target")
+                    raise ValueError(
+                        "Cannot resolve an incompletely fetched repair target"
+                    )
                 if (
                     target["target_status"] == "completed"
                     or target["failure_status"] == "resolved"
@@ -2962,9 +3800,7 @@ class ChannelLibraryStore:
                     None,
                 )
                 if superseded_by is None and desired_ranges:
-                    earlier = [
-                        row for row in desired_ranges if row[0] <= removed_start
-                    ]
+                    earlier = [row for row in desired_ranges if row[0] <= removed_start]
                     superseded_by = (earlier[-1] if earlier else desired_ranges[0])[2]
                 connection.execute(
                     """
@@ -3105,9 +3941,7 @@ class ChannelLibraryStore:
             if through_message_id > job["snapshot_max_message_id"]:
                 raise ValueError("Index checkpoint exceeds the scan snapshot")
             revision = (
-                job["index_revision"] + 1
-                if index_revision is None
-                else index_revision
+                job["index_revision"] + 1 if index_revision is None else index_revision
             )
             if revision < job["index_revision"]:
                 raise ValueError("Index revision cannot move backwards")
@@ -3474,9 +4308,7 @@ class ChannelLibraryStore:
                 (job_id, failure_id),
             ).fetchone()
             if target is None:
-                raise KeyError(
-                    f"Repair target {job_id}/{failure_id} does not exist"
-                )
+                raise KeyError(f"Repair target {job_id}/{failure_id} does not exist")
             cursor = (
                 target["end_message_id"] + 1
                 if next_message_id is None

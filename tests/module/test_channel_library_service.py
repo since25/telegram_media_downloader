@@ -13,7 +13,10 @@ import pytest
 from pyrogram import errors
 
 from module.channel_library_service import ChannelLibraryService
-from module.channel_library_store import ChannelLibraryConfig, ChannelLibraryStore
+from module.channel_library_store import (
+    ChannelLibraryConfig,
+    ChannelLibraryStore,
+)
 from module.channel_library_workflow import extract_media_row
 from module.telegram_activity import TelegramActivityGate
 
@@ -170,7 +173,8 @@ def make_service(tmp_path, *, client=None, config=None, sleep=None, random_value
         app,
         client or FakeClient(),
         store,
-        config or ChannelLibraryConfig(
+        config
+        or ChannelLibraryConfig(
             full_scan_batch_size=50,
             full_scan_delay_min_sec=5.0,
             full_scan_delay_max_sec=5.0,
@@ -188,9 +192,7 @@ def make_service(tmp_path, *, client=None, config=None, sleep=None, random_value
 
 
 def finish_full_scan(service, library, snapshot_max=40, messages=()):
-    job = service.store.create_scan_job(
-        library["id"], "full", 1, snapshot_max
-    )
+    job = service.store.create_scan_job(library["id"], "full", 1, snapshot_max)
     job = service.store.transition_job(job["id"], "running")
     rows = [extract_media_row(message) for message in messages]
     service.store.commit_fetched_batch(job["id"], rows, end_id=snapshot_max)
@@ -201,9 +203,7 @@ def finish_full_scan(service, library, snapshot_max=40, messages=()):
 
 
 def finish_partial_scan(service, library, failures, snapshot_max=40, messages=()):
-    job = service.store.create_scan_job(
-        library["id"], "full", 1, snapshot_max
-    )
+    job = service.store.create_scan_job(library["id"], "full", 1, snapshot_max)
     job = service.store.transition_job(job["id"], "running")
     rows = [extract_media_row(message) for message in messages]
     service.store.commit_fetched_batch(job["id"], rows, end_id=snapshot_max)
@@ -242,10 +242,60 @@ async def test_full_scan_uses_50_id_batches_and_persists_progress(tmp_path):
     assert current["status"] == "completed"
     assert current["fetched_through_message_id"] == 150
     assert current["indexed_through_message_id"] == 150
-    assert service.store.get_library(library["id"])[
-        "fetched_through_message_id"
-    ] == 150
+    assert service.store.get_library(library["id"])["fetched_through_message_id"] == 150
     assert sleep.delays == [pytest.approx(5.0), pytest.approx(5.0)]
+
+
+@async_test
+async def test_completed_scan_auto_downloads_matching_stable_package(tmp_path):
+    class KeywordClient(FakeClient):
+        async def get_messages(self, chat_id, message_ids):
+            self.requested_chats.append(chat_id)
+            self.requested_ids.append(list(message_ids))
+            return [
+                fake_media(message_id, "Keyword package") for message_id in message_ids
+            ]
+
+    config = ChannelLibraryConfig(
+        full_scan_batch_size=50,
+        full_scan_delay_min_sec=5.0,
+        full_scan_delay_max_sec=5.0,
+    )
+    service, library, _sleep = make_service(
+        tmp_path, client=KeywordClient(), config=config
+    )
+    group = service.store.save_keyword_monitor_group(
+        "Keyword",
+        required_keywords=(),
+        match_keywords=("keyword",),
+        blacklist_keywords=(),
+    )
+    job = service.store.create_scan_job(library["id"], "full", 1, 1)
+
+    await service._run_job(job)
+
+    batches = service.store.list_download_batches(library["id"])
+    assert len(batches) == 1
+    assert batches[0]["status"] == "queued"
+    assert [package["package_id"] for package in batches[0]["packages"]] == [1]
+    with service.store.connect() as connection:
+        trigger = connection.execute(
+            """
+            SELECT matched_keywords, package_revision, batch_id
+            FROM keyword_monitor_history
+            """
+        ).fetchone()
+    assert dict(trigger) == {
+        "matched_keywords": '["keyword"]',
+        "package_revision": 1,
+        "batch_id": batches[0]["id"],
+    }
+    assert (
+        service.store.list_keyword_monitor_history(group["id"]).items[0][
+            "package_download_status"
+        ]
+        == "queued"
+    )
 
 
 @async_test
@@ -392,9 +442,7 @@ async def test_repair_resumes_each_target_from_its_persisted_cursor(tmp_path):
         list(range(1, 51)),
         list(range(51, 101)),
     ]
-    assert service.store.list_repair_targets(repair["id"])[0][
-        "status"
-    ] == "completed"
+    assert service.store.list_repair_targets(repair["id"])[0]["status"] == "completed"
 
 
 @async_test
@@ -430,9 +478,7 @@ async def test_later_repair_closure_survives_earlier_target_and_failed_retry(
     assert first_targets[failures[0]["id"]]["failure_status"] == "resolved"
     assert first_targets[failures[1]["id"]]["status"] == "queued"
     assert first_targets[failures[1]["id"]]["failure_status"] == "repairing"
-    assert first_targets[failures[1]["id"]][
-        "uncertain_through_message_id"
-    ] == 40
+    assert first_targets[failures[1]["id"]]["uncertain_through_message_id"] == 40
 
     retried = service.retry_failed_job(library["id"], failed["id"])
     retry_targets = service.store.list_repair_targets(retried["id"])
@@ -470,9 +516,7 @@ def test_retry_failed_job_preserves_kind_snapshot_and_checkpoint(tmp_path):
     async def scenario():
         service, library, _sleep = make_service(tmp_path)
         finish_full_scan(service, library, snapshot_max=10)
-        failed = service.store.create_scan_job(
-            library["id"], "incremental", 11, 20
-        )
+        failed = service.store.create_scan_job(library["id"], "incremental", 11, 20)
         service.store.transition_job(failed["id"], "running")
         service.store.commit_fetched_batch(failed["id"], [], end_id=15)
         service.store.commit_indexed_revision(failed["id"], 15)
@@ -490,9 +534,7 @@ def test_retry_failed_job_preserves_kind_snapshot_and_checkpoint(tmp_path):
 
 
 @async_test
-async def test_full_incremental_and_repair_use_one_range_runner(
-    tmp_path, monkeypatch
-):
+async def test_full_incremental_and_repair_use_one_range_runner(tmp_path, monkeypatch):
     calls = []
 
     async def capture_range(job, start_id, end_id, delay_range):
@@ -519,9 +561,7 @@ async def test_full_incremental_and_repair_use_one_range_runner(
     finish_full_scan(incremental_service, incremental_library, snapshot_max=10)
     incremental_service.owner_loop = asyncio.get_running_loop()
     incremental_service.client.latest_message_id = 15
-    incremental = await incremental_service.queue_incremental(
-        incremental_library["id"]
-    )
+    incremental = await incremental_service.queue_incremental(incremental_library["id"])
     monkeypatch.setattr(incremental_service, "_scan_range", capture_range)
     with pytest.raises(asyncio.CancelledError):
         await incremental_service._run_job(incremental)
@@ -943,7 +983,7 @@ async def test_stop_waits_for_active_request_and_checkpoint_boundary(tmp_path):
 
 @async_test
 async def test_cancelled_stop_retains_ownership_until_internal_cleanup_finishes(
-    tmp_path
+    tmp_path,
 ):
     client = BlockingClient()
     service, library, _sleep = make_service(tmp_path, client=client)

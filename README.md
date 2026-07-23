@@ -28,6 +28,21 @@
 
 * Download as a one-time download tool
 
+* Download matching indexed channel-library packages automatically
+
+### Indexed Package Monitoring
+
+Keyword monitor groups are stored in the channel-library database and managed from the
+Web console; keyword rules are not read from `config.yaml`. Each group supports required,
+matching, and blacklist keywords. Saving a group or completing a channel scan evaluates
+the current cross-channel package index and queues matching stable packages through the
+normal persistent download workflow. Completed and `outdated` packages are never
+automatically repeated; they remain available for explicit manual download.
+
+The Resources tab searches and selects packages across all indexed channels. Channel
+identity remains attached to every package and can be used as an optional multi-channel
+filter.
+
 ### UI
 
 #### Web page

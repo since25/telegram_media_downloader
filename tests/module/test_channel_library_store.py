@@ -24,6 +24,10 @@ REQUIRED_TABLES = {
     "channel_download_batches",
     "channel_download_batch_packages",
     "channel_download_batch_items",
+    "channel_package_auto_download_triggers",
+    "keyword_monitor_groups",
+    "keyword_monitor_terms",
+    "keyword_monitor_history",
 }
 
 
@@ -153,13 +157,22 @@ def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
             )
         ]
         columns = {
-            row[1]
-            for row in connection.execute("PRAGMA table_info(channel_scan_jobs)")
+            row[1] for row in connection.execute("PRAGMA table_info(channel_scan_jobs)")
         }
         batch_columns = {
             row[1]
+            for row in connection.execute("PRAGMA table_info(channel_download_batches)")
+        }
+        trigger_columns = {
+            row[1]
             for row in connection.execute(
-                "PRAGMA table_info(channel_download_batches)"
+                "PRAGMA table_info(channel_package_auto_download_triggers)"
+            )
+        }
+        attempt_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(channel_download_batch_packages)"
             )
         }
         library_count = connection.execute(
@@ -171,12 +184,50 @@ def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
             (job["id"],),
         ).fetchone()[0]
 
-    assert SCHEMA_VERSION == 3
-    assert versions == [1, 2, 3]
+    assert SCHEMA_VERSION == 6
+    assert versions == [1, 2, 3, 6]
     assert "control_requested" in columns
     assert "channel_title" in batch_columns
+    assert {"rule_key", "matched_keywords", "batch_id"} <= trigger_columns
+    assert {"known_total_size", "unknown_size_count"} <= attempt_columns
     assert library_count == 1
     assert job_count == 1
+
+
+def test_v5_database_adds_keyword_monitor_tables_without_losing_rows(tmp_path):
+    path = tmp_path / "channel_library.sqlite3"
+    store = ChannelLibraryStore(path)
+    store.initialize()
+    library = make_library(store)
+    with store.connect() as connection:
+        connection.execute("DROP TABLE keyword_monitor_history")
+        connection.execute("DROP TABLE keyword_monitor_terms")
+        connection.execute("DROP TABLE keyword_monitor_groups")
+        connection.execute("DELETE FROM schema_meta WHERE version = 6")
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (5, 1)"
+        )
+
+    migrated = ChannelLibraryStore(path)
+    migrated.initialize()
+
+    with migrated.connect() as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        versions = {
+            row[0] for row in connection.execute("SELECT version FROM schema_meta")
+        }
+    assert {
+        "keyword_monitor_groups",
+        "keyword_monitor_terms",
+        "keyword_monitor_history",
+    } <= tables
+    assert versions >= {5, 6}
+    assert migrated.get_library(library["id"])["title"] == "Demo"
 
 
 def test_library_is_unique_by_chat_id(tmp_path):
@@ -211,22 +262,23 @@ def test_atomic_library_creation_rolls_back_when_initial_job_insert_fails(
         )
 
     with store.connect() as connection:
-        assert connection.execute(
-            "SELECT COUNT(*) FROM channel_libraries WHERE chat_id = -2001"
-        ).fetchone()[0] == 0
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM channel_libraries WHERE chat_id = -2001"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_atomic_library_creation_returns_existing_job_without_replacing_snapshot(store):
-    first_library, first_job, first_created = (
-        store.create_or_get_library_with_full_job(
-            -2001,
-            "channel",
-            "atomic",
-            "Atomic",
-            "https://t.me/atomic/1",
-            80,
-            now=1.0,
-        )
+    first_library, first_job, first_created = store.create_or_get_library_with_full_job(
+        -2001,
+        "channel",
+        "atomic",
+        "Atomic",
+        "https://t.me/atomic/1",
+        80,
+        now=1.0,
     )
 
     library, job, created = store.create_or_get_library_with_full_job(
@@ -590,10 +642,10 @@ def test_terminal_job_rejects_stale_checkpoint_writes(store, terminal_status):
     assert store.get_media(job["library_id"], 5) is None
 
 
-@pytest.mark.parametrize("final_status,library_status", [("completed", "ready"), ("partial", "partial")])
-def test_terminal_status_requires_both_watermarks(
-    store, final_status, library_status
-):
+@pytest.mark.parametrize(
+    "final_status,library_status", [("completed", "ready"), ("partial", "partial")]
+)
+def test_terminal_status_requires_both_watermarks(store, final_status, library_status):
     job = make_full_job(store, snapshot_max_id=10)
     store.transition_job(job["id"], "running", now=1.0)
     store.commit_fetched_batch(job["id"], [], end_id=10, now=2.0)
@@ -689,9 +741,7 @@ def test_repair_job_persists_independent_target_cursors(store):
     ]
     assert [target["next_message_id"] for target in targets] == [1, 30]
 
-    store.resolve_repair_target(
-        repair["id"], first["id"], next_message_id=6, now=11.0
-    )
+    store.resolve_repair_target(repair["id"], first["id"], next_message_id=6, now=11.0)
     store.resolve_repair_target(
         repair["id"], second["id"], next_message_id=41, now=12.0
     )
@@ -722,9 +772,7 @@ def test_repair_with_other_open_failures_must_remain_partial(store):
         original["library_id"], failure_ids=[first["id"]], now=10.0
     )
     store.transition_job(repair["id"], "running", now=11.0)
-    store.resolve_repair_target(
-        repair["id"], first["id"], next_message_id=11, now=12.0
-    )
+    store.resolve_repair_target(repair["id"], first["id"], next_message_id=11, now=12.0)
 
     with pytest.raises(ValueError, match="unresolved failures"):
         store.transition_job(repair["id"], "completed", now=13.0)

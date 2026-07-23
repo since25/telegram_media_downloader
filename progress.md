@@ -1601,3 +1601,132 @@ Changed files:
 
 Rollback:
 - `git revert <commit-containing-this-change>` restores the prior Web login path. No database or persistent-data migration was made.
+
+## 2026-07-23 - Task: Replace Discord monitoring with indexed package auto-download rules
+
+### What was done
+
+- Replaced the active Telegram-to-Discord monitoring path with channel-library title rules under `channel_library.auto_download_rules`.
+- Added Unicode-normalized, case-insensitive keyword matching for stable indexed package titles after a full, incremental, or repair scan reaches its terminal state.
+- Added exact-package automatic download batches that preserve the user's manual Web selections.
+- Added a persistent trigger record for each rule, package revision, matched keywords, and batch so repeat scans and restarts cannot enqueue duplicates.
+- Kept successful and `outdated` packages out of automatic downloads while retaining the existing manual redownload workflow.
+- Updated the example configuration and channel-library documentation; legacy real-time monitoring, history backfill, polling, and Discord delivery are no longer started.
+
+### Testing
+
+- `.venv/bin/pytest -q` -> `491 passed, 1 skipped`.
+- `.venv/bin/pytest -q tests/module/test_channel_library_store.py tests/test_channel_library_download.py tests/module/test_channel_library_service.py tests/test_media_downloader.py -k 'auto_download or v1_migration or sanitize_monitor_cfg'` -> `6 passed`.
+- `.venv/bin/black --check module/channel_library_store.py module/channel_library_service.py tests/module/test_channel_library_store.py tests/test_channel_library_download.py tests/module/test_channel_library_service.py` -> passed.
+- `.venv/bin/python -m py_compile media_downloader.py module/channel_library_store.py module/channel_library_service.py` and `git diff --check` -> passed.
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: adds v4 trigger persistence, rule parsing, candidate lookup, and exact-package batch creation.
+- `module/channel_library_service.py`: runs configured rules after channel scans finish and schedules matching package batches.
+- `media_downloader.py`: disables the legacy Discord-monitor runtime path.
+- `config.example.yaml`, `README.md`, `README_CN.md`, and `docs/`: document title-rule auto-download configuration and behavior.
+- `tests/`: cover rule parsing, automatic batch creation, manual selection preservation, successful/outdated exclusions, scan integration, and v4 migration.
+
+Rollback:
+- `git revert <commit-containing-this-change>` restores the prior runtime behavior and code.
+- The new `channel_package_auto_download_triggers` table is additive. For a schema rollback, stop the service and retain a copy of `channel_library.sqlite3` before restoring a compatible database backup.
+
+## 2026-07-23 - Task: Rework channel package download lifecycle
+
+### What was done
+
+- Added FIFO resource-package disk admission with a 3 GiB minimum free-space default. Each package snapshots its exact indexed size at submission and reserves that capacity through its download/upload lifecycle.
+- Added schema version 5 to persist package-size snapshots and backfill existing attempt rows from their snapshotted media IDs. Packages with unknown source size now fail safely as `unknown_package_size` while later packages continue.
+- Preserved upload failures as durable task-file records, exposed a dedicated upload-retry list, and added upload-only retry plus explicit retained-file cleanup for channel-library tasks. Neither action recreates downloads.
+- Fixed task-state transitions so upload failures are not overwritten by later download snapshots and terminal tasks can become active during an upload retry.
+
+### Testing
+
+- Isolated Python 3.11 environment: `pytest -q` -> `498 passed, 1 skipped`.
+- Targeted lifecycle coverage: `pytest -q tests/test_channel_library_download.py tests/module/test_task_state.py tests/module/test_download_admission.py tests/module/test_channel_library_store.py` -> `90 passed`.
+- `python3 -m py_compile module/download_admission.py module/channel_library_store.py module/channel_library_service.py module/task_state.py module/web.py` and `git diff --check` -> passed.
+
+### Notes
+
+Changed files:
+- `module/download_admission.py`: FIFO disk reservation controller.
+- `module/channel_library_store.py` and `module/channel_library_service.py`: size snapshots, admission, upload-only retry, and cleanup lifecycle.
+- `module/task_state.py` and `module/web.py`: durable upload-failure state and retry/cleanup APIs.
+- `config.example.yaml`, `README_CN.md`, and `docs/`: configuration and operational behavior.
+- `tests/`: admission, migration, task-state, upload-retry, and cleanup coverage.
+
+Rollback:
+- `git revert <commit-containing-this-change>` restores prior behavior.
+- Schema version 5 is additive; retain a backup of `channel_library.sqlite3` before downgrading to code that does not understand the added batch-package columns.
+
+## 2026-07-23 - Task: Decompose the downloader entrypoint and refactor download execution
+
+### What was done
+
+- Added the formal download-module refactor spec covering submission, package and file boundaries; global FIFO ordering; 3 GiB disk admission; same-name package identity; download interruption and stall handling; separate upload retries; cleanup; and Pyrogram adapter rules.
+- Reduced the root `media_downloader.py` to a stable 13-line CLI/import facade while preserving existing `media_downloader` imports and monkeypatch targets through `module.download_entry`.
+- Split process startup, queue admission/workers, single-file transfer, separate download/upload phases, package contracts, and package execution into focused modules with explicit dependency assembly.
+- Removed the disabled real-time Telegram monitor, polling, Discord webhook and startup-backfill implementation from the runtime path.
+- Changed FloodWait handling to wait for the server-provided duration and retry, and made external task cancellation propagate instead of being mistaken for a stall retry.
+- Added package-attempt `completed_with_errors` when at least one snapshotted file completes and a sibling file fails or is unavailable; upload failures remain independently recoverable as `upload_failed`.
+
+### Testing
+
+- Isolated Python 3.11 full suite: `pytest -q` -> `501 passed, 1 skipped`.
+- Refactored entrypoint, package and channel lifecycle suite: `pytest -q tests/module/test_package_download.py tests/test_channel_library_download.py tests/test_media_downloader.py` -> `73 passed`.
+- Focused transfer/admission/channel package suite: `pytest -q tests/module/test_package_download.py tests/module/test_download_admission.py tests/test_channel_library_download.py` -> `38 passed`.
+- `python -m py_compile` passed for the facade and all new download modules.
+- Black check passed for the facade, new download modules and new tests.
+- `check_imports.py` and `git diff --check` passed.
+- Pylint `--errors-only` was not a clean validation source: the repository configuration reports removed options and the installed astroid reports existing false positives for standard `os` members and dynamic Pyrogram errors.
+
+### Notes
+
+Changed files:
+- `media_downloader.py` and `module/download_entry.py`: thin CLI facade plus compatible dependency assembly and legacy workflow exports.
+- `module/download_runtime.py`, `module/download_queue.py`, `module/download_lifecycle.py`, and `module/download_transfer.py`: process, queue, phase and transfer boundaries.
+- `module/download_models.py` and `module/package_download.py`: package contracts, serial execution and package-scoped result calculation.
+- `module/channel_library_service.py` and `module/channel_library_store.py`: persist and aggregate `completed_with_errors` package attempts.
+- `docs/superpowers/specs/2026-07-23-download-module-refactor-design.md` and `docs/channel-library-download-outbox.md`: formal design and operational semantics.
+- `tests/module/test_package_download.py` and `tests/test_channel_library_download.py`: cancellation, FloodWait, partial completion and reconciliation coverage.
+
+Rollback:
+- `git revert <commit-containing-this-change>` restores the previous monolithic entrypoint and package result semantics.
+- This refactor adds no schema version; `completed_with_errors` is stored only in existing unconstrained batch and batch-package status columns.
+
+## 2026-07-23 - Task: Add database keyword monitoring and aggregate resource packages
+
+### What was done
+
+- Removed channel-library keyword rules from `config.yaml`; monitor groups, normalized terms, and per-group trigger history are now owned by the channel-library database and managed through authenticated Web APIs.
+- Added required, match, and blacklist keyword semantics with Unicode NFKC/casefold matching. Saving a group immediately evaluates the current index, and completed full, incremental, or repair scans evaluate enabled groups again.
+- Merged overlapping group hits by package revision before creating exact-package batches. A package matching multiple groups creates one chronological FIFO batch while each group records its actual matched keywords, task, batch, source channel, and live persistent task progress.
+- Promoted resource packages to a cross-channel aggregate API and Web tab with optional multi-channel filtering, aggregate selection, package-item expansion, and source-channel batch fan-out. The Channels tab now focuses on adding, scanning, and deleting indexes.
+- Added a Keyword Monitor Web tab for group creation, editing, enable/disable, deletion, and paginated monitor/download history.
+- Kept successful, active, and `outdated` packages out of automatic repeats while preserving explicit manual redownload behavior.
+- Updated the formal design, operator docs, and README files; the legacy schema-v4 trigger table remains compatibility data but is no longer used by the runtime.
+
+### Testing
+
+- Full suite: `.venv/bin/python -m pytest tests/ -q` -> `507 passed, 1 skipped`.
+- Targeted aggregate, monitor, migration, service, and Web suites -> `207 passed`, then `172 passed` after final boundary coverage.
+- Browser validation with Chromium at 1440x1000 and 390x844 loaded two cross-channel packages and monitor history without page/console errors or page-level horizontal overflow; package/history tables remained locally scrollable.
+- `python -m py_compile` passed for the facade, channel store/service/Web, and all refactored download modules.
+- `check_imports.py` passed for the public downloader compatibility imports.
+- Black check passed for 18 changed Python implementation/test files; inline Web JavaScript parsed successfully; `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`: schema v6 monitor tables, monitor CRUD/history/matching, aggregate package queries/selections, atomic monitor history, and aggregate idempotency lookup.
+- `module/channel_library_service.py`: database-backed cross-group matching, chronological package ordering, exact-package deduplication, and scan/save triggers.
+- `module/web.py`, `module/templates/index.html`, and `module/static/css/index.css`: aggregate package and keyword-monitor APIs, progress enrichment, and responsive Web views.
+- `config.example.yaml`, `README.md`, `README_CN.md`, `docs/channel-library-download-outbox.md`, `docs/web-control-console.md`, and `docs/superpowers/specs/2026-07-23-download-module-refactor-design.md`: remove config keyword rules and document the database/aggregate model.
+- `tests/module/test_channel_library_store.py`, `tests/module/test_channel_library_service.py`, `tests/module/test_channel_library_web.py`, and `tests/test_channel_library_download.py`: migration, matching, ordering, same-name cross-channel identity, API, UI, history, and idempotency coverage.
+- `module/download_entry.py`: applied the repository's existing Black format during final whole-change verification.
+
+Rollback:
+- Revert the commit containing this task to restore the prior channel-scoped UI and config-rule runtime. The schema-v6 tables are additive and may remain unused after a code rollback.
+- Before physically removing `keyword_monitor_groups`, `keyword_monitor_terms`, or `keyword_monitor_history`, stop the service and back up `channel_library.sqlite3`; dropping those tables permanently removes monitor definitions and history.

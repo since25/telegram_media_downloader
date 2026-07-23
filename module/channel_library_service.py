@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import os
 import random
 import threading
 import time
@@ -16,6 +17,7 @@ from typing import Any, Callable, Optional, Sequence
 from pyrogram import errors
 
 from module.channel_library_store import ChannelLibraryConfig, ChannelLibraryStore
+from module.download_admission import DiskReservation, DiskSpaceAdmission
 from module.channel_library_workflow import ChannelPackageIndexer, extract_media_row
 from module.comment_workflow import build_message_package_workflow_request
 from module.telegram_activity import get_telegram_activity_gate
@@ -83,6 +85,7 @@ class ChannelLibraryService:
         sleep: Callable[[float], Any] = asyncio.sleep,
         random_uniform: Callable[[float, float], float] = random.uniform,
         task_store: Optional[Any] = None,
+        disk_admission: Optional[DiskSpaceAdmission] = None,
     ) -> None:
         self.app = app
         self.client = client
@@ -91,6 +94,9 @@ class ChannelLibraryService:
         self.sleep = sleep
         self.random_uniform = random_uniform
         self.task_store = task_store or get_task_store()
+        self.disk_admission = disk_admission or DiskSpaceAdmission(
+            getattr(app, "save_path", "."), config.min_free_disk_bytes
+        )
         self.indexer = ChannelPackageIndexer()
         self.gate = get_telegram_activity_gate()
         self.owner_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -103,6 +109,8 @@ class ChannelLibraryService:
         self._shutdown_task: Optional[asyncio.Task[None]] = None
         self._running_download_batch_ids: set[int] = set()
         self._download_batch_tasks: dict[int, asyncio.Task[Any]] = {}
+        self._upload_retry_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._retained_upload_reservations: dict[str, DiskReservation] = {}
         self._command_lock = threading.Lock()
         self._accepting_commands = False
         self._command_futures: set[concurrent.futures.Future[Any]] = set()
@@ -192,13 +200,17 @@ class ChannelLibraryService:
             except asyncio.CancelledError:
                 pass
         finally:
-            download_tasks = list(self._download_batch_tasks.values())
-            for download_task in download_tasks:
-                if not download_task.done():
-                    download_task.cancel()
-            if download_tasks:
-                await asyncio.gather(*download_tasks, return_exceptions=True)
+            owned_tasks = list(self._download_batch_tasks.values()) + list(
+                self._upload_retry_tasks.values()
+            )
+            for owned_task in owned_tasks:
+                if not owned_task.done():
+                    owned_task.cancel()
+            if owned_tasks:
+                await asyncio.gather(*owned_tasks, return_exceptions=True)
             self._download_batch_tasks.clear()
+            self._upload_retry_tasks.clear()
+            self._retained_upload_reservations.clear()
             if task is None or task.done():
                 self._release_store_ownership()
 
@@ -226,6 +238,10 @@ class ChannelLibraryService:
         library_id: int,
         idempotency_key: str,
         redownload: bool = False,
+        package_ids: Optional[Sequence[int]] = None,
+        auto_download_rule_key: Optional[str] = None,
+        matched_keywords: Sequence[str] = (),
+        keyword_monitor_hits: Sequence[dict[str, object]] = (),
     ) -> tuple[dict, bool]:
         """Return dispatched batch plus atomic channel-transaction creation state."""
 
@@ -241,8 +257,79 @@ class ChannelLibraryService:
             key,
             f"channel-batch-{deterministic_uuid}",
             allow_redownload=redownload,
+            package_ids=package_ids,
+            auto_download_rule_key=auto_download_rule_key,
+            matched_keywords=matched_keywords,
+            keyword_monitor_hits=keyword_monitor_hits,
         )
         return self._dispatch_download_batch_task(batch), created
+
+    def _trigger_auto_downloads(self, _library_id: int) -> list[int]:
+        return self.trigger_keyword_monitors()
+
+    def trigger_keyword_monitors(self) -> list[int]:
+        """Create one chronological exact-package batch for each aggregate match."""
+
+        package_hits: dict[tuple[int, int], dict[str, object]] = {}
+        for group in self.store.list_keyword_monitor_groups():
+            if not group["enabled"]:
+                continue
+            group_id = int(group["id"])
+            for package in self.store.list_keyword_monitor_candidates(group_id):
+                package_id = int(package["id"])
+                package_revision = int(package["index_revision"])
+                hit = package_hits.setdefault(
+                    (package_id, package_revision),
+                    {
+                        "package": package,
+                        "monitor_hits": [],
+                    },
+                )
+                hit["monitor_hits"].append(
+                    {
+                        "group_id": group_id,
+                        "package_id": package_id,
+                        "matched_keywords": package["matched_keywords"],
+                    }
+                )
+
+        created_batch_ids = []
+        ordered_hits = sorted(
+            package_hits.values(),
+            key=lambda value: (
+                value["package"]["published_at"] or "",
+                int(value["package"]["library_id"]),
+                int(value["package"]["start_message_id"]),
+                int(value["package"]["id"]),
+            ),
+        )
+        for hit in ordered_hits:
+            package = hit["package"]
+            library_id = int(package["library_id"])
+            package_id = int(package["id"])
+            package_revision = int(package["index_revision"])
+            key = f"keyword-monitor:{package_id}:r{package_revision}"
+            try:
+                batch, created = self.create_download_batch_result(
+                    library_id,
+                    key,
+                    package_ids=(package_id,),
+                    keyword_monitor_hits=hit["monitor_hits"],
+                )
+            except (KeyError, ValueError) as error:
+                LOGGER.warning(
+                    "Keyword monitor skipped package %s in library %s: %s",
+                    package_id,
+                    library_id,
+                    error,
+                )
+                continue
+            if not created:
+                continue
+            created_batch_ids.append(int(batch["id"]))
+            if self.owner_loop is not None:
+                self._schedule_download_batch_owned(int(batch["id"]))
+        return created_batch_ids
 
     def schedule_pending_download_batches(self) -> list[int]:
         """Schedule every resumable dispatched batch once in this process."""
@@ -264,6 +351,214 @@ class ChannelLibraryService:
 
     async def _schedule_download_batch_command(self, batch_id: int) -> bool:
         return self._schedule_download_batch_owned(batch_id)
+
+    def schedule_upload_retry_threadsafe(
+        self, task_id: str
+    ) -> concurrent.futures.Future[bool]:
+        """Schedule an upload-only retry for one persisted channel batch."""
+
+        return self._submit_owner_command(
+            lambda: self._schedule_upload_retry_command(str(task_id))
+        )
+
+    async def _schedule_upload_retry_command(self, task_id: str) -> bool:
+        batch = self.store.get_download_batch_by_task_id(task_id)
+        if batch is None:
+            return False
+        task = self.task_store.get_task(task_id)
+        if task is None or not any(
+            item.status == FileStatus.UPLOAD_FAILED for item in task.files.values()
+        ):
+            return False
+        existing = self._upload_retry_tasks.get(task_id)
+        if existing is not None and not existing.done():
+            return False
+        self.task_store.update_task(task_id, status=TaskStatus.QUEUED, error="")
+        retry_task = asyncio.create_task(
+            self._retry_failed_uploads(batch),
+            name=f"channel-library-upload-retry-{task_id}",
+        )
+        self._upload_retry_tasks[task_id] = retry_task
+
+        def discard(completed: asyncio.Task[Any]) -> None:
+            if self._upload_retry_tasks.get(task_id) is completed:
+                self._upload_retry_tasks.pop(task_id, None)
+            if not completed.cancelled():
+                try:
+                    completed.exception()
+                except Exception:  # pragma: no cover - defensive task callback
+                    LOGGER.exception("Channel-library upload retry failed")
+
+        retry_task.add_done_callback(discard)
+        return True
+
+    def schedule_upload_cleanup_threadsafe(
+        self, task_id: str
+    ) -> concurrent.futures.Future[bool]:
+        """Schedule explicit removal of retained upload-failure source files."""
+
+        return self._submit_owner_command(
+            lambda: self._schedule_upload_cleanup_command(str(task_id))
+        )
+
+    async def _schedule_upload_cleanup_command(self, task_id: str) -> bool:
+        batch = self.store.get_download_batch_by_task_id(task_id)
+        if batch is None:
+            return False
+        task = self.task_store.get_task(task_id)
+        if task is None or not any(
+            item.status == FileStatus.UPLOAD_FAILED for item in task.files.values()
+        ):
+            return False
+        existing = self._upload_retry_tasks.get(task_id)
+        if existing is not None and not existing.done():
+            return False
+        cleanup_task = asyncio.create_task(
+            self._cleanup_failed_uploads(batch),
+            name=f"channel-library-upload-cleanup-{task_id}",
+        )
+        self._upload_retry_tasks[task_id] = cleanup_task
+
+        def discard(completed: asyncio.Task[Any]) -> None:
+            if self._upload_retry_tasks.get(task_id) is completed:
+                self._upload_retry_tasks.pop(task_id, None)
+            if not completed.cancelled():
+                try:
+                    completed.exception()
+                except Exception:  # pragma: no cover - defensive task callback
+                    LOGGER.exception("Channel-library upload cleanup failed")
+
+        cleanup_task.add_done_callback(discard)
+        return True
+
+    async def _retry_failed_uploads(self, batch: dict) -> list[int]:
+        """Retry only retained local files whose prior cloud upload failed."""
+
+        if not getattr(self.app.cloud_drive_config, "enable_upload_file", False):
+            raise RuntimeError("Cloud upload is not enabled")
+        task_id = str(batch["task_id"])
+        task = self.task_store.get_task(task_id)
+        if task is None:
+            raise KeyError(f"Task {task_id} does not exist")
+        self.task_store.update_task(task_id, status=TaskStatus.UPLOADING, error="")
+        retried_message_ids = []
+        for file_snapshot in task.files.values():
+            if file_snapshot.status != FileStatus.UPLOAD_FAILED:
+                continue
+            message_id = int(file_snapshot.message_id)
+            file_path = file_snapshot.save_path
+            if not file_path or not os.path.isfile(file_path):
+                self.task_store.upsert_file(
+                    task_id,
+                    message_id,
+                    status=FileStatus.UPLOAD_FAILED,
+                    error="upload_source_missing",
+                )
+                continue
+            self.task_store.upsert_file(
+                task_id,
+                message_id,
+                status=FileStatus.UPLOADING,
+                error="",
+            )
+            try:
+                uploaded = await self.app.upload_file(file_path)
+            except Exception:  # noqa: BLE001 - persist a safe retry state
+                LOGGER.exception("Upload retry failed for %s", file_path)
+                uploaded = False
+            if uploaded:
+                self.task_store.upsert_file(
+                    task_id,
+                    message_id,
+                    status=FileStatus.UPLOADED,
+                    error="",
+                )
+                retried_message_ids.append(message_id)
+            else:
+                self.task_store.upsert_file(
+                    task_id,
+                    message_id,
+                    status=FileStatus.UPLOAD_FAILED,
+                    error="upload_failed",
+                )
+
+        refreshed = self.task_store.get_task(task_id)
+        if refreshed is not None:
+            for package in batch["packages"]:
+                item_files = [
+                    refreshed.files.get(str(item["message_id"]))
+                    for item in package["items"]
+                ]
+                if item_files and all(
+                    item is not None
+                    and item.status in {FileStatus.DOWNLOADED, FileStatus.UPLOADED}
+                    for item in item_files
+                ):
+                    self.store.finish_download_batch_package(
+                        int(batch["id"]),
+                        int(package["package_id"]),
+                        "completed",
+                    )
+                    reservation = self._retained_upload_reservations.pop(
+                        f"{batch['id']}:{package['package_id']}", None
+                    )
+                    if reservation is not None:
+                        await reservation.release()
+            self.task_store.complete_task(task_id)
+        return retried_message_ids
+
+    async def _cleanup_failed_uploads(self, batch: dict) -> list[int]:
+        """Delete explicitly selected retained upload-failure local files only."""
+
+        task_id = str(batch["task_id"])
+        task = self.task_store.get_task(task_id)
+        if task is None:
+            raise KeyError(f"Task {task_id} does not exist")
+        save_root = os.path.realpath(str(getattr(self.app, "save_path", ".")))
+        removed_message_ids = []
+        for file_snapshot in task.files.values():
+            if file_snapshot.status != FileStatus.UPLOAD_FAILED:
+                continue
+            message_id = int(file_snapshot.message_id)
+            raw_file_path = file_snapshot.save_path or ""
+            file_path = os.path.realpath(raw_file_path)
+            try:
+                is_saved_file = (
+                    bool(raw_file_path)
+                    and os.path.commonpath((save_root, file_path)) == save_root
+                )
+            except ValueError:
+                is_saved_file = False
+            if not is_saved_file:
+                self.task_store.upsert_file(
+                    task_id,
+                    message_id,
+                    status=FileStatus.UPLOAD_FAILED,
+                    error="upload_source_missing",
+                )
+                continue
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                removed_message_ids.append(message_id)
+                self.task_store.upsert_file(
+                    task_id,
+                    message_id,
+                    status=FileStatus.UPLOAD_FAILED,
+                    error="upload_source_removed",
+                )
+            except OSError:
+                LOGGER.exception("Unable to clean retained upload source %s", file_path)
+                continue
+
+        for package in batch["packages"]:
+            reservation = self._retained_upload_reservations.pop(
+                f"{batch['id']}:{package['package_id']}", None
+            )
+            if reservation is not None:
+                await reservation.release()
+        self.task_store.complete_task(task_id)
+        return removed_message_ids
 
     def _schedule_download_batch_owned(self, batch_id: int) -> bool:
         existing = self._download_batch_tasks.get(batch_id)
@@ -364,6 +659,12 @@ class ChannelLibraryService:
                     elif FileStatus.UPLOAD_FAILED in file_statuses:
                         status = "upload_failed"
                         error = "upload_failed"
+                    elif file_statuses & {
+                        FileStatus.DOWNLOADED,
+                        FileStatus.UPLOADED,
+                    }:
+                        status = "completed_with_errors"
+                        error = "download_failed"
                     else:
                         error = "download_failed"
                 elif task is not None:
@@ -445,8 +746,26 @@ class ChannelLibraryService:
         descriptors = []
         attempt_packages = {}
         attempt_errors: dict[str, Optional[str]] = {}
+        reservations: dict[str, DiskReservation] = {}
         for summary in self.store.list_download_batch_package_summaries(batch_id):
             if summary["status"] not in {"queued", "downloading"}:
+                continue
+            if int(summary.get("unknown_size_count") or 0) > 0:
+                self.store.finish_download_batch_package(
+                    batch_id,
+                    int(summary["package_id"]),
+                    "failed",
+                    last_error="unknown_package_size",
+                )
+                for item in self.store.get_download_batch_package_items(
+                    batch_id, int(summary["package_id"])
+                ):
+                    self.task_store.upsert_file(
+                        batch["task_id"],
+                        item["message_id"],
+                        status=FileStatus.FAILED,
+                        error="unknown_package_size",
+                    )
                 continue
             attempt_id = f"{batch_id}:{int(summary['package_id'])}"
             descriptor = SimpleNamespace(
@@ -455,6 +774,7 @@ class ChannelLibraryService:
                 title=summary["title"],
                 start_message_id=int(summary["start_message_id"]),
                 end_message_id=int(summary["end_message_id"]),
+                known_total_size=int(summary["known_total_size"]),
                 attempt_id=attempt_id,
             )
             descriptors.append(descriptor)
@@ -538,36 +858,67 @@ class ChannelLibraryService:
             return package
 
         async def on_package_started(attempt_id: Any, _package: Any) -> None:
+            descriptor = next(
+                item for item in descriptors if item.attempt_id == attempt_id
+            )
+            self.task_store.update_task(
+                batch["task_id"],
+                status=TaskStatus.QUEUED,
+                error="waiting_for_disk_space",
+            )
+            reservation = await self.disk_admission.acquire(
+                str(attempt_id), descriptor.known_total_size
+            )
+            reservations[str(attempt_id)] = reservation
             self.store.mark_download_batch_package_started(
                 batch_id, attempt_packages[attempt_id]
             )
+            self.task_store.update_task(batch["task_id"], error="")
 
         async def on_package_finished(
             attempt_id: Any, message_results: dict[int, Any]
         ) -> None:
-            statuses = {result.status for result in message_results.values()}
-            if statuses and statuses <= {"completed", "completed_file_skip"}:
-                status = "completed"
-            elif "upload_failed" in statuses:
-                status = "upload_failed"
-            elif "not_found" in statuses:
-                status = "not_found"
-            elif "failed" in statuses:
-                status = "failed"
-            elif "cancelled" in statuses:
-                status = "cancelled"
-            else:
-                status = "failed"
-            self.store.finish_download_batch_package(
-                batch_id,
-                attempt_packages[attempt_id],
-                status,
-                last_error=(
-                    "telegram_refetch_failed"
-                    if attempt_errors.get(attempt_id)
-                    else _package_error_code(status)
-                ),
-            )
+            status = "failed"
+            try:
+                statuses = {result.status for result in message_results.values()}
+                completed_statuses = {"completed", "completed_file_skip"}
+                if statuses and statuses <= completed_statuses:
+                    status = "completed"
+                elif "upload_failed" in statuses:
+                    status = "upload_failed"
+                elif statuses & completed_statuses:
+                    status = "completed_with_errors"
+                elif "not_found" in statuses:
+                    status = "not_found"
+                elif "failed" in statuses:
+                    status = "failed"
+                elif "cancelled" in statuses:
+                    status = "cancelled"
+                else:
+                    status = "failed"
+                self.store.finish_download_batch_package(
+                    batch_id,
+                    attempt_packages[attempt_id],
+                    status,
+                    last_error=(
+                        "telegram_refetch_failed"
+                        if attempt_errors.get(attempt_id)
+                        else _package_error_code(status)
+                    ),
+                )
+            finally:
+                reservation = reservations.pop(str(attempt_id), None)
+                if reservation is not None:
+                    if status == "upload_failed":
+                        self._retained_upload_reservations[
+                            str(attempt_id)
+                        ] = reservation
+                    else:
+                        await reservation.release()
+
+        if not descriptors:
+            self.task_store.complete_task(batch["task_id"])
+            return []
 
         try:
             results = await download_prescan_packages(
@@ -600,6 +951,10 @@ class ChannelLibraryService:
                 batch["task_id"], status=TaskStatus.FAILED, error=error_code
             )
             raise
+        finally:
+            for reservation in reservations.values():
+                await reservation.release()
+            reservations.clear()
         completed_package_ids = {result.package_id for result in results}
         remaining_status = "cancelled" if node.is_stop_transmission else "failed"
         for descriptor in descriptors:
@@ -610,7 +965,9 @@ class ChannelLibraryService:
                 descriptor.package_id,
                 remaining_status,
                 last_error=(
-                    "cancelled" if remaining_status == "cancelled" else "download_failed"
+                    "cancelled"
+                    if remaining_status == "cancelled"
+                    else "download_failed"
                 ),
             )
         if node.is_stop_transmission:
@@ -636,7 +993,9 @@ class ChannelLibraryService:
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # pragma: no cover - last-resort scheduler guard
-                    LOGGER.exception("Channel-library scheduler job failed unexpectedly")
+                    LOGGER.exception(
+                        "Channel-library scheduler job failed unexpectedly"
+                    )
                     current = self.store.get_job(job["id"])
                     if current is not None and current["status"] == "running":
                         self.store.transition_job(
@@ -670,7 +1029,9 @@ class ChannelLibraryService:
             chat = await self.client.get_chat(request.source_chat)
             chat_type = self._chat_type_name(getattr(chat, "type", None))
             if chat_type not in {"channel", "supergroup"}:
-                raise ValueError("Telegram link must resolve to a channel or supergroup")
+                raise ValueError(
+                    "Telegram link must resolve to a channel or supergroup"
+                )
             snapshot_max = 0
             async for message in self.client.get_chat_history(chat.id, limit=1):
                 if message is not None and getattr(message, "id", None) is not None:
@@ -681,7 +1042,11 @@ class ChannelLibraryService:
             int(chat.id),
             chat_type,
             getattr(chat, "username", None),
-            str(getattr(chat, "title", None) or getattr(chat, "username", None) or chat.id),
+            str(
+                getattr(chat, "title", None)
+                or getattr(chat, "username", None)
+                or chat.id
+            ),
             request.url,
             snapshot_max,
         )
@@ -752,18 +1117,14 @@ class ChannelLibraryService:
     ) -> concurrent.futures.Future[SubmitLibraryResult]:
         """Schedule link resolution from Flask without calling Pyrogram there."""
 
-        return self._submit_owner_command(
-            lambda: self.resolve_and_create_library(link)
-        )
+        return self._submit_owner_command(lambda: self.resolve_and_create_library(link))
 
     def submit_incremental_threadsafe(
         self, library_id: int
     ) -> concurrent.futures.Future[dict]:
         """Schedule an incremental snapshot on the service owner loop."""
 
-        return self._submit_owner_command(
-            lambda: self.queue_incremental(library_id)
-        )
+        return self._submit_owner_command(lambda: self.queue_incremental(library_id))
 
     def _submit_owner_command(
         self, coroutine_factory: Callable[[], Any]
@@ -786,9 +1147,7 @@ class ChannelLibraryService:
         future.add_done_callback(self._discard_command_future)
         return future
 
-    def _discard_command_future(
-        self, future: concurrent.futures.Future[Any]
-    ) -> None:
+    def _discard_command_future(self, future: concurrent.futures.Future[Any]) -> None:
         with self._command_lock:
             self._command_futures.discard(future)
 
@@ -888,6 +1247,7 @@ class ChannelLibraryService:
                 else "completed"
             )
             self.store.transition_job(current["id"], final_status)
+            self._trigger_auto_downloads(int(current["library_id"]))
         except asyncio.CancelledError:
             cancelled_job = self.store.get_job(job["id"])
             if cancelled_job is not None and cancelled_job["status"] == "running":
@@ -948,7 +1308,9 @@ class ChannelLibraryService:
                 )
                 return False
             except self._permanent_errors() as error:
-                self.store.transition_job(current["id"], "failed", last_error=str(error))
+                self.store.transition_job(
+                    current["id"], "failed", last_error=str(error)
+                )
                 return False
             except _TransientBatchFailure as error:
                 if current["kind"] == "repair":
@@ -981,7 +1343,9 @@ class ChannelLibraryService:
                     )
                     return False
             except Exception as error:
-                self.store.transition_job(current["id"], "failed", last_error=str(error))
+                self.store.transition_job(
+                    current["id"], "failed", last_error=str(error)
+                )
                 return False
 
             next_id = batch_ids[-1] + 1

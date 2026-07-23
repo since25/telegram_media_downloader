@@ -380,6 +380,8 @@ class TaskStateStore:
             if task.status in TERMINAL_TASK_STATUSES:
                 self._move_completed(task_key, task)
             else:
+                self._completed.pop(task_key, None)
+                self._active[task_key] = task
                 self._persist_task(task)
             return task
 
@@ -387,7 +389,11 @@ class TaskStateStore:
         task_key = str(task_id)
         message_key = str(message_id)
         with self._lock:
-            task = self._active.get(task_key) or self.create_task(task_key)
+            task = (
+                self._active.get(task_key)
+                or self._completed.get(task_key)
+                or self.create_task(task_key)
+            )
             file_snapshot = task.files.get(message_key)
             if not file_snapshot:
                 file_snapshot = FileSnapshot(message_id=message_key)
@@ -837,10 +843,18 @@ def snapshot_node(
         upload_success_count=int(getattr(node, "upload_success_count", 0) or 0),
     )
     for message_id, status in (getattr(node, "download_status", {}) or {}).items():
+        existing_file = task.files.get(str(message_id))
+        mapped_status = _file_status_from_download_status(status)
+        if (
+            existing_file is not None
+            and existing_file.status == FileStatus.UPLOAD_FAILED
+            and mapped_status == FileStatus.DOWNLOADED
+        ):
+            continue
         get_task_store().upsert_file(
             task.task_id,
             message_id,
-            status=_file_status_from_download_status(status),
+            status=mapped_status,
         )
     if task.status in TERMINAL_TASK_STATUSES:
         get_task_store().complete_task(task.task_id)

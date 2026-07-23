@@ -262,9 +262,7 @@ def login():
     """
     if request.method == "POST":
         username = "root"
-        web_login_form = {
-            key: value for key, value in request.form.items() if value
-        }
+        web_login_form = {key: value for key, value in request.form.items() if value}
 
         if not web_login_form.get("password"):
             return jsonify({"code": "0"})
@@ -317,7 +315,9 @@ def _channel_api(function):
         except _ChannelApiError as error:
             return _channel_error(error.status, error.error_code, error.message)
         except KeyError:
-            return _channel_error(404, "not_found", "Requested channel object was not found")
+            return _channel_error(
+                404, "not_found", "Requested channel object was not found"
+            )
         except Exception:
             logger.exception("Channel library API operation failed")
             return _channel_error(
@@ -344,10 +344,10 @@ def _require_csrf(function):
     def wrapped(*args, **kwargs):
         supplied = request.headers.get("X-CSRF-Token", "")
         expected = session.get("csrf_token")
-        if not isinstance(expected, str) or not hmac.compare_digest(
-            supplied, expected
-        ):
-            raise _ChannelApiError(403, "csrf_failed", "CSRF token is missing or invalid")
+        if not isinstance(expected, str) or not hmac.compare_digest(supplied, expected):
+            raise _ChannelApiError(
+                403, "csrf_failed", "CSRF token is missing or invalid"
+            )
         return function(*args, **kwargs)
 
     return wrapped
@@ -435,9 +435,19 @@ def _page_inputs() -> tuple[Optional[str], int]:
     return cursor, int(page_size)
 
 
-def _filter_from_mapping(values: Any, *, query: bool) -> PackageFilter:
+def _filter_from_mapping(
+    values: Any,
+    *,
+    query: bool,
+    extra_fields: frozenset[str] = frozenset(),
+) -> PackageFilter:
     if query:
-        unknown = set(request.args) - CHANNEL_FILTER_FIELDS - {"cursor", "page_size"}
+        unknown = (
+            set(request.args)
+            - CHANNEL_FILTER_FIELDS
+            - {"cursor", "page_size"}
+            - extra_fields
+        )
         if unknown:
             _invalid_request("Request contains unsupported query parameters")
         getter = request.args.get
@@ -445,7 +455,7 @@ def _filter_from_mapping(values: Any, *, query: bool) -> PackageFilter:
         _require_query_fields()
         if not isinstance(values, dict):
             _invalid_request("A JSON object is required")
-        unknown = set(values) - CHANNEL_FILTER_FIELDS
+        unknown = set(values) - CHANNEL_FILTER_FIELDS - extra_fields
         if unknown:
             _invalid_request("Request contains unsupported fields")
         getter = values.get
@@ -494,6 +504,79 @@ def _filter_from_mapping(values: Any, *, query: bool) -> PackageFilter:
         **numeric_values,
         include_unknown_size=include_unknown,
     )
+
+
+def _library_ids_from_query() -> list[int]:
+    values = []
+    for raw_value in request.args.getlist("library_ids"):
+        values.extend(raw_value.split(","))
+    result = []
+    for value in values:
+        value = value.strip()
+        if not value or not value.isascii() or not value.isdecimal():
+            _invalid_request("library_ids must contain positive integers")
+        parsed = int(value)
+        if parsed < 1 or parsed > SQLITE_MAX_INTEGER:
+            _invalid_request("library_ids must contain positive integers")
+        if parsed not in result:
+            result.append(parsed)
+    return result
+
+
+def _library_ids_from_payload(payload: dict) -> list[int]:
+    raw_values = payload.get("library_ids", [])
+    if not isinstance(raw_values, list):
+        _invalid_request("library_ids must be an array")
+    return list(
+        dict.fromkeys(
+            _json_int(value, "library_ids", minimum=1) for value in raw_values
+        )
+    )
+
+
+def _keyword_list(payload: dict, field_name: str) -> list[str]:
+    values = payload.get(field_name, [])
+    if not isinstance(values, list) or any(
+        not isinstance(value, str) for value in values
+    ):
+        _invalid_request(f"{field_name} must be an array of strings")
+    if any(len(value) > 200 for value in values):
+        _invalid_request(f"{field_name} contains an overlong keyword")
+    return values
+
+
+def _save_keyword_monitor_group(group_id: Optional[int] = None):
+    payload = _json_object(
+        frozenset(
+            {
+                "name",
+                "enabled",
+                "required_keywords",
+                "match_keywords",
+                "blacklist_keywords",
+            }
+        )
+    )
+    name = payload.get("name")
+    enabled = payload.get("enabled", True)
+    if not isinstance(name, str) or not name.strip():
+        _invalid_request("name must be a non-empty string")
+    if type(enabled) is not bool:
+        _invalid_request("enabled must be a boolean")
+    service = _channel_service()
+    try:
+        group = service.store.save_keyword_monitor_group(
+            name=name,
+            enabled=enabled,
+            required_keywords=_keyword_list(payload, "required_keywords"),
+            match_keywords=_keyword_list(payload, "match_keywords"),
+            blacklist_keywords=_keyword_list(payload, "blacklist_keywords"),
+            group_id=group_id,
+        )
+        service.trigger_keyword_monitors()
+        return group
+    except ValueError as error:
+        _invalid_request(str(error))
 
 
 def _safe_scan(scan: Optional[dict]) -> Optional[dict]:
@@ -695,8 +778,7 @@ def create_channel_scan(library_id: int):
                 if not isinstance(failure_ids, list):
                     _invalid_request("failure_ids must be an array")
                 failure_ids = [
-                    _json_int(value, "failure_ids", minimum=1)
-                    for value in failure_ids
+                    _json_int(value, "failure_ids", minimum=1) for value in failure_ids
                 ]
             scan = service.queue_repair(library_id, failure_ids)
         else:
@@ -788,6 +870,187 @@ def channel_packages(library_id: int):
             "next_cursor": page.next_cursor,
             "library_revision": page.library_revision,
         }
+    )
+
+
+@_flask_app.route("/api/packages")
+@login_required
+@_channel_api
+def aggregate_packages():
+    """Return one filtered package page across all or selected channels."""
+
+    _require_no_body()
+    cursor, page_size = _page_inputs()
+    library_ids = _library_ids_from_query()
+    package_filter = _filter_from_mapping(
+        request.args, query=True, extra_fields=frozenset({"library_ids"})
+    )
+    try:
+        page = _channel_service().store.list_packages_aggregate(
+            library_ids, package_filter, cursor=cursor, limit=page_size
+        )
+    except (TypeError, ValueError):
+        _invalid_request()
+    return jsonify({"items": page.items, "next_cursor": page.next_cursor})
+
+
+@_flask_app.route("/api/packages/<int:package_id>/items")
+@login_required
+@_channel_api
+def aggregate_package_items(package_id: int):
+    """Return one aggregate package's source media metadata."""
+
+    _require_no_body()
+    cursor, page_size = _page_inputs()
+    _require_query_fields(frozenset({"cursor", "page_size"}))
+    try:
+        page = _channel_service().store.list_package_items_aggregate(
+            package_id, cursor=cursor, limit=page_size
+        )
+    except (TypeError, ValueError):
+        _invalid_request()
+    hide_file_name = bool(getattr(_active_app(), "hide_file_name", False))
+    items = []
+    for item in page.items:
+        safe_item = dict(item)
+        safe_item["file_name"] = mask_display_name(
+            safe_item.get("file_name"), hide_file_name
+        )
+        items.append(safe_item)
+    return jsonify({"items": items, "next_cursor": page.next_cursor})
+
+
+@_flask_app.route("/api/packages/<int:package_id>/selection", methods=["PUT"])
+@login_required
+@_channel_api
+@_require_csrf
+def set_aggregate_package_selection(package_id: int):
+    payload = _json_object(frozenset({"selected"}))
+    selected = payload.get("selected")
+    if type(selected) is not bool:
+        _invalid_request("selected must be a boolean")
+    try:
+        result = _channel_service().store.set_package_selected_aggregate(
+            package_id, selected
+        )
+    except ValueError:
+        raise _ChannelApiError(
+            409, "state_conflict", "Package cannot be selected in its current state"
+        )
+    return jsonify({"selection": result})
+
+
+@_flask_app.route("/api/packages/selection/select-filtered", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def select_filtered_aggregate_packages():
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        _invalid_request("A JSON object is required")
+    library_ids = _library_ids_from_payload(payload)
+    package_filter = _filter_from_mapping(
+        payload, query=False, extra_fields=frozenset({"library_ids"})
+    )
+    try:
+        result = _channel_service().store.select_filtered_aggregate(
+            library_ids, package_filter
+        )
+    except (TypeError, ValueError):
+        _invalid_request()
+    return jsonify(result)
+
+
+@_flask_app.route("/api/packages/selection/clear", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def clear_aggregate_selection():
+    payload = _json_object(frozenset({"library_ids"}))
+    library_ids = _library_ids_from_payload(payload)
+    cleared = _channel_service().store.clear_selection_aggregate(library_ids)
+    return jsonify({"cleared_count": cleared})
+
+
+@_flask_app.route("/api/packages/selection")
+@login_required
+@_channel_api
+def aggregate_selection_summary():
+    _require_no_body()
+    _require_query_fields(frozenset({"library_ids"}))
+    library_ids = _library_ids_from_query()
+    return jsonify(_channel_service().store.selection_summary_aggregate(library_ids))
+
+
+@_flask_app.route("/api/packages/download-batches", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def create_aggregate_download_batches():
+    """Fan one aggregate selection out into source-channel download batches."""
+
+    payload = _json_object(frozenset({"redownload"}))
+    redownload = payload.get("redownload", False)
+    if type(redownload) is not bool:
+        _invalid_request("redownload must be a boolean")
+    idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+    if not idempotency_key or len(idempotency_key) > 160:
+        _invalid_request("Idempotency-Key is required")
+    service = _channel_service()
+    aggregate_prefix = f"{idempotency_key}:library:"
+    existing_batches = service.store.list_download_batches_by_idempotency_prefix(
+        aggregate_prefix
+    )
+    if existing_batches:
+        for batch in existing_batches:
+            service.schedule_download_batch_threadsafe(int(batch["id"]))
+        return jsonify(
+            {
+                "batches": [_batch_summary(batch) for batch in existing_batches],
+                "created": False,
+            }
+        )
+    summary = service.store.selection_summary_aggregate()
+    if int(summary["selected_count"]) == 0:
+        raise _ChannelApiError(409, "state_conflict", "No packages are selected")
+    if summary["requires_redownload"] and not redownload:
+        raise _ChannelApiError(
+            409,
+            "redownload_required",
+            "Selected packages require explicit redownload confirmation",
+        )
+    batches = []
+    any_created = False
+    try:
+        for library_id in service.store.selected_library_ids():
+            batch, created = service.create_download_batch_result(
+                library_id,
+                f"{idempotency_key}:library:{library_id}",
+                redownload=redownload,
+            )
+            service.schedule_download_batch_threadsafe(int(batch["id"]))
+            batches.append(_batch_summary(batch))
+            any_created = any_created or created
+    except RedownloadRequiredError:
+        raise _ChannelApiError(
+            409,
+            "redownload_required",
+            "Selected packages require explicit redownload confirmation",
+        )
+    except ValueError:
+        raise _ChannelApiError(
+            409,
+            "state_conflict",
+            "Selected packages cannot be downloaded in their current state",
+        )
+    except RuntimeError:
+        raise _ChannelApiError(
+            503,
+            "service_unavailable",
+            "Download batches were persisted and will resume when service is available",
+        )
+    return jsonify({"batches": batches, "created": any_created}), (
+        202 if any_created else 200
     )
 
 
@@ -935,6 +1198,92 @@ def create_channel_download_batch(library_id: int):
     )
 
 
+@_flask_app.route("/api/keyword-monitor-groups", methods=["GET"])
+@login_required
+@_channel_api
+def keyword_monitor_groups():
+    _require_query_fields()
+    _require_no_body()
+    return jsonify({"items": _channel_service().store.list_keyword_monitor_groups()})
+
+
+@_flask_app.route("/api/keyword-monitor-groups", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def create_keyword_monitor_group():
+    return jsonify({"group": _save_keyword_monitor_group()}), 201
+
+
+@_flask_app.route("/api/keyword-monitor-groups/<int:group_id>", methods=["GET"])
+@login_required
+@_channel_api
+def keyword_monitor_group(group_id: int):
+    _require_query_fields()
+    _require_no_body()
+    group = _channel_service().store.get_keyword_monitor_group(group_id)
+    if group is None:
+        raise KeyError(group_id)
+    return jsonify({"group": group})
+
+
+@_flask_app.route("/api/keyword-monitor-groups/<int:group_id>", methods=["PUT"])
+@login_required
+@_channel_api
+@_require_csrf
+def update_keyword_monitor_group(group_id: int):
+    return jsonify({"group": _save_keyword_monitor_group(group_id)})
+
+
+@_flask_app.route("/api/keyword-monitor-groups/<int:group_id>", methods=["DELETE"])
+@login_required
+@_channel_api
+@_require_csrf
+def delete_keyword_monitor_group(group_id: int):
+    _require_empty_command_input()
+    if not _channel_service().store.delete_keyword_monitor_group(group_id):
+        raise KeyError(group_id)
+    return jsonify({"deleted": True, "group_id": group_id})
+
+
+@_flask_app.route("/api/keyword-monitor-groups/<int:group_id>/history")
+@login_required
+@_channel_api
+def keyword_monitor_history(group_id: int):
+    _require_no_body()
+    _require_query_fields(frozenset({"cursor", "page_size"}))
+    cursor, page_size = _page_inputs()
+    service = _channel_service()
+    try:
+        page = service.store.list_keyword_monitor_history(
+            group_id, cursor=cursor, limit=page_size
+        )
+    except (TypeError, ValueError):
+        _invalid_request()
+    items = []
+    for value in page.items:
+        item = dict(value)
+        task = service.task_store.get_task(item["task_id"])
+        if task is not None:
+            snapshot = task.to_dict()
+            item["progress"] = {
+                key: snapshot[key]
+                for key in (
+                    "status",
+                    "total_count",
+                    "success_count",
+                    "failed_count",
+                    "skipped_count",
+                    "upload_success_count",
+                    "updated_at",
+                )
+            }
+        else:
+            item["progress"] = None
+        items.append(item)
+    return jsonify({"items": items, "next_cursor": page.next_cursor})
+
+
 @_flask_app.route("/get_download_status")
 @login_required
 def get_download_speed():
@@ -1060,9 +1409,7 @@ def get_upload_list():
             getattr(node, "cloud_drive_upload_stat_dict", {}) or {}
         ).items():
             try:
-                upload_progress = float(
-                    str(stat.percentage).strip().rstrip("%") or 0
-                )
+                upload_progress = float(str(stat.percentage).strip().rstrip("%") or 0)
             except ValueError:
                 upload_progress = 0.0
             result.append(
@@ -1399,7 +1746,9 @@ async def _run_web_prescan_task(
                 workflow_type="prescan",
                 status=TaskStatus.WAITING_CONFIRMATION,
                 scan_count=int(getattr(plan, "scanned_count", 0) or 0),
-                media_count=sum(int(getattr(package, "media_count", 0) or 0) for package in packages),
+                media_count=sum(
+                    int(getattr(package, "media_count", 0) or 0) for package in packages
+                ),
                 selected_count=0,
                 summary=summary,
             ),
@@ -1425,7 +1774,9 @@ async def _run_web_prescan_task(
         _release_prescan_slot(task_id)
 
 
-async def _run_web_package_task(app: Application, client, task_id: str, workflow_request):
+async def _run_web_package_task(
+    app: Application, client, task_id: str, workflow_request
+):
     """Scan an ordinary message package link and wait for Web confirmation."""
 
     from media_downloader import scan_message_package
@@ -1528,7 +1879,9 @@ async def _run_web_package_task(app: Application, client, task_id: str, workflow
         _scanning_web_task_nodes.pop(task_id, None)
 
 
-async def _run_web_comment_task(app: Application, client, task_id: str, workflow_request):
+async def _run_web_comment_task(
+    app: Application, client, task_id: str, workflow_request
+):
     """Prepare a comment link and wait for Web confirmation."""
 
     node = None
@@ -1792,13 +2145,19 @@ def confirm_task(task_id: str):
     preview = _pending_web_task_previews.pop(task_id, None)
     prescan = _pending_web_prescans.get(task_id)  # keep entry so packages stay readable
     if not preview and not prescan:
-        return jsonify({"ok": False, "error": "task is not waiting for confirmation"}), 404
+        return (
+            jsonify({"ok": False, "error": "task is not waiting for confirmation"}),
+            404,
+        )
 
     try:
         if prescan:
             selected_ids = set(prescan.get("selected_package_ids") or set())
             if not selected_ids:
-                return jsonify({"ok": False, "error": "select at least one package"}), 400
+                return (
+                    jsonify({"ok": False, "error": "select at least one package"}),
+                    400,
+                )
             prescan["confirmed"] = True
             coroutine = _run_confirmed_prescan_download(prescan)
         elif preview["task_type"] == "comment":
@@ -1831,9 +2190,11 @@ def cancel_task(task_id: str):
 
     preview = _pending_web_task_previews.pop(task_id, None)
     prescan = _pending_web_prescans.pop(task_id, None)
-    node = (preview or prescan or {}).get("node") or _scanning_web_task_nodes.get(
-        task_id
-    ) or get_active_task_nodes().get(task_id)
+    node = (
+        (preview or prescan or {}).get("node")
+        or _scanning_web_task_nodes.get(task_id)
+        or get_active_task_nodes().get(task_id)
+    )
     task = get_task_store().get_task(task_id)
     if node:
         node.stop_transmission()
@@ -1869,7 +2230,10 @@ def clear_task(task_id: str):
     if not task:
         return jsonify({"ok": False, "error": "task not found"}), 404
     if task.status not in TERMINAL_TASK_STATUSES:
-        return jsonify({"ok": False, "error": "only terminal tasks can be cleared"}), 400
+        return (
+            jsonify({"ok": False, "error": "only terminal tasks can be cleared"}),
+            400,
+        )
     removed = get_task_store().remove_task(task_id)
     _pending_web_prescans.pop(task_id, None)
     return jsonify({"ok": removed, "task_id": task_id})
@@ -1892,13 +2256,80 @@ def clear_completed_tasks():
     return jsonify({"ok": True, "cleared": cleared})
 
 
-@_flask_app.route("/api/tasks/<task_id>/retry", methods=["POST"])
+@_flask_app.route("/api/tasks/<task_id>/upload-retries")
 @login_required
-def retry_task(task_id: str):
-    """Return a clear retry limitation until retry metadata is persisted."""
+def upload_retry_files(task_id: str):
+    """Return only retained files eligible for an upload-only retry."""
+
+    task = get_task_store().get_task(task_id)
+    if task is None:
+        return jsonify({"ok": False, "error": "task not found"}), 404
+    app = _active_app()
+    hide_file_name = bool(getattr(app, "hide_file_name", False))
+    return jsonify(
+        {
+            "task_id": task_id,
+            "items": [
+                file.to_dict(hide_file_name)
+                for file in task.files.values()
+                if file.status == FileStatus.UPLOAD_FAILED
+            ],
+        }
+    )
+
+
+@_flask_app.route("/api/tasks/<task_id>/upload-retries/cleanup", methods=["POST"])
+@login_required
+def cleanup_upload_retry_files(task_id: str):
+    """Schedule explicit cleanup of retained channel-library upload failures."""
 
     if not get_task_store().get_task(task_id):
         return jsonify({"ok": False, "error": "task not found"}), 404
+    service = getattr(_active_app(), "channel_library_service", None)
+    if service is None or not service.store.get_download_batch_by_task_id(task_id):
+        return jsonify({"ok": False, "error": "upload cleanup is unavailable"}), 409
+    try:
+        scheduled = service.schedule_upload_cleanup_threadsafe(task_id).result(
+            timeout=1
+        )
+    except concurrent.futures.TimeoutError:
+        return jsonify({"ok": False, "error": "cleanup scheduling timed out"}), 503
+    except RuntimeError:
+        return jsonify({"ok": False, "error": "service unavailable"}), 503
+    if scheduled:
+        return jsonify({"ok": True, "task_id": task_id}), 202
+    return jsonify({"ok": False, "error": "task has no retained upload failures"}), 409
+
+
+@_flask_app.route("/api/tasks/<task_id>/retry", methods=["POST"])
+@login_required
+def retry_task(task_id: str):
+    """Retry retained upload failures when a channel batch owns the task."""
+
+    task = get_task_store().get_task(task_id)
+    if not task:
+        return jsonify({"ok": False, "error": "task not found"}), 404
+    service = getattr(_active_app(), "channel_library_service", None)
+    if service is not None and service.store.get_download_batch_by_task_id(task_id):
+        try:
+            scheduled = service.schedule_upload_retry_threadsafe(task_id).result(
+                timeout=1
+            )
+        except concurrent.futures.TimeoutError:
+            return jsonify({"ok": False, "error": "retry scheduling timed out"}), 503
+        except RuntimeError:
+            return jsonify({"ok": False, "error": "service unavailable"}), 503
+        if scheduled:
+            return jsonify({"ok": True, "task_id": task_id, "mode": "upload_only"}), 202
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "task has no retained upload failures to retry",
+                }
+            ),
+            409,
+        )
     return (
         jsonify(
             {
@@ -1945,7 +2376,9 @@ def prescan_packages(task_id: str):
     )
 
 
-@_flask_app.route("/api/prescans/<task_id>/packages/<int:package_id>/select", methods=["POST"])
+@_flask_app.route(
+    "/api/prescans/<task_id>/packages/<int:package_id>/select", methods=["POST"]
+)
 @login_required
 def select_prescan_package(task_id: str, package_id: int):
     """Select or deselect one Web prescan package."""

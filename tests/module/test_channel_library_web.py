@@ -502,13 +502,9 @@ def test_task9_route_matrix_rejects_undocumented_query_keys(
         "select-filtered": (
             f"/api/channel-libraries/{library['id']}/selection/select-filtered"
         ),
-        "clear-selection": (
-            f"/api/channel-libraries/{library['id']}/selection/clear"
-        ),
+        "clear-selection": (f"/api/channel-libraries/{library['id']}/selection/clear"),
         "selection": f"/api/channel-libraries/{library['id']}/selection",
-        "download-batch": (
-            f"/api/channel-libraries/{library['id']}/download-batches"
-        ),
+        "download-batch": (f"/api/channel-libraries/{library['id']}/download-batches"),
     }
     payloads = {
         "create": {"link": "https://t.me/demo/1"},
@@ -569,9 +565,7 @@ def test_bodyless_task9_routes_reject_unexpected_json(web_env, method, route_nam
         "items": (
             f"/api/channel-libraries/{library['id']}/packages/{package_id}/items"
         ),
-        "clear-selection": (
-            f"/api/channel-libraries/{library['id']}/selection/clear"
-        ),
+        "clear-selection": (f"/api/channel-libraries/{library['id']}/selection/clear"),
         "selection": f"/api/channel-libraries/{library['id']}/selection",
     }
     headers = csrf_headers(env) if method == "POST" else {}
@@ -603,7 +597,9 @@ def test_bodyless_commands_accept_empty_body_and_empty_json(web_env):
         headers=headers,
     )
 
-    assert [response.status_code for response in (paused, resumed, stopped, cleared)] == [
+    assert [
+        response.status_code for response in (paused, resumed, stopped, cleared)
+    ] == [
         200,
         200,
         200,
@@ -635,9 +631,7 @@ def test_json_task9_routes_reject_undocumented_fields(web_env, method, route_nam
         "select-filtered": (
             f"/api/channel-libraries/{library['id']}/selection/select-filtered"
         ),
-        "download-batch": (
-            f"/api/channel-libraries/{library['id']}/download-batches"
-        ),
+        "download-batch": (f"/api/channel-libraries/{library['id']}/download-batches"),
     }
     payloads = {
         "create": {"link": "https://t.me/demo/1", "unexpected": 1},
@@ -748,7 +742,9 @@ def test_versioned_delete_rejects_terminal_parent_with_active_child_attempt(web_
     assert response.status_code == 409
     assert response.get_json()["error_code"] == "state_conflict"
     assert env.store.get_library(library["id"]) is not None
-    assert env.store.get_download_batch(batch["id"])["packages"][0]["status"] == "queued"
+    assert (
+        env.store.get_download_batch(batch["id"])["packages"][0]["status"] == "queued"
+    )
 
 
 def test_scan_create_and_controls_map_statuses(web_env):
@@ -827,6 +823,138 @@ def test_package_and_item_queries_use_filters_keysets_and_revision(web_env):
     assert items_one.get_json()["items"][0]["message_id"] == 20
     assert items_two.get_json()["items"][0]["message_id"] == 21
     assert first_id not in {third_id, second_id}
+
+
+def test_aggregate_packages_filter_select_and_download_across_channels(web_env):
+    env = web_env
+    first_library, first_job = create_library(env, chat_id=-1001, title="Alpha")
+    second_library, second_job = create_library(env, chat_id=-1002, title="Beta")
+    first_package = insert_package(
+        env.store, first_library["id"], 10, title="Same Course"
+    )
+    second_package = insert_package(
+        env.store, second_library["id"], 20, title="Same Course"
+    )
+    insert_package_item(env.store, first_library["id"], first_package, 10)
+    insert_package_item(env.store, second_library["id"], second_package, 20)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id IN (?, ?)",
+            (first_library["id"], second_library["id"]),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id IN (?, ?)",
+            (first_job["id"], second_job["id"]),
+        )
+    headers = csrf_headers(env)
+
+    all_packages = env.client.get("/api/packages?q=course")
+    alpha_packages = env.client.get(
+        "/api/packages",
+        query_string={"q": "course", "library_ids": str(first_library["id"])},
+    )
+    first_selection = env.client.put(
+        f"/api/packages/{first_package}/selection",
+        json={"selected": True},
+        headers=headers,
+    )
+    second_selection = env.client.put(
+        f"/api/packages/{second_package}/selection",
+        json={"selected": True},
+        headers=headers,
+    )
+    summary = env.client.get("/api/packages/selection")
+    scheduled = set()
+    env.service.schedule_download_batch_threadsafe = scheduled.add
+    download_headers = {**headers, "Idempotency-Key": "aggregate-request"}
+    created = env.client.post(
+        "/api/packages/download-batches",
+        json={"redownload": False},
+        headers=download_headers,
+    )
+    replayed = env.client.post(
+        "/api/packages/download-batches",
+        json={"redownload": False},
+        headers=download_headers,
+    )
+
+    assert all_packages.status_code == 200
+    assert {
+        (item["id"], item["channel_title"]) for item in all_packages.get_json()["items"]
+    } == {(first_package, "Alpha"), (second_package, "Beta")}
+    assert [item["id"] for item in alpha_packages.get_json()["items"]] == [
+        first_package
+    ]
+    assert first_selection.status_code == second_selection.status_code == 200
+    assert summary.get_json()["channel_count"] == 2
+    assert created.status_code == 202
+    assert len(created.get_json()["batches"]) == 2
+    assert replayed.status_code == 200
+    assert replayed.get_json()["created"] is False
+    assert {batch["id"] for batch in replayed.get_json()["batches"]} == {
+        batch["id"] for batch in created.get_json()["batches"]
+    }
+    assert scheduled == {batch["id"] for batch in created.get_json()["batches"]}
+
+
+def test_keyword_monitor_group_api_triggers_existing_index_and_returns_history(web_env):
+    env = web_env
+    library, job = create_library(env, title="Courses")
+    package_id = insert_package(env.store, library["id"], 10, title="课程 Python 完整版")
+    insert_package_item(env.store, library["id"], package_id, 10)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
+            (job["id"],),
+        )
+    headers = csrf_headers(env)
+
+    created = env.client.post(
+        "/api/keyword-monitor-groups",
+        json={
+            "name": "课程监控",
+            "enabled": True,
+            "required_keywords": ["课程"],
+            "match_keywords": ["Python", " python "],
+            "blacklist_keywords": ["预告"],
+        },
+        headers=headers,
+    )
+    group = created.get_json()["group"]
+    listed = env.client.get("/api/keyword-monitor-groups")
+    history = env.client.get(f"/api/keyword-monitor-groups/{group['id']}/history")
+    updated = env.client.put(
+        f"/api/keyword-monitor-groups/{group['id']}",
+        json={
+            "name": "课程监控",
+            "enabled": False,
+            "required_keywords": ["课程"],
+            "match_keywords": ["Python"],
+            "blacklist_keywords": ["预告"],
+        },
+        headers=headers,
+    )
+
+    assert created.status_code == 201
+    assert group["match_keywords"] == ["Python"]
+    assert listed.get_json()["items"][0]["history_count"] == 1
+    assert history.get_json()["items"][0]["package_id"] == package_id
+    assert history.get_json()["items"][0]["matched_keywords"] == ["Python"]
+    assert history.get_json()["items"][0]["package_download_status"] == "queued"
+    assert history.get_json()["items"][0]["progress"] == {
+        "status": "queued",
+        "total_count": 1,
+        "success_count": 0,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "upload_success_count": 0,
+        "updated_at": history.get_json()["items"][0]["progress"]["updated_at"],
+    }
+    assert updated.get_json()["group"]["enabled"] is False
 
 
 @pytest.mark.parametrize(
@@ -1106,7 +1234,9 @@ def test_replaying_pending_batch_repairs_dispatch_after_failure(web_env, monkeyp
     assert replay.status_code == 200
     assert replay.get_json()["created"] is False
     assert replay.get_json()["batch"]["id"] == pending["id"]
-    assert env.store.get_download_batch(pending["id"])["dispatch_status"] == "dispatched"
+    assert (
+        env.store.get_download_batch(pending["id"])["dispatch_status"] == "dispatched"
+    )
     assert scheduled == [pending["id"]]
 
 
@@ -1188,9 +1318,7 @@ def test_scan_response_reports_kind_and_range_relative_progress(web_env):
             (job["id"],),
         )
 
-    scan = env.client.get(
-        f"/api/channel-libraries/{library['id']}"
-    ).get_json()["scan"]
+    scan = env.client.get(f"/api/channel-libraries/{library['id']}").get_json()["scan"]
 
     assert scan["kind"] == "incremental"
     assert scan["progress_completed_id_count"] == 500
@@ -1205,9 +1333,9 @@ def test_scan_response_reports_kind_and_range_relative_progress(web_env):
             """,
             (job["id"],),
         )
-    repair_scan = env.client.get(
-        f"/api/channel-libraries/{library['id']}"
-    ).get_json()["scan"]
+    repair_scan = env.client.get(f"/api/channel-libraries/{library['id']}").get_json()[
+        "scan"
+    ]
 
     assert repair_scan["progress_completed_id_count"] == 120
     assert repair_scan["progress_total_id_count"] is None
@@ -1311,9 +1439,10 @@ def test_media_lifecycle_assigns_after_start_stops_and_survives_init_failure(
             raise RuntimeError("secret-token-sentinel")
 
         monkeypatch.setattr(ChannelLibraryService, "start", fail_start)
-        assert media_downloader._start_channel_library_service(
-            app, SimpleNamespace()
-        ) is None
+        assert (
+            media_downloader._start_channel_library_service(app, SimpleNamespace())
+            is None
+        )
         assert app.channel_library_service is None
     finally:
         if app.channel_library_service is not None:
@@ -1368,13 +1497,43 @@ def test_channel_library_tab_has_one_complete_spa_dom_contract():
 
     assert html.count('data-tab="channel-library"') == 1
     assert 'href="/channel' not in html
-    assert '<button type="button" class="app-tab" data-tab="channel-library" role="tab"' in html
-    assert html.count('role="tabpanel"') == 4
+    assert (
+        '<button type="button" class="app-tab" data-tab="channel-library" role="tab"'
+        in html
+    )
+    assert html.count('role="tabpanel"') == 6
     assert 'aria-labelledby="app_tab_channel_library"' in html
     assert "['ArrowLeft','ArrowRight'].includes(e.key)" in html
     assert "next.focus(); next.click();" in html
     for element_id in required_ids:
-        assert len(re.findall(fr'id="{re.escape(element_id)}"', html)) == 1
+        assert len(re.findall(rf'id="{re.escape(element_id)}"', html)) == 1
+
+
+def test_aggregate_package_and_keyword_monitor_tabs_have_complete_dom_contracts():
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+    required_ids = {
+        "tab_packages",
+        "aggregate_filter_libraries",
+        "aggregate_package_filters",
+        "aggregate_package_rows",
+        "aggregate_selection_text",
+        "aggregate_select_filtered",
+        "aggregate_download_selection",
+        "tab_keyword-monitor",
+        "keyword_group_rows",
+        "keyword_group_form",
+        "keyword_required",
+        "keyword_match",
+        "keyword_blacklist",
+        "keyword_history_rows",
+    }
+
+    assert html.count('data-tab="packages"') == 1
+    assert html.count('data-tab="keyword-monitor"') == 1
+    assert "/api/packages" in html
+    assert "/api/keyword-monitor-groups" in html
+    for element_id in required_ids:
+        assert len(re.findall(rf'id="{re.escape(element_id)}"', html)) == 1
 
 
 def test_channel_library_script_has_security_state_and_polling_contracts():
@@ -1415,7 +1574,12 @@ def test_channel_library_script_guards_async_identity_and_all_keyset_pages():
     assert "progress_total_id_count" in html
     assert "CHANNEL_SCAN_KIND" in html
     assert "page.loading" in html
-    assert html.count("state.channel.expandedItems = {};\n          return loadChannelPackages({append:false});") >= 2
+    assert (
+        html.count(
+            "state.channel.expandedItems = {};\n          return loadChannelPackages({append:false});"
+        )
+        >= 2
+    )
     assert "catch (error)" in detail_source
     assert "throw error" in detail_source
 
@@ -1449,7 +1613,7 @@ def test_channel_library_download_gate_exposes_accessible_disabled_reason():
 def test_channel_library_ui_defines_required_state_labels(status, label):
     html = INDEX_TEMPLATE.read_text(encoding="utf-8")
 
-    assert re.search(fr"{re.escape(status)}\s*:\s*\{{[^}}]*label:'{label}'", html)
+    assert re.search(rf"{re.escape(status)}\s*:\s*\{{[^}}]*label:'{label}'", html)
 
 
 def test_channel_library_styles_define_responsive_split_workspace():

@@ -34,6 +34,28 @@ Schema version 3 adds the immutable batch `channel_title`. Existing databases ad
 column idempotently and backfill older batches from the current library title once;
 new batches always capture it inside their creation transaction.
 
+Schema version 4 adds `channel_package_auto_download_triggers`. An automatic title rule
+creates an exact one-package batch without modifying the user's persisted Web selection.
+The trigger row stores the rule key, matched keywords, package revision, and batch ID in
+the same channel-database transaction, so the same rule and package revision cannot
+create another automatic batch after a restart or later scan.
+
+Schema version 5 snapshots `known_total_size` and `unknown_size_count` on each
+batch-package attempt. This keeps disk admission bound to the immutable message snapshot,
+not to a package's later index revision. Existing attempts are backfilled from their
+snapshotted message IDs and stored media metadata.
+
+Schema version 6 adds database-owned keyword monitor groups, normalized terms, and
+per-group trigger history. The older schema-version-4 trigger table remains additive
+compatibility data but is no longer used by the runtime. Keyword-monitor history rows are
+written in the same transaction as an exact-package batch. Multiple groups may point to
+the same batch/package revision, while each group/package revision remains unique.
+
+The top-level package interface aggregates rows across channel libraries. Package
+identity remains the database package ID plus its `library_id`; channel title and
+Telegram `chat_id` are source metadata, not package identity based on title. Aggregate
+manual submission fans selected packages out into one immutable batch per source library.
+
 ## Download And Result Semantics
 
 `run_download_batch` refetches each package's exact snapshotted message IDs under a
@@ -41,12 +63,31 @@ download-priority Telegram permit. It retains saved package titles, boundaries,
 revisions, item ordering, and captions for recommended-C naming. Packages run in
 ascending start-message order.
 
+Before a package transitions to `downloading`, it acquires a FIFO disk reservation equal
+to its full known size. The reservation is retained through download, upload, and local
+cleanup. A successful package releases it at its callback terminal state; an upload
+failure retains it until upload retry succeeds or explicit cleanup completes. The default
+minimum remaining free space is 3 GiB (`channel_library.min_free_disk_bytes`). A package
+with an unknown media size is not guessed or started: it is marked `failed` with
+`unknown_package_size`, while later packages continue.
+
+Cloud upload failures retain their local file and stay visible through
+`GET /api/tasks/<task_id>/upload-retries`. `POST /api/tasks/<task_id>/retry` schedules an
+upload-only retry for a channel-library task. It never recreates a download task or fetches
+Telegram media. A missing retained file remains `upload_source_missing` for an explicit
+user cleanup or a later manual download, rather than being silently downloaded again.
+`POST /api/tasks/<task_id>/upload-retries/cleanup` explicitly deletes retained sources
+under the configured `save_path`, records `upload_source_removed`, and releases the
+in-process reservation for the affected package.
+
 The serial downloader owns the parent task lifecycle once for the whole batch. Package
 callbacks receive only that package's expected IDs and message results. Package results
 retain the immutable snapshot order even when an interior ID is absent. Package results
 distinguish:
 
 - `completed`, including a verified complete-local-file skip;
+- `completed_with_errors` when at least one snapshotted file completed and one
+  sibling file failed or was unavailable; remaining files are still processed;
 - `upload_failed`;
 - `failed`, including a package-scoped refetch error;
 - `not_found` for an exact ID absent from a successful refetch;
@@ -68,11 +109,13 @@ server-side and is not written to channel download rows or Web task errors.
 
 Startup dispatches `pending_dispatch` rows before reconciliation. Reconciliation only
 uses durable Web task/file evidence. A completed package requires every expected ID to
-have a downloaded or uploaded `FileSnapshot`; ambiguous skips and missing evidence are
-failed conservatively. Both `completed` and `completed_with_errors` parent tasks are
-evaluated package by package, so proven packages stay completed while sibling packages
-fail. Cancelled Web tasks cancel unfinished packages. Missing or failed Web tasks fail
-unfinished packages. Already completed package attempts are not regressed.
+have a downloaded or uploaded `FileSnapshot`. A package with both completed evidence
+and failed/missing evidence is `completed_with_errors`; a package without any completed
+evidence remains failed conservatively. Both `completed` and `completed_with_errors`
+parent tasks are evaluated package by package, so proven packages stay completed while
+partial packages retain their error result. Cancelled Web tasks cancel unfinished
+packages. Missing or failed Web tasks fail unfinished packages. Already completed
+package attempts are not regressed.
 
 ## Runner Ownership And Restart
 

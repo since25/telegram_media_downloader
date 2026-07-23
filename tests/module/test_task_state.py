@@ -79,6 +79,47 @@ class TaskStateStoreTestCase(unittest.TestCase):
         self.assertEqual(snapshot.skipped_count, 1)
         self.assertEqual(snapshot.upload_success_count, 1)
 
+    def test_upload_failed_file_is_not_regressed_by_download_snapshot(self):
+        import module.task_state as task_state_module
+
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus, snapshot_node
+
+        original_store = task_state_module._TASK_STORE
+        task_state_module._TASK_STORE = TaskStateStore()
+        try:
+            task = task_state_module.get_task_store().create_task(
+                "upload-failed",
+                status=TaskStatus.COMPLETED_WITH_ERRORS,
+            )
+            task_state_module.get_task_store().upsert_file(
+                task.task_id,
+                101,
+                status=FileStatus.UPLOAD_FAILED,
+                save_path="/data/retained.mp4",
+            )
+            node = TaskNode(chat_id=-1002, task_id="upload-failed")
+            node.download_status[101] = DownloadStatus.SuccessDownload
+
+            snapshot_node(node)
+
+            stored = task_state_module.get_task_store().get_task(task.task_id)
+            self.assertEqual(stored.files["101"].status, FileStatus.UPLOAD_FAILED)
+        finally:
+            task_state_module._TASK_STORE = original_store
+
+    def test_update_reactivates_a_terminal_task_for_upload_retry(self):
+        from module.task_state import TaskStateStore, TaskStatus
+
+        store = TaskStateStore()
+        task = store.create_task("retry-upload", status=TaskStatus.COMPLETED_WITH_ERRORS)
+
+        updated = store.update_task(task.task_id, status=TaskStatus.UPLOADING)
+
+        self.assertEqual(updated.status, TaskStatus.UPLOADING)
+        dashboard = store.dashboard()
+        self.assertEqual(dashboard["active_task_count"], 1)
+        self.assertEqual(dashboard["completed_task_count"], 0)
+
     def test_mask_display_name_preserves_extension(self):
         from module.task_state import mask_display_name
 

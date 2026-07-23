@@ -432,6 +432,66 @@ textarea.input { min-height: 90px; resize: vertical; }
   border-top: 1px solid var(--color-divider);
 }
 .channel-library-delete-row .btn { color: var(--color-neutral-700); }
+.channel-library-filters[hidden],
+.channel-library-selection[hidden],
+.channel-library-table-scroll[hidden],
+.channel-library-table-footer[hidden] { display: none; }
+
+.aggregate-workspace {
+  border: 1px solid var(--color-divider);
+  min-width: 0;
+}
+.aggregate-header {
+  display: flex; align-items: center; justify-content: space-between;
+  min-height: 62px; padding: 12px 18px; border-bottom: 1px solid var(--color-divider);
+}
+.aggregate-header strong {
+  display: block; margin-bottom: 4px;
+  font-family: var(--font-heading); font-size: 20px; font-weight: 600;
+}
+.aggregate-filters { grid-template-columns: repeat(5, minmax(120px, 1fr)); }
+.aggregate-channel-filter { grid-column: span 2; grid-row: span 2; }
+.aggregate-channel-filter select { min-height: 86px; }
+.aggregate-package-grid { min-width: 1120px; }
+
+.keyword-monitor-layout {
+  display: grid; grid-template-columns: 248px minmax(0, 1fr);
+  min-height: 650px; border: 1px solid var(--color-divider);
+}
+.keyword-monitor-sidebar {
+  min-width: 0; border-right: 1px solid var(--color-divider);
+  background: color-mix(in srgb, var(--color-surface) 45%, transparent);
+}
+.keyword-monitor-sidebar-head {
+  display: flex; align-items: center; justify-content: space-between;
+  min-height: 58px; padding: 10px 14px; border-bottom: 1px solid var(--color-divider);
+}
+.keyword-monitor-sidebar-head strong { font-family: var(--font-heading); font-size: 16px; }
+.keyword-monitor-groups { display: flex; flex-direction: column; }
+.keyword-monitor-workspace { min-width: 0; }
+.keyword-monitor-form { border-bottom: 1px solid var(--color-divider); }
+.keyword-monitor-form-head {
+  display: grid; grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: end; gap: 16px; padding: 14px 18px;
+}
+.keyword-monitor-form-head .sw { min-height: 36px; }
+.keyword-monitor-terms {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px; padding: 0 18px 14px;
+}
+.keyword-monitor-terms textarea { width: 100%; min-height: 150px; line-height: 1.45; }
+.keyword-monitor-actions {
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: 8px; min-height: 54px; padding: 8px 18px; border-top: 1px solid var(--color-divider);
+}
+.keyword-monitor-actions > span { margin-right: auto; }
+.keyword-monitor-history > header {
+  display: flex; align-items: center; justify-content: space-between;
+  min-height: 50px; padding: 8px 18px; border-bottom: 1px solid var(--color-divider);
+}
+.keyword-history-table { min-width: 900px; font-size: 12px; }
+.keyword-monitor-history > .btn { margin: 10px 18px; }
+.keyword-monitor-history > .btn[hidden] { display: none; }
 
 @media (max-width: 900px) {
   .channel-library-layout { grid-template-columns: 1fr; min-height: 0; }
@@ -442,6 +502,11 @@ textarea.input { min-height: 90px; resize: vertical; }
   .channel-library-empty { padding: 18px; }
   .channel-library-workspace-empty { min-height: 280px; }
   .channel-library-filters { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+  .aggregate-filters { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+  .keyword-monitor-layout { grid-template-columns: 1fr; min-height: 0; }
+  .keyword-monitor-sidebar { border-right: 0; border-bottom: 1px solid var(--color-divider); }
+  .keyword-monitor-groups { flex-direction: row; overflow-x: auto; }
+  .keyword-monitor-groups .channel-library-row { flex: 0 0 220px; border-right: 1px solid var(--color-divider); }
 }
 
 @media (max-width: 560px) {
@@ -456,6 +521,10 @@ textarea.input { min-height: 90px; resize: vertical; }
   .channel-download-action { align-items: flex-start; }
   .channel-download-reason { text-align: left; }
   .channel-library-filters { grid-template-columns: 1fr; padding: 12px; }
+  .aggregate-filters { grid-template-columns: 1fr; }
+  .aggregate-channel-filter { grid-column: auto; grid-row: auto; }
+  .keyword-monitor-form-head, .keyword-monitor-terms { grid-template-columns: 1fr; }
+  .keyword-monitor-form-head { align-items: start; }
   .channel-library-filter-wide { grid-column: auto; }
   .channel-library-filter-actions { justify-content: flex-start; }
   .channel-library-notice { margin-inline: 12px; }

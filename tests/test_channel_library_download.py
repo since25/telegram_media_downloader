@@ -13,7 +13,7 @@ from module.channel_library_store import (
     ChannelLibraryStore,
     PackageFilter,
 )
-from module.task_state import TaskStateStore, TaskStatus
+from module.task_state import FileStatus, TaskStateStore, TaskStatus
 
 
 def make_download_service(tmp_path, *, task_store=None, client=None):
@@ -49,7 +49,9 @@ def make_download_service(tmp_path, *, task_store=None, client=None):
                 """,
                 (library["id"], package_id),
             )
-            for item_ordinal, message_id in enumerate((start_id, start_id + 1), start=1):
+            for item_ordinal, message_id in enumerate(
+                (start_id, start_id + 1), start=1
+            ):
                 connection.execute(
                     """
                     INSERT INTO channel_media_messages (
@@ -109,6 +111,272 @@ def test_create_download_batch_clears_selection(tmp_path):
         loop.close()
 
 
+def test_upload_retry_reuses_retained_file_without_redownloading(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "upload-retry")
+        retained_file = tmp_path / "retained.mp4"
+        retained_file.write_bytes(b"uploaded-source")
+        uploaded_paths = []
+
+        async def upload_file(path):
+            uploaded_paths.append(path)
+            return True
+
+        service.app = SimpleNamespace(
+            loop=loop,
+            save_path=str(tmp_path),
+            cloud_drive_config=SimpleNamespace(enable_upload_file=True),
+            upload_file=upload_file,
+        )
+        service.task_store.upsert_file(
+            batch["task_id"],
+            101,
+            status=FileStatus.UPLOAD_FAILED,
+            save_path=str(retained_file),
+        )
+        service.task_store.upsert_file(
+            batch["task_id"], 102, status=FileStatus.DOWNLOADED
+        )
+        service.store.finish_download_batch_package(
+            batch["id"], 10, "upload_failed", last_error="upload_failed"
+        )
+
+        retried = loop.run_until_complete(service._retry_failed_uploads(batch))
+
+        assert retried == [101]
+        assert uploaded_paths == [str(retained_file)]
+        assert service.task_store.get_task(batch["task_id"]).files["101"].status == (
+            FileStatus.UPLOADED
+        )
+        assert (
+            service.store.get_download_batch(batch["id"])["packages"][0]["status"]
+            == "completed"
+        )
+    finally:
+        loop.close()
+
+
+def test_upload_retry_cleanup_removes_only_retained_failure_source(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "upload-cleanup")
+        retained_file = tmp_path / "retained.mp4"
+        retained_file.write_bytes(b"remove-me")
+        service.app = SimpleNamespace(loop=loop, save_path=str(tmp_path))
+        service.task_store.upsert_file(
+            batch["task_id"],
+            101,
+            status=FileStatus.UPLOAD_FAILED,
+            save_path=str(retained_file),
+        )
+
+        removed = loop.run_until_complete(service._cleanup_failed_uploads(batch))
+
+        assert removed == [101]
+        assert not retained_file.exists()
+        failed_file = service.task_store.get_task(batch["task_id"]).files["101"]
+        assert failed_file.status == FileStatus.UPLOAD_FAILED
+        assert failed_file.error == "upload_source_removed"
+    finally:
+        loop.close()
+
+
+def test_unknown_package_size_fails_that_package_and_continues(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "unknown-size")
+        with service.store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE channel_download_batch_packages
+                SET unknown_size_count = 1
+                WHERE batch_id = ? AND package_id = 10
+                """,
+                (batch["id"],),
+            )
+
+        async def capture_descriptors(descriptors, **_kwargs):
+            assert [descriptor.package_id for descriptor in descriptors] == [20]
+            return []
+
+        with patch(
+            "media_downloader.download_prescan_packages", new=capture_descriptors
+        ):
+            loop.run_until_complete(service.run_download_batch(batch["id"]))
+
+        stored = service.store.get_download_batch(batch["id"])
+        skipped = stored["packages"][0]
+        assert skipped["status"] == "failed"
+        assert skipped["last_error"] == "unknown_package_size"
+        assert service.task_store.get_task(batch["task_id"]).files["101"].error == (
+            "unknown_package_size"
+        )
+    finally:
+        loop.close()
+
+
+def test_keyword_monitor_batch_preserves_manual_selection_and_records_history(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        store = service.store
+        group = store.save_keyword_monitor_group(
+            "Original packages",
+            required_keywords=(),
+            match_keywords=("original",),
+            blacklist_keywords=(),
+        )
+        with store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE channel_packages
+                SET current_download_status = 'outdated', has_successful_attempt = 1
+                WHERE library_id = ? AND id = 20
+                """,
+                (library["id"],),
+            )
+        candidates = store.list_keyword_monitor_candidates(group["id"])
+        assert [candidate["id"] for candidate in candidates] == [10]
+
+        batch, created = store.create_download_batch_result(
+            library["id"],
+            "auto-download-test",
+            "channel-batch-auto-download-test",
+            package_ids=(10,),
+            keyword_monitor_hits=(
+                {
+                    "group_id": group["id"],
+                    "package_id": 10,
+                    "matched_keywords": ("original",),
+                },
+            ),
+        )
+
+        assert created is True
+        assert [package["package_id"] for package in batch["packages"]] == [10]
+        assert store.selection_summary(library["id"])["selected_count"] == 2
+        assert not store.list_keyword_monitor_candidates(group["id"])
+        with store.connect() as connection:
+            trigger = connection.execute(
+                """
+                SELECT group_id, package_id, package_revision,
+                       matched_keywords, batch_id
+                FROM keyword_monitor_history
+                """
+            ).fetchone()
+        assert dict(trigger) == {
+            "group_id": group["id"],
+            "package_id": 10,
+            "package_revision": 7,
+            "matched_keywords": '["original"]',
+            "batch_id": batch["id"],
+        }
+    finally:
+        loop.close()
+
+
+def test_channel_library_config_ignores_legacy_auto_download_rules():
+    config = ChannelLibraryConfig.from_mapping(
+        {
+            "auto_download_rules": [
+                {"chat_id": "-1001", "keywords": ["课程", " 课程 ", ""]},
+                {"chat_id": "invalid", "keywords": ["skip"]},
+            ]
+        }
+    )
+
+    assert not hasattr(config, "auto_download_rules")
+
+
+def test_multiple_keyword_groups_create_one_package_batch_and_separate_histories(
+    tmp_path,
+):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        first_group = service.store.save_keyword_monitor_group(
+            "Original",
+            required_keywords=(),
+            match_keywords=("original",),
+            blacklist_keywords=(),
+        )
+        second_group = service.store.save_keyword_monitor_group(
+            "Original A",
+            required_keywords=("original",),
+            match_keywords=("a", "missing"),
+            blacklist_keywords=("preview",),
+        )
+        with service.store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE channel_packages
+                SET current_download_status = 'outdated', has_successful_attempt = 1
+                WHERE id = 20
+                """
+            )
+
+        created_batch_ids = service.trigger_keyword_monitors()
+
+        assert len(created_batch_ids) == 1
+        batches = service.store.list_download_batches(library["id"])
+        assert len(batches) == 1
+        assert [item["package_id"] for item in batches[0]["packages"]] == [10]
+        first_history = service.store.list_keyword_monitor_history(
+            first_group["id"]
+        ).items
+        second_history = service.store.list_keyword_monitor_history(
+            second_group["id"]
+        ).items
+        assert first_history[0]["batch_id"] == second_history[0]["batch_id"]
+        assert first_history[0]["matched_keywords"] == ["original"]
+        assert second_history[0]["matched_keywords"] == ["a"]
+        assert service.trigger_keyword_monitors() == []
+    finally:
+        loop.close()
+
+
+def test_keyword_monitor_batches_follow_package_time_without_group_priority(tmp_path):
+    service, _library, loop = make_download_service(tmp_path)
+    try:
+        service.store.save_keyword_monitor_group(
+            "All original",
+            required_keywords=(),
+            match_keywords=("original",),
+            blacklist_keywords=(),
+        )
+        b_group = service.store.save_keyword_monitor_group(
+            "B packages",
+            required_keywords=(),
+            match_keywords=("b",),
+            blacklist_keywords=(),
+        )
+        with service.store.connect() as connection:
+            connection.execute(
+                """
+                UPDATE channel_packages
+                SET published_at = CASE id
+                    WHEN 10 THEN '2026-07-22T00:00:00+00:00'
+                    WHEN 20 THEN '2026-07-21T00:00:00+00:00'
+                END
+                WHERE id IN (10, 20)
+                """
+            )
+
+        batch_ids = service.trigger_keyword_monitors()
+
+        assert [
+            service.store.get_download_batch(batch_id)["packages"][0]["package_id"]
+            for batch_id in batch_ids
+        ] == [20, 10]
+        assert (
+            service.store.list_keyword_monitor_history(b_group["id"]).items[0][
+                "package_id"
+            ]
+            == 20
+        )
+    finally:
+        loop.close()
+
+
 def test_create_download_batch_is_idempotent_and_snapshots_selected_revision(tmp_path):
     service, library, loop = make_download_service(tmp_path)
     try:
@@ -142,7 +410,10 @@ def test_create_download_batch_is_idempotent_and_snapshots_selected_revision(tmp
         assert replay["task_id"] == first["task_id"]
         assert first["task_id"].startswith("channel-batch-")
         assert snapshot["dispatch_status"] == "dispatched"
-        assert [package["package_revision"] for package in snapshot["packages"]] == [7, 7]
+        assert [package["package_revision"] for package in snapshot["packages"]] == [
+            7,
+            7,
+        ]
         assert [package["title"] for package in snapshot["packages"]] == [
             "Original A",
             "Original B",
@@ -335,9 +606,10 @@ def test_restart_replays_crash_after_channel_commit_before_web_task(tmp_path):
         dispatched = restarted.dispatch_pending_batches()
 
         assert [batch["id"] for batch in dispatched] == [pending[0]["id"]]
-        assert restarted.store.get_download_batch(pending[0]["id"])[
-            "dispatch_status"
-        ] == "dispatched"
+        assert (
+            restarted.store.get_download_batch(pending[0]["id"])["dispatch_status"]
+            == "dispatched"
+        )
         assert len(restarted.task_store.tasks()) == 1
     finally:
         loop.close()
@@ -377,9 +649,10 @@ def test_restart_replays_crash_after_web_task_before_dispatched_mark(tmp_path):
         dispatched = service.dispatch_pending_batches()
 
         assert [batch["id"] for batch in dispatched] == [pending[0]["id"]]
-        assert service.store.get_download_batch(pending[0]["id"])[
-            "dispatch_status"
-        ] == "dispatched"
+        assert (
+            service.store.get_download_batch(pending[0]["id"])["dispatch_status"]
+            == "dispatched"
+        )
         assert [task.task_id for task in service.task_store.tasks()] == [task_id]
         assert service.task_store.get_task(task_id).title == "Demo Channel / 2 packages"
     finally:
@@ -437,9 +710,10 @@ def test_pending_dispatch_preserves_matching_terminal_task(tmp_path):
         dispatched = service.dispatch_pending_batches()
 
         assert [batch["id"] for batch in dispatched] == [pending["id"]]
-        assert service.store.get_download_batch(pending["id"])[
-            "dispatch_status"
-        ] == "dispatched"
+        assert (
+            service.store.get_download_batch(pending["id"])["dispatch_status"]
+            == "dispatched"
+        )
         assert service.task_store.get_task(pending["task_id"]) is terminal
         assert terminal.status == TaskStatus.COMPLETED
     finally:
@@ -484,7 +758,9 @@ def test_failed_redownload_preserves_historical_success_duplicate_protection(tmp
         loop.close()
 
 
-def test_create_download_batch_rejects_nonterminal_library_and_stale_selection(tmp_path):
+def test_create_download_batch_rejects_nonterminal_library_and_stale_selection(
+    tmp_path,
+):
     service, library, loop = make_download_service(tmp_path)
     try:
         with service.store.connect() as connection:
@@ -574,9 +850,7 @@ def test_run_download_batch_streams_one_package_into_memory_at_a_time(tmp_path):
         try:
             with patch.object(
                 media_downloader, "add_download_task", new=fake_add_download_task
-            ), patch(
-                "module.pyrogram_extension.report_bot_status", new=fake_report
-            ):
+            ), patch("module.pyrogram_extension.report_bot_status", new=fake_report):
                 results = loop.run_until_complete(
                     service.run_download_batch(batch["id"])
                 )
@@ -641,9 +915,7 @@ def test_run_download_batch_cross_package_no_misfile(tmp_path):
     client = CompleteClient()
     service, library, loop = make_download_service(tmp_path, client=client)
     try:
-        batch = service.create_download_batch(
-            library["id"], "cross-package-no-misfile"
-        )
+        batch = service.create_download_batch(library["id"], "cross-package-no-misfile")
 
         # message_id -> the PackageNamingContext object active when that
         # message's terminal status actually landed.
@@ -818,9 +1090,7 @@ def test_run_download_batch_refetches_exact_snapshot_and_writes_package_results(
                     )
                 await on_package_finished(package.attempt_id, message_results)
                 package_status = (
-                    "not_found"
-                    if package.failed_message_ids
-                    else "completed"
+                    "not_found" if package.failed_message_ids else "completed"
                 )
                 results.append(
                     PackageDownloadResult(
@@ -850,10 +1120,10 @@ def test_run_download_batch_refetches_exact_snapshot_and_writes_package_results(
         assert [result.status for result in results] == ["not_found", "completed"]
         stored = service.store.get_download_batch(batch["id"])
         assert [package["status"] for package in stored["packages"]] == [
-            "not_found",
+            "completed_with_errors",
             "completed",
         ]
-        assert stored["status"] == "failed"
+        assert stored["status"] == "completed_with_errors"
         assert stored["channel_title"] == "Demo Channel"
     finally:
         loop.close()
@@ -880,8 +1150,7 @@ def test_reconcile_download_batches_uses_file_evidence_and_cancel_status(tmp_pat
         completed_stored = service.store.get_download_batch(completed["id"])
         assert completed_stored["status"] == "completed"
         assert all(
-            package["status"] == "completed"
-            for package in completed_stored["packages"]
+            package["status"] == "completed" for package in completed_stored["packages"]
         )
 
         # A successful batch clears the persisted selection; re-select both
@@ -900,8 +1169,7 @@ def test_reconcile_download_batches_uses_file_evidence_and_cancel_status(tmp_pat
         cancelled_stored = service.store.get_download_batch(cancelled["id"])
         assert cancelled_stored["status"] == "cancelled"
         assert all(
-            package["status"] == "cancelled"
-            for package in cancelled_stored["packages"]
+            package["status"] == "cancelled" for package in cancelled_stored["packages"]
         )
     finally:
         loop.close()
@@ -917,9 +1185,7 @@ def test_reconcile_completed_with_errors_uses_per_package_file_evidence(tmp_path
             service.task_store.upsert_file(
                 batch["task_id"], item["message_id"], status=FileStatus.DOWNLOADED
             )
-        service.task_store.upsert_file(
-            batch["task_id"], 201, status=FileStatus.FAILED
-        )
+        service.task_store.upsert_file(batch["task_id"], 201, status=FileStatus.FAILED)
         service.task_store.upsert_file(
             batch["task_id"], 202, status=FileStatus.DOWNLOADED
         )
@@ -932,8 +1198,9 @@ def test_reconcile_completed_with_errors_uses_per_package_file_evidence(tmp_path
         stored = service.store.get_download_batch(batch["id"])
         assert [package["status"] for package in stored["packages"]] == [
             "completed",
-            "failed",
+            "completed_with_errors",
         ]
+        assert stored["status"] == "completed_with_errors"
     finally:
         loop.close()
 
@@ -1065,7 +1332,9 @@ def test_callback_exception_persists_only_safe_error_codes(tmp_path):
         ), patch(
             "module.pyrogram_extension.report_bot_status",
             new=lambda *_args, **_kwargs: asyncio.sleep(0),
-        ), pytest.raises(PackageCallbackError):
+        ), pytest.raises(
+            PackageCallbackError
+        ):
             loop.run_until_complete(service.run_download_batch(batch["id"]))
 
         stored = service.store.get_download_batch(batch["id"])
@@ -1123,9 +1392,7 @@ def test_run_download_batch_marks_unfinished_packages_cancelled(tmp_path):
 
         stored = service.store.get_download_batch(batch["id"])
         assert stored["status"] == "cancelled"
-        assert all(
-            package["status"] == "cancelled" for package in stored["packages"]
-        )
+        assert all(package["status"] == "cancelled" for package in stored["packages"])
     finally:
         loop.close()
 
@@ -1155,10 +1422,10 @@ def test_cancel_while_waiting_for_refetch_gate_cancels_batch_without_leaks(tmp_p
 
         stored = service.store.get_download_batch(batch["id"])
         assert stored["status"] == "cancelled"
-        assert all(
-            package["status"] == "cancelled" for package in stored["packages"]
+        assert all(package["status"] == "cancelled" for package in stored["packages"])
+        assert (
+            service.task_store.get_task(batch["task_id"]).status == TaskStatus.CANCELLED
         )
-        assert service.task_store.get_task(batch["task_id"]).status == TaskStatus.CANCELLED
         assert batch["task_id"] not in get_active_task_nodes()
         assert service._running_download_batch_ids == set()
     finally:
@@ -1197,10 +1464,10 @@ def test_cancel_during_blocking_refetch_cancels_batch_and_releases_permit(tmp_pa
 
         stored = service.store.get_download_batch(batch["id"])
         assert stored["status"] == "cancelled"
-        assert all(
-            package["status"] == "cancelled" for package in stored["packages"]
+        assert all(package["status"] == "cancelled" for package in stored["packages"])
+        assert (
+            service.task_store.get_task(batch["task_id"]).status == TaskStatus.CANCELLED
         )
-        assert service.task_store.get_task(batch["task_id"]).status == TaskStatus.CANCELLED
         assert batch["task_id"] not in get_active_task_nodes()
         assert service._running_download_batch_ids == set()
     finally:
@@ -1220,7 +1487,8 @@ def test_same_batch_concurrent_runner_is_rejected_before_second_refetch(tmp_path
                 self.entered.set()
                 await self.release.wait()
             return [
-                SimpleNamespace(id=message_id, empty=False) for message_id in message_ids
+                SimpleNamespace(id=message_id, empty=False)
+                for message_id in message_ids
             ]
 
     client = FirstCallBlockingClient()
@@ -1252,9 +1520,7 @@ def test_same_batch_concurrent_runner_is_rejected_before_second_refetch(tmp_path
                 with pytest.raises(asyncio.CancelledError):
                     await first
 
-        with patch(
-            "media_downloader.download_prescan_packages", new=no_download
-        ):
+        with patch("media_downloader.download_prescan_packages", new=no_download):
             loop.run_until_complete(scenario())
 
         assert client.calls == 1
@@ -1345,17 +1611,13 @@ def test_restart_normalizes_stale_downloading_attempt_before_resume(tmp_path):
                 )
             return results
 
-        with patch(
-            "media_downloader.download_prescan_packages", new=complete_download
-        ):
+        with patch("media_downloader.download_prescan_packages", new=complete_download):
             loop.run_until_complete(restarted.run_download_batch(batch["id"]))
 
         assert statuses_before_callbacks == ["queued", "queued"]
         stored = restarted.store.get_download_batch(batch["id"])
         assert stored["status"] == "completed"
-        assert all(
-            package["status"] == "completed" for package in stored["packages"]
-        )
+        assert all(package["status"] == "completed" for package in stored["packages"])
     finally:
         loop.close()
 
@@ -1396,12 +1658,12 @@ def test_normal_return_after_user_stop_forces_parent_and_unstarted_cancelled(tmp
             results = loop.run_until_complete(service.run_download_batch(batch["id"]))
 
         assert results == []
-        assert service.task_store.get_task(batch["task_id"]).status == TaskStatus.CANCELLED
+        assert (
+            service.task_store.get_task(batch["task_id"]).status == TaskStatus.CANCELLED
+        )
         stored = service.store.get_download_batch(batch["id"])
         assert stored["status"] == "cancelled"
-        assert all(
-            package["status"] == "cancelled" for package in stored["packages"]
-        )
+        assert all(package["status"] == "cancelled" for package in stored["packages"])
     finally:
         loop.close()
 
@@ -1444,9 +1706,7 @@ def test_inherited_caption_snapshot_reconstructs_text_zero_and_one(tmp_path):
             captured.extend([item.inherited_caption for item in package.items])
             return []
 
-        with patch(
-            "media_downloader.download_prescan_packages", new=capture_packages
-        ):
+        with patch("media_downloader.download_prescan_packages", new=capture_packages):
             loop.run_until_complete(service.run_download_batch(batch["id"]))
 
         assert captured == [False, True]

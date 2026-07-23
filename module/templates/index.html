@@ -16,7 +16,9 @@
       <div class="app-tab-list" role="tablist">
         <button type="button" class="app-tab" data-tab="tasks" role="tab" id="app_tab_tasks" aria-controls="tab_tasks" aria-selected="true" aria-current="page">任务</button>
         <button type="button" class="app-tab" data-tab="files" role="tab" id="app_tab_files" aria-controls="tab_files" aria-selected="false">文件</button>
-        <button type="button" class="app-tab" data-tab="channel-library" role="tab" id="app_tab_channel_library" aria-controls="tab_channel-library" aria-selected="false">频道库</button>
+        <button type="button" class="app-tab" data-tab="packages" role="tab" id="app_tab_packages" aria-controls="tab_packages" aria-selected="false">资源包</button>
+        <button type="button" class="app-tab" data-tab="channel-library" role="tab" id="app_tab_channel_library" aria-controls="tab_channel-library" aria-selected="false">频道</button>
+        <button type="button" class="app-tab" data-tab="keyword-monitor" role="tab" id="app_tab_keyword_monitor" aria-controls="tab_keyword-monitor" aria-selected="false">关键词监控</button>
         <button type="button" class="app-tab" data-tab="config" role="tab" id="app_tab_config" aria-controls="tab_config" aria-selected="false">高级配置</button>
       </div>
       <span class="nums text-muted" id="nav_total_speed" style="margin-left:auto;font-size:13px;display:none"></span>
@@ -155,6 +157,93 @@
         </div>
 
       </div>
+      <div class="tab-panel" id="tab_packages" role="tabpanel" aria-labelledby="app_tab_packages">
+        <section class="aggregate-workspace" aria-live="polite">
+          <header class="aggregate-header">
+            <div>
+              <strong>资源包</strong>
+              <div class="text-muted nums" id="aggregate_package_meta">全部频道 · 0 个包</div>
+            </div>
+          </header>
+          <form class="channel-library-filters aggregate-filters" id="aggregate_package_filters">
+            <div class="field channel-library-filter-wide">
+              <label for="aggregate_filter_q">标题</label>
+              <input class="input" id="aggregate_filter_q" name="q" autocomplete="off">
+            </div>
+            <div class="field aggregate-channel-filter">
+              <label for="aggregate_filter_libraries">来源频道</label>
+              <select class="input" id="aggregate_filter_libraries" name="library_ids" multiple></select>
+            </div>
+            <div class="field">
+              <label for="aggregate_filter_date_from">发布时间起</label>
+              <input class="input nums" id="aggregate_filter_date_from" type="datetime-local">
+            </div>
+            <div class="field">
+              <label for="aggregate_filter_date_to">发布时间止</label>
+              <input class="input nums" id="aggregate_filter_date_to" type="datetime-local">
+            </div>
+            <div class="field">
+              <label for="aggregate_filter_media_min">媒体数起</label>
+              <input class="input nums" id="aggregate_filter_media_min" type="number" min="0">
+            </div>
+            <div class="field">
+              <label for="aggregate_filter_media_max">媒体数止</label>
+              <input class="input nums" id="aggregate_filter_media_max" type="number" min="0">
+            </div>
+            <div class="field">
+              <label for="aggregate_filter_size_min">已知大小起（MiB）</label>
+              <input class="input nums" id="aggregate_filter_size_min" type="number" min="0" step="0.1">
+            </div>
+            <div class="field">
+              <label for="aggregate_filter_size_max">已知大小止（MiB）</label>
+              <input class="input nums" id="aggregate_filter_size_max" type="number" min="0" step="0.1">
+            </div>
+            <div class="field">
+              <label for="aggregate_filter_download_status">下载状态</label>
+              <select class="input" id="aggregate_filter_download_status">
+                <option value="">全部</option>
+                <option value="never">未下载</option>
+                <option value="queued">排队中</option>
+                <option value="downloading">下载中</option>
+                <option value="completed">已完成</option>
+                <option value="outdated">内容已更新</option>
+                <option value="failed">失败</option>
+                <option value="cancelled">已取消</option>
+              </select>
+            </div>
+            <label class="channel-library-check">
+              <input id="aggregate_filter_unknown_size" type="checkbox">
+              <span>包含大小未知的包</span>
+            </label>
+            <div class="channel-library-filter-actions">
+              <button type="submit" class="btn btn-secondary">筛选</button>
+              <button type="button" class="btn btn-ghost" id="aggregate_filter_clear">清除</button>
+            </div>
+          </form>
+          <div class="channel-library-notice" id="aggregate_package_notice" hidden></div>
+          <div class="channel-library-selection">
+            <span class="nums" id="aggregate_selection_text">已选 0 包 · 0 个频道 · 0 个媒体 · 0 B</span>
+            <div class="channel-library-selection-actions">
+              <button type="button" class="btn btn-secondary" id="aggregate_select_filtered">全选筛选结果</button>
+              <button type="button" class="btn btn-ghost" id="aggregate_clear_selection">清空选择</button>
+              <button type="button" class="btn btn-primary" id="aggregate_download_selection" disabled>下载所选</button>
+            </div>
+          </div>
+          <div class="table-scroll channel-library-table-scroll">
+            <table class="table channel-library-package-grid aggregate-package-grid">
+              <thead><tr>
+                <th></th><th>选择</th><th>资源包</th><th>来源频道</th><th>标题</th><th>发布时间</th><th>媒体</th><th>大小</th><th>边界</th><th>下载</th>
+              </tr></thead>
+              <tbody id="aggregate_package_rows"></tbody>
+            </table>
+          </div>
+          <div class="channel-library-table-footer">
+            <span class="text-muted" id="aggregate_package_count">0 个包</span>
+            <button type="button" class="btn btn-secondary" id="aggregate_package_more" hidden>加载更多</button>
+          </div>
+        </section>
+      </div>
+
       <div class="tab-panel" id="tab_channel-library" role="tabpanel" aria-labelledby="app_tab_channel_library">
         <div class="channel-library-layout">
           <aside class="channel-library-sidebar" aria-label="频道库列表">
@@ -185,7 +274,7 @@
                 <div class="channel-library-controls" id="channel_library_scan_controls"></div>
               </header>
 
-              <form class="channel-library-filters" id="channel_library_filters">
+              <form class="channel-library-filters" id="channel_library_filters" hidden>
                 <div class="field channel-library-filter-wide">
                   <label for="channel_filter_q">标题</label>
                   <input class="input" id="channel_filter_q" name="q" autocomplete="off">
@@ -247,7 +336,7 @@
 
               <div class="channel-library-notice" id="channel_library_notice" hidden></div>
 
-              <div class="channel-library-selection" id="channel_library_selection">
+              <div class="channel-library-selection" id="channel_library_selection" hidden>
                 <span class="nums" id="channel_selection_text">已选 0 包 · 0 个媒体 · 0 B</span>
                 <div class="channel-library-selection-actions">
                   <button type="button" class="btn btn-secondary" id="channel_select_filtered">全选筛选结果</button>
@@ -259,7 +348,7 @@
                 </div>
               </div>
 
-              <div class="table-scroll channel-library-table-scroll">
+              <div class="table-scroll channel-library-table-scroll" hidden>
                 <table class="table channel-library-package-grid">
                   <thead><tr>
                     <th></th><th>选择</th><th>包 / 起始 ID</th><th>消息范围</th><th>标题</th><th>发布时间</th><th>媒体</th><th>大小</th><th>边界</th><th>下载</th>
@@ -267,13 +356,70 @@
                   <tbody id="channel_library_packages"></tbody>
                 </table>
               </div>
-              <div class="channel-library-table-footer">
+              <div class="channel-library-table-footer" hidden>
                 <span class="text-muted" id="channel_package_count">0 个包</span>
                 <button type="button" class="btn btn-secondary" id="channel_library_load_more" hidden>加载更多</button>
               </div>
               <div class="channel-library-delete-row">
                 <button type="button" class="btn btn-ghost" id="channel_library_delete">删除频道库</button>
               </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab_keyword-monitor" role="tabpanel" aria-labelledby="app_tab_keyword_monitor">
+        <div class="keyword-monitor-layout">
+          <aside class="keyword-monitor-sidebar">
+            <div class="keyword-monitor-sidebar-head">
+              <strong>监控组</strong>
+              <button type="button" class="btn btn-primary" id="keyword_group_new">新建</button>
+            </div>
+            <div id="keyword_group_rows" class="keyword-monitor-groups"></div>
+            <div id="keyword_group_empty" class="channel-library-empty">尚未创建监控组</div>
+          </aside>
+          <section class="keyword-monitor-workspace">
+            <form id="keyword_group_form" class="keyword-monitor-form">
+              <input type="hidden" id="keyword_group_id">
+              <header class="keyword-monitor-form-head">
+                <div class="field">
+                  <label for="keyword_group_name">组名</label>
+                  <input class="input" id="keyword_group_name" maxlength="120" required>
+                </div>
+                <label class="sw on" id="keyword_group_enabled"><i></i><span>启用</span></label>
+              </header>
+              <div class="keyword-monitor-terms">
+                <div class="field">
+                  <label for="keyword_required">必要关键词</label>
+                  <textarea class="input" id="keyword_required" rows="7"></textarea>
+                </div>
+                <div class="field">
+                  <label for="keyword_match">命中关键词</label>
+                  <textarea class="input" id="keyword_match" rows="7" required></textarea>
+                </div>
+                <div class="field">
+                  <label for="keyword_blacklist">黑名单关键词</label>
+                  <textarea class="input" id="keyword_blacklist" rows="7"></textarea>
+                </div>
+              </div>
+              <div class="keyword-monitor-actions">
+                <span id="keyword_group_notice" class="text-muted"></span>
+                <button type="button" class="btn btn-ghost" id="keyword_group_delete" hidden>删除</button>
+                <button type="submit" class="btn btn-primary" id="keyword_group_save">保存</button>
+              </div>
+            </form>
+            <div class="keyword-monitor-history">
+              <header>
+                <strong>监控历史</strong>
+                <span class="text-muted nums" id="keyword_history_count">0 条</span>
+              </header>
+              <div class="table-scroll">
+                <table class="table keyword-history-table">
+                  <thead><tr><th>命中时间</th><th>来源频道</th><th>资源包</th><th>命中词</th><th>下载状态</th><th>任务</th></tr></thead>
+                  <tbody id="keyword_history_rows"></tbody>
+                </table>
+              </div>
+              <button type="button" class="btn btn-secondary" id="keyword_history_more" hidden>加载更多</button>
             </div>
           </section>
         </div>
@@ -468,7 +614,8 @@
         libraryNextCursor:null, libraryPagesLoaded:0, generation:0,
         detail:null, packages:[], nextCursor:null, packageRevision:null,
         packageLoadingGeneration:null, expandedItems:{}, selection:null, polling:false,
-      } };
+      }, aggregate:{items:[],nextCursor:null,expandedItems:{},selection:null,loading:false},
+      keywordMonitor:{groups:[],selectedGroupId:null,history:[],historyNextCursor:null} };
     let taskFilter = 'all';
 
     const ICONS = {
@@ -1124,7 +1271,6 @@
       showChannelNotice('');
       try {
         await loadChannelDetail({refreshPackages:false});
-        await Promise.all([loadChannelPackages({append:false}), loadChannelSelection()]);
       } catch (error){ showChannelNotice(error.message, 'error'); }
     }
     async function pollChannelLibraries(){
@@ -1133,7 +1279,7 @@
       state.channel.polling = true;
       try {
         await loadChannelLibraries();
-        if (state.channel.selectedLibraryId) await loadChannelDetail();
+        if (state.channel.selectedLibraryId) await loadChannelDetail({refreshPackages:false});
       } catch (error){ showChannelNotice(error.message, 'error'); }
       finally { state.channel.polling = false; }
     }
@@ -1298,6 +1444,309 @@
       }
     });
 
+    // ── aggregate resource packages ──
+    function showAggregateNotice(message, tone='info'){
+      const notice = $('#aggregate_package_notice');
+      if (!message){ notice.hidden = true; notice.textContent = ''; return; }
+      notice.hidden = false;
+      notice.dataset.tone = tone;
+      notice.textContent = message;
+    }
+    async function loadAggregateLibraries(){
+      const selected = new Set([...$('#aggregate_filter_libraries').selectedOptions].map(option=>Number(option.value)));
+      let items = [], cursor = null;
+      do {
+        const params = new URLSearchParams({page_size:'200'});
+        if (cursor) params.set('cursor',cursor);
+        const data = await channelRequest(`/api/channel-libraries?${params}`);
+        items.push(...(data.items||[]));
+        cursor = data.next_cursor || null;
+      } while (cursor);
+      $('#aggregate_filter_libraries').innerHTML = items.map(library =>
+        `<option value="${Number(library.id)}" ${selected.has(Number(library.id))?'selected':''}>${escapeHtml(library.title||'未命名频道')}</option>`
+      ).join('');
+      return items;
+    }
+    function readAggregateFilters(){
+      const text = id => $(id).value.trim();
+      const numeric = id => text(id)==='' ? null : Number(text(id));
+      const result = {
+        library_ids:[...$('#aggregate_filter_libraries').selectedOptions].map(option=>Number(option.value)),
+      };
+      const q = text('#aggregate_filter_q');
+      if (q) result.q = q;
+      for (const [id,key] of [['#aggregate_filter_date_from','date_from'],['#aggregate_filter_date_to','date_to']]){
+        const value = text(id); if (value) result[key] = new Date(value).toISOString();
+      }
+      for (const [id,key] of [['#aggregate_filter_media_min','media_count_min'],['#aggregate_filter_media_max','media_count_max']]){
+        const value = numeric(id); if (value !== null) result[key] = value;
+      }
+      for (const [id,key] of [['#aggregate_filter_size_min','size_min'],['#aggregate_filter_size_max','size_max']]){
+        const value = numeric(id); if (value !== null) result[key] = Math.round(value*1048576);
+      }
+      const status = text('#aggregate_filter_download_status');
+      if (status) result.download_status = status;
+      if ($('#aggregate_filter_unknown_size').checked) result.include_unknown_size = true;
+      return result;
+    }
+    function aggregateQuery(filters){
+      const params = new URLSearchParams({page_size:'50'});
+      Object.entries(filters).forEach(([key,value]) => {
+        if (key === 'library_ids'){
+          if (value.length) params.set(key,value.join(','));
+        } else params.set(key,String(value));
+      });
+      return params;
+    }
+    function renderAggregateItemRows(packageId){
+      const page = state.aggregate.expandedItems[packageId];
+      if (!page) return '';
+      const rows = page.items.length ? page.items.map(item=>`<tr>
+        <td class="nums">${Number(item.message_id)}</td><td>${escapeHtml(item.media_type||'—')}</td>
+        <td>${escapeHtml(item.file_name||'—')}</td><td class="nums">${formatChannelBytes(item.file_size,true)}</td>
+        <td>${escapeHtml(item.caption||'')}</td></tr>`).join('')
+        : '<tr><td colspan="5" class="text-muted">此包暂无媒体明细</td></tr>';
+      const more = page.nextCursor ? `<button type="button" class="btn btn-secondary" data-aggregate-item-more="${packageId}">加载更多明细</button>` : '';
+      return `<tr class="channel-library-item-row"><td colspan="10"><table class="channel-library-item-list"><tbody>${rows}</tbody></table>${more}</td></tr>`;
+    }
+    function renderAggregatePackages(){
+      const rows = $('#aggregate_package_rows');
+      if (!state.aggregate.items.length){
+        rows.innerHTML = '<tr><td colspan="10" class="text-muted" style="padding:32px;text-align:center">当前筛选没有资源包</td></tr>';
+      } else {
+        rows.innerHTML = state.aggregate.items.map(pkg=>{
+          const id = Number(pkg.id), expanded = Boolean(state.aggregate.expandedItems[id]);
+          return `<tr data-aggregate-package="${id}">
+            <td><button type="button" class="channel-library-expand" data-aggregate-expand="${id}" aria-expanded="${expanded?'true':'false'}" title="展开媒体明细">${icon('chevron',14)}</button></td>
+            <td><input type="checkbox" data-aggregate-select="${id}" ${pkg.selected?'checked':''} ${pkg.selectable?'':'disabled'} aria-label="选择资源包 ${id}"></td>
+            <td class="nums">#${id}<br><span class="text-muted">${Number(pkg.start_message_id)}</span></td>
+            <td>${escapeHtml(pkg.channel_title||'未命名频道')}<br><span class="text-muted nums">${Number(pkg.chat_id)}</span></td>
+            <td class="channel-library-package-title" title="${escapeHtml(pkg.title||'')}">${escapeHtml(pkg.title||'未命名包')}</td>
+            <td>${formatChannelTime(pkg.published_at)}</td><td class="nums">${Number(pkg.media_count)||0}</td>
+            <td class="nums">${formatChannelBytes(pkg.known_total_size,Boolean(pkg.size_is_exact))}</td>
+            <td>${channelStatusTag(pkg.boundary_status,CHANNEL_BOUNDARY_STATUS)}</td>
+            <td>${channelStatusTag(pkg.current_download_status,CHANNEL_DOWNLOAD_STATUS)}</td>
+          </tr>${renderAggregateItemRows(id)}`;
+        }).join('');
+      }
+      const filters = readAggregateFilters();
+      const scope = filters.library_ids.length ? `${filters.library_ids.length} 个频道` : '全部频道';
+      $('#aggregate_package_meta').textContent = `${scope} · 已加载 ${state.aggregate.items.length} 个包`;
+      $('#aggregate_package_count').textContent = `已加载 ${state.aggregate.items.length} 个包`;
+      $('#aggregate_package_more').hidden = !state.aggregate.nextCursor;
+    }
+    async function loadAggregatePackages({append=false}={}){
+      if (state.aggregate.loading || (append && !state.aggregate.nextCursor)) return;
+      state.aggregate.loading = true;
+      try {
+        const params = aggregateQuery(readAggregateFilters());
+        if (append) params.set('cursor',state.aggregate.nextCursor);
+        const data = await channelRequest(`/api/packages?${params}`);
+        const combined = append ? [...state.aggregate.items,...(data.items||[])] : (data.items||[]);
+        state.aggregate.items = [...new Map(combined.map(item=>[Number(item.id),item])).values()];
+        state.aggregate.nextCursor = data.next_cursor || null;
+        if (!append) state.aggregate.expandedItems = {};
+        renderAggregatePackages();
+      } catch (error){ showAggregateNotice(error.message,'error'); }
+      finally { state.aggregate.loading = false; }
+    }
+    async function loadAggregateSelection(){
+      try {
+        const summary = await channelRequest('/api/packages/selection');
+        state.aggregate.selection = summary;
+        $('#aggregate_selection_text').textContent = `已选 ${Number(summary.selected_count)||0} 包 · ${Number(summary.channel_count)||0} 个频道 · ${Number(summary.media_count)||0} 个媒体 · ${formatChannelBytes(summary.known_total_size,Boolean(summary.size_is_exact))}`;
+        $('#aggregate_download_selection').disabled = Number(summary.selected_count)<=0;
+      } catch (error){ showAggregateNotice(error.message,'error'); }
+    }
+    async function toggleAggregateItems(packageId){
+      if (state.aggregate.expandedItems[packageId]){
+        delete state.aggregate.expandedItems[packageId]; renderAggregatePackages(); return;
+      }
+      try {
+        const data = await channelRequest(`/api/packages/${packageId}/items?page_size=50`);
+        state.aggregate.expandedItems[packageId] = {items:data.items||[],nextCursor:data.next_cursor||null,loading:false};
+        renderAggregatePackages();
+      } catch (error){ showAggregateNotice(error.message,'error'); }
+    }
+    async function loadMoreAggregateItems(packageId){
+      const page = state.aggregate.expandedItems[packageId];
+      if (!page || !page.nextCursor || page.loading) return;
+      page.loading = true;
+      try {
+        const params = new URLSearchParams({page_size:'50',cursor:page.nextCursor});
+        const data = await channelRequest(`/api/packages/${packageId}/items?${params}`);
+        page.items.push(...(data.items||[])); page.nextCursor = data.next_cursor||null;
+        renderAggregatePackages();
+      } catch (error){ showAggregateNotice(error.message,'error'); }
+      finally { page.loading = false; }
+    }
+    async function activateAggregatePackages(){
+      try {
+        await ensureChannelCsrf();
+        await loadAggregateLibraries();
+        await Promise.all([loadAggregatePackages(),loadAggregateSelection()]);
+      } catch (error){ showAggregateNotice(error.message,'error'); }
+    }
+    $('#aggregate_package_filters').addEventListener('submit',e=>{ e.preventDefault(); loadAggregatePackages(); });
+    $('#aggregate_filter_clear').addEventListener('click',()=>{
+      $('#aggregate_package_filters').reset(); showAggregateNotice(''); loadAggregatePackages();
+    });
+    $('#aggregate_package_more').addEventListener('click',()=>loadAggregatePackages({append:true}));
+    $('#aggregate_package_rows').addEventListener('click',e=>{
+      const expand = e.target.closest('[data-aggregate-expand]');
+      if (expand) toggleAggregateItems(Number(expand.dataset.aggregateExpand));
+      const more = e.target.closest('[data-aggregate-item-more]');
+      if (more) loadMoreAggregateItems(Number(more.dataset.aggregateItemMore));
+    });
+    $('#aggregate_package_rows').addEventListener('change',async e=>{
+      const checkbox = e.target.closest('[data-aggregate-select]');
+      if (!checkbox) return;
+      checkbox.disabled = true;
+      try {
+        await channelApiWrite('PUT',`/api/packages/${checkbox.dataset.aggregateSelect}/selection`,{selected:checkbox.checked});
+        const pkg = state.aggregate.items.find(item=>Number(item.id)===Number(checkbox.dataset.aggregateSelect));
+        if (pkg) pkg.selected = checkbox.checked;
+        await loadAggregateSelection();
+      } catch (error){ checkbox.checked=!checkbox.checked; showAggregateNotice(error.message,'error'); }
+      finally { checkbox.disabled=false; }
+    });
+    $('#aggregate_select_filtered').addEventListener('click',async()=>{
+      if (!confirm('选择全部筛选结果中的稳定资源包？')) return;
+      try {
+        const result = await channelApiWrite('POST','/api/packages/selection/select-filtered',readAggregateFilters());
+        showAggregateNotice(`已选择 ${Number(result.selected_count)||0} 个包，跳过 ${Number(result.skipped_count)||0} 个不稳定包`);
+        await Promise.all([loadAggregatePackages(),loadAggregateSelection()]);
+      } catch (error){ showAggregateNotice(error.message,'error'); }
+    });
+    $('#aggregate_clear_selection').addEventListener('click',async()=>{
+      try {
+        await channelApiWrite('POST','/api/packages/selection/clear',{});
+        await Promise.all([loadAggregatePackages(),loadAggregateSelection()]);
+      } catch (error){ showAggregateNotice(error.message,'error'); }
+    });
+    async function submitAggregateDownload(redownload=false){
+      const key = (globalThis.crypto&&crypto.randomUUID) ? crypto.randomUUID() : `aggregate-${Date.now()}-${Math.random()}`;
+      try {
+        const result = await channelApiWrite('POST','/api/packages/download-batches',{redownload},{'Idempotency-Key':key});
+        showAggregateNotice(`已创建 ${result.batches.length} 个频道下载批次`);
+        await Promise.all([loadAggregatePackages(),loadAggregateSelection()]);
+      } catch (error){
+        if (error.code==='redownload_required'&&!redownload&&confirm('所选资源包包含已成功下载或内容已更新的版本，确认重新下载？')) return submitAggregateDownload(true);
+        showAggregateNotice(error.message,'error');
+      }
+    }
+    $('#aggregate_download_selection').addEventListener('click',async()=>{
+      await loadAggregateSelection();
+      const summary = state.aggregate.selection;
+      if (!summary || Number(summary.selected_count)<=0) return;
+      if (!confirm(`下载 ${Number(summary.selected_count)} 个资源包，按 ${Number(summary.channel_count)} 个来源频道创建任务？`)) return;
+      submitAggregateDownload(false);
+    });
+
+    // ── keyword monitor groups and trigger history ──
+    function keywordLines(value){ return value.split(/\r?\n/).map(item=>item.trim()).filter(Boolean); }
+    function setKeywordEnabled(enabled){
+      const control = $('#keyword_group_enabled');
+      control.classList.toggle('on',enabled); control.classList.toggle('off',!enabled);
+      control.dataset.on = enabled ? '1' : '0';
+    }
+    function renderKeywordGroups(){
+      $('#keyword_group_empty').hidden = state.keywordMonitor.groups.length>0;
+      $('#keyword_group_rows').innerHTML = state.keywordMonitor.groups.map(group=>`
+        <button type="button" class="channel-library-row" data-keyword-group="${Number(group.id)}" aria-current="${Number(group.id)===state.keywordMonitor.selectedGroupId?'true':'false'}">
+          <span class="channel-library-row-title">${escapeHtml(group.name)}</span>
+          <span class="channel-library-row-meta"><span>${group.enabled?'已启用':'已停用'}</span><span class="nums">${Number(group.history_count)||0} 次命中</span></span>
+          <span class="channel-library-row-meta"><span>${Number(group.match_keywords.length)||0} 个命中词</span><span>${formatChannelTime(group.last_triggered_at)}</span></span>
+        </button>`).join('');
+    }
+    function fillKeywordGroup(group){
+      $('#keyword_group_id').value = group ? Number(group.id) : '';
+      $('#keyword_group_name').value = group ? group.name : '';
+      $('#keyword_required').value = group ? group.required_keywords.join('\n') : '';
+      $('#keyword_match').value = group ? group.match_keywords.join('\n') : '';
+      $('#keyword_blacklist').value = group ? group.blacklist_keywords.join('\n') : '';
+      setKeywordEnabled(group ? Boolean(group.enabled) : true);
+      $('#keyword_group_delete').hidden = !group;
+      $('#keyword_group_notice').textContent = '';
+    }
+    async function loadKeywordHistory({append=false}={}){
+      const groupId = state.keywordMonitor.selectedGroupId;
+      if (!groupId){ state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null; renderKeywordHistory(); return; }
+      const params = new URLSearchParams({page_size:'50'});
+      if (append&&state.keywordMonitor.historyNextCursor) params.set('cursor',state.keywordMonitor.historyNextCursor);
+      try {
+        const data = await channelRequest(`/api/keyword-monitor-groups/${groupId}/history?${params}`);
+        state.keywordMonitor.history = append ? [...state.keywordMonitor.history,...(data.items||[])] : (data.items||[]);
+        state.keywordMonitor.historyNextCursor = data.next_cursor||null;
+        renderKeywordHistory();
+      } catch (error){ $('#keyword_group_notice').textContent=error.message; }
+    }
+    function renderKeywordHistory(){
+      const history = state.keywordMonitor.history;
+      $('#keyword_history_count').textContent = `${history.length} 条`;
+      $('#keyword_history_more').hidden = !state.keywordMonitor.historyNextCursor;
+      $('#keyword_history_rows').innerHTML = history.length ? history.map(item=>`<tr>
+        <td>${formatChannelTime(item.created_at)}</td><td>${escapeHtml(item.channel_title||'未命名频道')}</td>
+        <td>${escapeHtml(item.package_title||'未命名包')}<br><span class="text-muted nums">#${Number(item.package_id)}</span></td>
+        <td>${item.matched_keywords.map(keyword=>`<span class="tag tag-neutral">${escapeHtml(keyword)}</span>`).join(' ')}</td>
+        <td>${statusTag((item.progress&&item.progress.status)||item.batch_status||item.package_download_status)}
+          ${item.progress?`<br><span class="text-muted nums">${Number(item.progress.success_count)||0}/${Number(item.progress.total_count)||0} 完成 · ${Number(item.progress.failed_count)||0} 失败</span>`:''}</td>
+        <td class="nums" title="${escapeHtml(item.task_id)}">${escapeHtml(shortId(item.task_id))}</td>
+      </tr>`).join('') : '<tr><td colspan="6" class="text-muted" style="padding:32px;text-align:center">暂无监控历史</td></tr>';
+    }
+    async function selectKeywordGroup(groupId){
+      const group = state.keywordMonitor.groups.find(item=>Number(item.id)===Number(groupId));
+      if (!group) return;
+      state.keywordMonitor.selectedGroupId=Number(group.id);
+      state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null;
+      renderKeywordGroups(); fillKeywordGroup(group); await loadKeywordHistory();
+    }
+    async function loadKeywordGroups({selectFirst=true}={}){
+      const data = await channelRequest('/api/keyword-monitor-groups');
+      state.keywordMonitor.groups=data.items||[]; renderKeywordGroups();
+      const selected = state.keywordMonitor.groups.find(item=>Number(item.id)===state.keywordMonitor.selectedGroupId);
+      if (selected){ fillKeywordGroup(selected); }
+      else if (selectFirst&&state.keywordMonitor.groups.length){ await selectKeywordGroup(Number(state.keywordMonitor.groups[0].id)); }
+      else if (!state.keywordMonitor.groups.length){ state.keywordMonitor.selectedGroupId=null; fillKeywordGroup(null); renderKeywordHistory(); }
+    }
+    async function activateKeywordMonitor(){
+      try { await ensureChannelCsrf(); await loadKeywordGroups(); }
+      catch (error){ $('#keyword_group_notice').textContent=error.message; }
+    }
+    $('#keyword_group_enabled').addEventListener('click',()=>setKeywordEnabled($('#keyword_group_enabled').dataset.on!=='1'));
+    $('#keyword_group_rows').addEventListener('click',e=>{
+      const row=e.target.closest('[data-keyword-group]'); if (row) selectKeywordGroup(Number(row.dataset.keywordGroup));
+    });
+    $('#keyword_group_new').addEventListener('click',()=>{
+      state.keywordMonitor.selectedGroupId=null; state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null;
+      renderKeywordGroups(); fillKeywordGroup(null); renderKeywordHistory(); $('#keyword_group_name').focus();
+    });
+    $('#keyword_group_form').addEventListener('submit',async e=>{
+      e.preventDefault();
+      const groupId = Number($('#keyword_group_id').value)||null;
+      const payload = {
+        name:$('#keyword_group_name').value.trim(), enabled:$('#keyword_group_enabled').dataset.on==='1',
+        required_keywords:keywordLines($('#keyword_required').value),
+        match_keywords:keywordLines($('#keyword_match').value),
+        blacklist_keywords:keywordLines($('#keyword_blacklist').value),
+      };
+      try {
+        const result = await channelApiWrite(groupId?'PUT':'POST',groupId?`/api/keyword-monitor-groups/${groupId}`:'/api/keyword-monitor-groups',payload);
+        state.keywordMonitor.selectedGroupId=Number(result.group.id);
+        await loadKeywordGroups({selectFirst:false}); await loadKeywordHistory();
+        $('#keyword_group_notice').textContent='已保存';
+      } catch (error){ $('#keyword_group_notice').textContent=error.message; }
+    });
+    $('#keyword_group_delete').addEventListener('click',async()=>{
+      const groupId=state.keywordMonitor.selectedGroupId; if (!groupId) return;
+      if (!confirm('删除当前关键词监控组及其监控历史？')) return;
+      try {
+        await channelApiWrite('DELETE',`/api/keyword-monitor-groups/${groupId}`);
+        state.keywordMonitor.selectedGroupId=null; await loadKeywordGroups();
+      } catch (error){ $('#keyword_group_notice').textContent=error.message; }
+    });
+    $('#keyword_history_more').addEventListener('click',()=>loadKeywordHistory({append:true}));
+
     // ── files (T7): 下载中 / 上传中 / 已完成 three stacked tables ──
     async function pollFiles(){
       const [dl, ul, done, dash] = await Promise.all([
@@ -1398,7 +1847,18 @@
       stopPolling();
       if (tab==='tasks'){ pollTasks(); state.timers.tasks = setInterval(pollTasks, 1000); }
       else if (tab==='files'){ pollFiles(); state.timers.files = setInterval(pollFiles, 1000); }  // T7
+      else if (tab==='packages'){
+        activateAggregatePackages();
+        state.timers.packages = setInterval(()=>Promise.all([loadAggregatePackages(),loadAggregateSelection()]),5000);
+      }
       else if (tab==='channel-library'){ activateChannelLibrary(); state.timers.channelLibrary = setInterval(pollChannelLibraries, 3000); }  // scans advance at 4-6s/batch; a per-library overview fan-out every 1s wastes the single vCPU
+      else if (tab==='keyword-monitor'){
+        activateKeywordMonitor();
+        state.timers.keywordMonitor = setInterval(async()=>{
+          await loadKeywordGroups({selectFirst:false});
+          if (state.keywordMonitor.selectedGroupId) await loadKeywordHistory();
+        },5000);
+      }
       else if (tab==='config'){ loadConfig(); }  // T8
     }
     function stopPolling(){ Object.values(state.timers).forEach(clearInterval); state.timers={}; }
