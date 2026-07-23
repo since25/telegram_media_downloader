@@ -1848,3 +1848,31 @@ Changed files:
 Rollback:
 - Revert the implementation commit and restart the downloader to restore the prior YAML-owned cron behavior. Schema v7 is additive, so `channel_library_settings` may remain unused after code rollback.
 - Before removing or restoring `channel_library_settings`, stop the service and back up `channel_library.sqlite3`; deleting the table permanently removes the saved Web schedule and trigger timestamp.
+
+## 2026-07-23 - Task: Deploy Web-managed incremental cron and channel workspace
+
+### What was done
+
+- Pushed implementation commit `780ee78` to GitHub `master`.
+- Stopped `tg-downloader.service` and created a consistent production backup of both SQLite databases and `config.yaml` before migrating.
+- Fast-forwarded the RackNerd checkout from `e7bccae` to `780ee78`, ran production compile and dependency checks, and restarted the service.
+- Confirmed schema v7 created one disabled `channel_library_settings` row without importing cron values from configuration or changing existing channel, package, scan, monitor, or history counts.
+
+### Testing
+
+- Backup directory: `/root/telegram_media_downloader/backups/release-20260723-115134-web-cron`; both backed-up SQLite integrity checks -> `ok`.
+- Production compile check passed and `.venv/bin/pip check` reported no broken requirements.
+- `tg-downloader.service` -> `active` on commit `780ee78`; post-restart journal scan found 0 traceback, exception, critical, error, or failed lines.
+- Production schema versions -> `[3, 6, 7]`; settings singleton -> disabled, empty cron, `Asia/Shanghai`, no prior trigger. Live and backup counts matched for libraries, packages, scans, monitor groups, and monitor history.
+- Live `channel_library.sqlite3` and `web_tasks.sqlite3` integrity checks -> `ok`; channel DB remained WAL mode `600`. Production `config.yaml` matched the backup SHA-256 and contained no legacy cron fields.
+- Local production Web on port 80: `/login` -> `200`, `/` and the new cron API -> authenticated `302`, existing channel API -> authenticated `302`, CSS -> `200` with the new schedule styles.
+- Public Web: `https://tgdn.wyichuan.cc/` -> `302 /login`, `/login` -> `200`, new cron API -> authenticated `302`, CSS -> `200`.
+
+### Notes
+
+Changed files:
+- `progress.md`: recorded the release backup, schema migration, service restart, data-preservation checks, and local/public Web smoke tests.
+
+Rollback:
+- Preferred code rollback: `git revert 780ee78`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both live SQLite databases; schema v7 is additive and can remain unused.
+- Release backup: `/root/telegram_media_downloader/backups/release-20260723-115134-web-cron`. Stop the service before restoring either database or `config.yaml`, and retain the current live files before replacement.
