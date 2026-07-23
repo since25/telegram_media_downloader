@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Union
 
+import pytz
+from croniter import croniter
+
 
 SCHEMA_VERSION = 6
 
@@ -230,12 +233,29 @@ class ChannelLibraryConfig:
     incremental_scan_delay_max_sec: float = 2.0
     transient_retry_delays_sec: Sequence[float] = (5.0, 15.0, 45.0)
     min_free_disk_bytes: int = 3 * 1024**3
+    incremental_scan_cron: str = ""
+    incremental_scan_timezone: str = "Asia/Shanghai"
 
     @classmethod
     def from_mapping(cls, raw: Optional[dict]) -> "ChannelLibraryConfig":
         raw = raw or {}
         full_min = max(float(raw.get("full_scan_delay_min_sec", 4)), 2.0)
         inc_min = max(float(raw.get("incremental_scan_delay_min_sec", 1)), 0.5)
+        incremental_scan_cron = str(raw.get("incremental_scan_cron", "") or "").strip()
+        if incremental_scan_cron and (
+            len(incremental_scan_cron.split()) != 5
+            or not croniter.is_valid(incremental_scan_cron)
+        ):
+            raise ValueError("incremental_scan_cron must be a valid cron expression")
+        incremental_scan_timezone = str(
+            raw.get("incremental_scan_timezone", "Asia/Shanghai") or "Asia/Shanghai"
+        ).strip()
+        try:
+            pytz.timezone(incremental_scan_timezone)
+        except pytz.UnknownTimeZoneError as error:
+            raise ValueError(
+                "incremental_scan_timezone must be a valid IANA timezone"
+            ) from error
         return cls(
             full_scan_batch_size=min(
                 max(int(raw.get("full_scan_batch_size", 50)), 1), 100
@@ -258,6 +278,8 @@ class ChannelLibraryConfig:
             min_free_disk_bytes=max(
                 int(raw.get("min_free_disk_bytes", 3 * 1024**3)), 0
             ),
+            incremental_scan_cron=incremental_scan_cron,
+            incremental_scan_timezone=incremental_scan_timezone,
         )
 
 
@@ -266,6 +288,9 @@ class ChannelLibraryStore:
 
     def __init__(self, path: Union[str, Path]):
         self.path = Path(path)
+        self._keyword_distribution_cache: dict[
+            int, tuple[tuple[int, int, float], list[dict]]
+        ] = {}
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5.0)
@@ -871,7 +896,9 @@ class ChannelLibraryStore:
 
         return f"{library['updated_at']!r}:{int(library['index_revision'])}"
 
-    def get_library_overview(self, library_id: int) -> Optional[dict]:
+    def get_library_overview(
+        self, library_id: int, *, include_keyword_distribution: bool = True
+    ) -> Optional[dict]:
         """Return one library with its latest scan, counts, and failure summaries."""
 
         with self.connect() as connection:
@@ -909,10 +936,47 @@ class ChannelLibraryStore:
                        ON p.library_id = s.library_id AND p.id = s.package_id
                      WHERE s.library_id = ? AND s.selected = 1
                        AND s.package_revision = p.index_revision
-                       AND p.boundary_status = 'stable') AS selected_count
+                       AND p.boundary_status = 'stable') AS selected_count,
+                    (SELECT COUNT(*) FROM channel_packages
+                     WHERE library_id = ? AND boundary_status = 'stable')
+                        AS available_package_count,
+                    (SELECT COUNT(*) FROM channel_packages
+                     WHERE library_id = ? AND boundary_status = 'stable'
+                       AND has_successful_attempt = 1)
+                        AS downloaded_package_count,
+                    (SELECT COUNT(*) FROM channel_packages
+                     WHERE library_id = ? AND boundary_status = 'stable'
+                       AND has_successful_attempt = 0)
+                        AS pending_download_package_count,
+                    (SELECT COALESCE(SUM(known_total_size), 0)
+                     FROM channel_packages
+                     WHERE library_id = ? AND boundary_status = 'stable')
+                        AS known_total_size,
+                    (SELECT COUNT(*) FROM channel_packages
+                     WHERE library_id = ? AND boundary_status = 'stable'
+                       AND unknown_size_count > 0)
+                        AS unknown_size_package_count
                 """,
-                (library_id, library_id, library_id, library_id, library_id),
+                (
+                    library_id,
+                    library_id,
+                    library_id,
+                    library_id,
+                    library_id,
+                    library_id,
+                    library_id,
+                    library_id,
+                    library_id,
+                    library_id,
+                ),
             ).fetchone()
+            keyword_distribution = (
+                self._cached_keyword_distribution(
+                    connection, library_id, int(library["index_revision"])
+                )
+                if include_keyword_distribution
+                else None
+            )
             failures = connection.execute(
                 """
                 SELECT * FROM channel_scan_failures
@@ -922,13 +986,135 @@ class ChannelLibraryStore:
                 (library_id,),
             ).fetchall()
         library_dict = dict(library)
-        return {
+        result = {
             "library": library_dict,
             "library_version": self.library_version(library_dict),
             "scan": dict(scan) if scan is not None else None,
             "counts": dict(counts),
             "failures": [dict(row) for row in failures],
         }
+        if keyword_distribution is not None:
+            result["keyword_distribution"] = keyword_distribution
+        return result
+
+    def _cached_keyword_distribution(
+        self,
+        connection: sqlite3.Connection,
+        library_id: int,
+        index_revision: int,
+    ) -> list[dict]:
+        monitor_revision = connection.execute(
+            """
+            SELECT COUNT(*) AS group_count,
+                   COALESCE(MAX(updated_at), 0) AS latest_update
+            FROM keyword_monitor_groups
+            WHERE enabled = 1
+            """
+        ).fetchone()
+        cache_key = (
+            int(index_revision),
+            int(monitor_revision["group_count"]),
+            float(monitor_revision["latest_update"]),
+        )
+        cached = self._keyword_distribution_cache.get(int(library_id))
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+        distribution = self._keyword_distribution_from_connection(
+            connection, library_id
+        )
+        self._keyword_distribution_cache[int(library_id)] = (
+            cache_key,
+            distribution,
+        )
+        return distribution
+
+    @staticmethod
+    def _keyword_distribution_from_connection(
+        connection: sqlite3.Connection, library_id: int
+    ) -> list[dict]:
+        """Count stable packages matching each enabled monitor group and term."""
+
+        matching_cte = """
+            WITH matching_packages AS (
+                SELECT DISTINCT g.id AS group_id, g.name AS group_name,
+                                p.id AS package_id
+                FROM keyword_monitor_groups AS g
+                JOIN channel_packages AS p
+                  ON p.library_id = ? AND p.boundary_status = 'stable'
+                WHERE g.enabled = 1
+                  AND EXISTS (
+                      SELECT 1 FROM keyword_monitor_terms AS term
+                      WHERE term.group_id = g.id AND term.term_type = 'match'
+                        AND instr(
+                            unicode_nfkc_casefold(p.title),
+                            term.normalized_keyword
+                        ) > 0
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM keyword_monitor_terms AS term
+                      WHERE term.group_id = g.id AND term.term_type = 'required'
+                        AND instr(
+                            unicode_nfkc_casefold(p.title),
+                            term.normalized_keyword
+                        ) = 0
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM keyword_monitor_terms AS term
+                      WHERE term.group_id = g.id AND term.term_type = 'blacklist'
+                        AND instr(
+                            unicode_nfkc_casefold(p.title),
+                            term.normalized_keyword
+                        ) > 0
+                  )
+            )
+        """
+        group_rows = connection.execute(
+            f"""
+            {matching_cte}
+            SELECT group_id, group_name, COUNT(*) AS package_count
+            FROM matching_packages
+            GROUP BY group_id, group_name
+            ORDER BY group_id
+            """,
+            (int(library_id),),
+        ).fetchall()
+        keyword_rows = connection.execute(
+            f"""
+            {matching_cte}
+            SELECT matched.group_id, term.keyword, term.ordinal,
+                   COUNT(DISTINCT matched.package_id) AS package_count
+            FROM matching_packages AS matched
+            JOIN channel_packages AS package
+              ON package.id = matched.package_id
+            JOIN keyword_monitor_terms AS term
+              ON term.group_id = matched.group_id
+             AND term.term_type = 'match'
+             AND instr(
+                 unicode_nfkc_casefold(package.title),
+                 term.normalized_keyword
+             ) > 0
+            GROUP BY matched.group_id, term.keyword, term.ordinal
+            ORDER BY matched.group_id, term.ordinal
+            """,
+            (int(library_id),),
+        ).fetchall()
+        keywords_by_group: dict[int, list[dict]] = {}
+        for row in keyword_rows:
+            keywords_by_group.setdefault(int(row["group_id"]), []).append(
+                {
+                    "keyword": row["keyword"],
+                    "package_count": int(row["package_count"]),
+                }
+            )
+        return [
+            {
+                "group_id": int(row["group_id"]),
+                "group_name": row["group_name"],
+                "package_count": int(row["package_count"]),
+                "keywords": keywords_by_group.get(int(row["group_id"]), []),
+            }
+            for row in group_rows
+        ]
 
     def delete_library(
         self,
@@ -978,6 +1164,7 @@ class ChannelLibraryStore:
             connection.execute(
                 "DELETE FROM channel_libraries WHERE id = ?", (library_id,)
             )
+        self._keyword_distribution_cache.pop(int(library_id), None)
         return library_dict
 
     @staticmethod
@@ -2869,6 +3056,46 @@ class ChannelLibraryStore:
                 "SELECT * FROM channel_scan_jobs WHERE id = ?", (job_id,)
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def get_latest_job(self, library_id: int) -> Optional[dict]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM channel_scan_jobs
+                WHERE library_id = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (int(library_id),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_scheduled_incremental_libraries(self) -> list[dict]:
+        """Return full-scanned libraries without recoverable scan work."""
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT library.*
+                FROM channel_libraries AS library
+                WHERE EXISTS (
+                    SELECT 1 FROM channel_scan_jobs AS finished
+                    WHERE finished.library_id = library.id
+                      AND finished.kind = 'full'
+                      AND finished.status IN ('completed', 'partial')
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM channel_scan_jobs AS active
+                    WHERE active.library_id = library.id
+                      AND active.status IN (
+                          'queued', 'running', 'paused_user',
+                          'auto_paused_download', 'waiting_rate_limit', 'stopped'
+                      )
+                )
+                ORDER BY library.id
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def request_job_control(
         self,

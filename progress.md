@@ -1757,3 +1757,35 @@ Changed files:
 Rollback:
 - Preferred code rollback: `git revert a519c0e`, push `master`, then run `git pull --ff-only origin master && systemctl restart tg-downloader.service` on RackNerd. Preserve both SQLite databases; schema-v6 tables are additive.
 - Release backup: `/root/telegram_media_downloader/backups/release-20260723-101058`. Stop the service before any database restore and use SQLite backup/copy only after retaining the current databases.
+
+## 2026-07-23 - Task: Add global incremental cron, channel statistics, and keyword form draft protection
+
+### What was done
+
+- Added one optional global five-field cron that checks every full-scanned channel for a new message tail and queues eligible incrementals through the existing serial scheduler.
+- Skipped scheduled checks for channels with recoverable scan work, avoided empty scan jobs when the latest message ID is unchanged, and kept missed or skipped ticks from accumulating.
+- Replaced the duplicate channel-scoped resource list in the Channels tab with available/downloaded/pending package totals, media/size/failure totals, and enabled monitor keyword distribution.
+- Protected unsaved keyword monitor drafts from the five-second group/history refresh so moving between form fields no longer clears a new group name.
+- Documented the global cron settings and added the maintained `croniter` dependency; automation remains disabled while `incremental_scan_cron` is empty.
+
+### Testing
+
+- `.venv/bin/python -m pytest tests/ -q` -> `514 passed, 1 skipped`.
+- `.venv/bin/python -m py_compile media_downloader.py module/channel_library_store.py module/channel_library_service.py module/web.py module/app.py` -> passed.
+- `.venv/bin/python check_imports.py` -> public downloader compatibility imports passed.
+- `.venv/bin/pip check` -> no broken requirements.
+- Black check for all changed Python implementation/test files, inline JavaScript parse, and `git diff --check` -> passed.
+- Chromium at 1440x1000 and 390x844 showed the channel statistics without page-level horizontal overflow or console errors.
+- Chromium keyword draft check entered a new group name and keywords, waited beyond the five-second polling interval, and confirmed every unsaved value remained unchanged.
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`, `module/channel_library_store.py`: global cron lifecycle, eligible-channel checks, no-op suppression, channel statistics, and cached keyword distribution.
+- `module/templates/index.html`, `module/static/css/index.css`, `module/web.py`: channel statistics workspace, aggregate-only package interaction, and keyword draft protection.
+- `requirements.txt`, `config.example.yaml`, `README.md`, `README_CN.md`, `docs/web-control-console.md`: cron dependency, configuration, behavior, and operations documentation.
+- `tests/module/test_app.py`, `tests/module/test_channel_library_store.py`, `tests/module/test_channel_library_service.py`, `tests/module/test_channel_library_web.py`: cron validation/lifecycle, scheduling conflicts, statistics, DOM, and draft regression coverage.
+
+Rollback:
+- Revert the commit containing this task and restart the downloader. No database schema or stored rows were added or migrated by this change.
+- Remove `channel_library.incremental_scan_cron` and `channel_library.incremental_scan_timezone` from runtime configuration, or leave the cron value empty, before rolling back the dependency if those settings were added later.

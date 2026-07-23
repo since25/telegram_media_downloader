@@ -662,7 +662,9 @@ def channel_libraries():
         _invalid_request()
     items = []
     for library in page.items:
-        overview = service.store.get_library_overview(int(library["id"]))
+        overview = service.store.get_library_overview(
+            int(library["id"]), include_keyword_distribution=False
+        )
         if overview is None:
             continue
         safe = _safe_overview(overview)

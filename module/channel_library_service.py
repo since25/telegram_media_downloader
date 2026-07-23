@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import datetime
 import logging
 import os
 import random
@@ -14,6 +15,8 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Callable, Optional, Sequence
 
+import pytz
+from croniter import croniter
 from pyrogram import errors
 
 from module.channel_library_store import ChannelLibraryConfig, ChannelLibraryStore
@@ -101,6 +104,7 @@ class ChannelLibraryService:
         self.gate = get_telegram_activity_gate()
         self.owner_loop: Optional[asyncio.AbstractEventLoop] = None
         self.scheduler_task: Optional[asyncio.Task[None]] = None
+        self.incremental_cron_task: Optional[asyncio.Task[None]] = None
         self._wake_event: Optional[asyncio.Event] = None
         self._stopping = False
         self._telegram_request_active = False
@@ -139,6 +143,11 @@ class ChannelLibraryService:
             self.scheduler_task = loop.create_task(
                 self._run_scheduler(), name="channel-library-scheduler"
             )
+            if self.config.incremental_scan_cron:
+                self.incremental_cron_task = loop.create_task(
+                    self._run_incremental_cron(),
+                    name="channel-library-incremental-cron",
+                )
             self.schedule_pending_download_batches()
             with self._command_lock:
                 self._accepting_commands = True
@@ -148,6 +157,8 @@ class ChannelLibraryService:
             owned_tasks = list(self._download_batch_tasks.values())
             if self.scheduler_task is not None:
                 owned_tasks.append(self.scheduler_task)
+            if self.incremental_cron_task is not None:
+                owned_tasks.append(self.incremental_cron_task)
             for task in owned_tasks:
                 if not task.done():
                     task.cancel()
@@ -185,7 +196,10 @@ class ChannelLibraryService:
                 return_exceptions=True,
             )
         task = self.scheduler_task
+        cron_task = self.incremental_cron_task
         try:
+            if cron_task is not None and not cron_task.done():
+                cron_task.cancel()
             if task is None:
                 return
             if not task.done():
@@ -203,6 +217,8 @@ class ChannelLibraryService:
             owned_tasks = list(self._download_batch_tasks.values()) + list(
                 self._upload_retry_tasks.values()
             )
+            if cron_task is not None:
+                owned_tasks.append(cron_task)
             for owned_task in owned_tasks:
                 if not owned_task.done():
                     owned_task.cancel()
@@ -211,6 +227,7 @@ class ChannelLibraryService:
             self._download_batch_tasks.clear()
             self._upload_retry_tasks.clear()
             self._retained_upload_reservations.clear()
+            self.incremental_cron_task = None
             if task is None or task.done():
                 self._release_store_ownership()
 
@@ -1018,6 +1035,28 @@ class ChannelLibraryService:
         except asyncio.TimeoutError:
             pass
 
+    async def _run_incremental_cron(self) -> None:
+        """Run the global incremental schedule without accumulating missed ticks."""
+
+        timezone = pytz.timezone(self.config.incremental_scan_timezone)
+        schedule = croniter(
+            self.config.incremental_scan_cron,
+            datetime.datetime.now(timezone),
+        )
+        while not self._stopping:
+            next_run = schedule.get_next(datetime.datetime)
+            delay = max(
+                0.0,
+                (next_run - datetime.datetime.now(timezone)).total_seconds(),
+            )
+            await asyncio.sleep(delay)
+            if self._stopping:
+                return
+            try:
+                await self.queue_scheduled_incrementals()
+            except Exception:  # pragma: no cover - keep future cron ticks alive
+                LOGGER.exception("Scheduled incremental scan sweep failed")
+
     async def resolve_and_create_library(self, link: str) -> SubmitLibraryResult:
         """Resolve a Telegram message link and queue a snapshotted full scan."""
 
@@ -1054,7 +1093,9 @@ class ChannelLibraryService:
             await self.wake()
         return SubmitLibraryResult(library=library, created=created, job=job)
 
-    async def queue_incremental(self, library_id: int) -> dict:
+    async def queue_incremental(
+        self, library_id: int, *, skip_if_unchanged: bool = False
+    ) -> Optional[dict]:
         """Snapshot and queue the new tail of a finished channel library."""
 
         self._require_owner_loop()
@@ -1073,6 +1114,8 @@ class ChannelLibraryService:
                     snapshot_max = int(message.id)
                     break
         start_message_id = int(library["fetched_through_message_id"]) + 1
+        if skip_if_unchanged and snapshot_max < start_message_id:
+            return None
         snapshot_max = max(snapshot_max, start_message_id - 1)
         job = self.store.create_scan_job(
             library_id,
@@ -1082,6 +1125,32 @@ class ChannelLibraryService:
         )
         await self.wake()
         return job
+
+    async def queue_scheduled_incrementals(self) -> list[dict]:
+        """Queue new tails for every eligible channel at one global cron tick."""
+
+        self._require_owner_loop()
+        queued = []
+        for library in self.store.list_scheduled_incremental_libraries():
+            try:
+                job = await self.queue_incremental(
+                    int(library["id"]), skip_if_unchanged=True
+                )
+            except (KeyError, ValueError):
+                LOGGER.info(
+                    "Scheduled incremental scan skipped changed library %s",
+                    library["id"],
+                )
+                continue
+            except Exception:  # noqa: BLE001 - isolate one channel from the sweep
+                LOGGER.exception(
+                    "Scheduled incremental scan check failed for library %s",
+                    library["id"],
+                )
+                continue
+            if job is not None:
+                queued.append(job)
+        return queued
 
     def queue_repair(
         self, library_id: int, failure_ids: Optional[Sequence[int]] = None

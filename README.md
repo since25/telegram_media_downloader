@@ -41,7 +41,14 @@ automatically repeated; they remain available for explicit manual download.
 
 The Resources tab searches and selects packages across all indexed channels. Channel
 identity remains attached to every package and can be used as an optional multi-channel
-filter.
+filter. The Channels tab shows per-channel package/download totals and the distribution
+of stable packages across enabled keyword monitor groups.
+
+Set `channel_library.incremental_scan_cron` to one global five-field cron expression
+and `channel_library.incremental_scan_timezone` to an IANA timezone to check every
+full-scanned channel for new messages. Empty cron disables automation. A scheduled tick
+does not create an empty job when the latest message ID is unchanged, and skips any
+channel that already has recoverable scan work.
 
 ### UI
 

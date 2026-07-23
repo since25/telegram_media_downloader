@@ -7,6 +7,7 @@ import pytest
 from module.channel_library_store import (
     ALLOWED_SCAN_TRANSITIONS,
     SCHEMA_VERSION,
+    ChannelLibraryConfig,
     ChannelLibraryStore,
 )
 
@@ -125,6 +126,19 @@ def test_store_initializes_secure_wal_schema(tmp_path):
             )
         }
     assert REQUIRED_TABLES <= tables
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"incremental_scan_cron": "* * * * * *"},
+        {"incremental_scan_cron": "not a cron"},
+        {"incremental_scan_timezone": "Invalid/Timezone"},
+    ],
+)
+def test_channel_library_config_rejects_invalid_cron_settings(raw):
+    with pytest.raises(ValueError):
+        ChannelLibraryConfig.from_mapping(raw)
 
 
 def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):

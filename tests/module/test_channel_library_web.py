@@ -447,6 +447,52 @@ def test_library_list_and_detail_include_scan_counts_and_safe_errors(web_env):
     assert "token-secret-sentinel" not in detail.get_data(as_text=True)
 
 
+def test_library_detail_includes_download_and_monitor_keyword_statistics(web_env):
+    env = web_env
+    library, _job = create_library(env)
+    python_id = insert_package(
+        env.store, library["id"], 10, title="Course Python Basics"
+    )
+    rust_id = insert_package(env.store, library["id"], 20, title="Course Rust Advanced")
+    insert_package(env.store, library["id"], 30, title="Course Python Draft")
+    env.store.save_keyword_monitor_group(
+        "Programming",
+        required_keywords=["Course"],
+        match_keywords=["Python", "Rust"],
+        blacklist_keywords=["Draft"],
+    )
+    with env.store.connect() as connection:
+        connection.execute(
+            """
+            UPDATE channel_packages
+            SET current_download_status = 'completed',
+                has_successful_attempt = 1
+            WHERE id = ?
+            """,
+            (python_id,),
+        )
+
+    body = env.client.get(f"/api/channel-libraries/{library['id']}").get_json()
+    listing = env.client.get("/api/channel-libraries").get_json()
+
+    assert body["counts"]["available_package_count"] == 3
+    assert body["counts"]["downloaded_package_count"] == 1
+    assert body["counts"]["pending_download_package_count"] == 2
+    assert body["keyword_distribution"] == [
+        {
+            "group_id": 1,
+            "group_name": "Programming",
+            "package_count": 2,
+            "keywords": [
+                {"keyword": "Python", "package_count": 1},
+                {"keyword": "Rust", "package_count": 1},
+            ],
+        }
+    ]
+    assert rust_id > python_id
+    assert "keyword_distribution" not in listing["items"][0]
+
+
 def test_library_list_strictly_validates_keyset_page_inputs(web_env):
     env = web_env
 
@@ -1486,12 +1532,11 @@ def test_channel_library_tab_has_one_complete_spa_dom_contract():
         "channel_library_workspace",
         "channel_library_status",
         "channel_library_scan_controls",
-        "channel_library_filters",
         "channel_library_notice",
-        "channel_library_selection",
-        "channel_download_reason",
-        "channel_library_packages",
-        "channel_library_load_more",
+        "channel_library_stats",
+        "channel_stat_available",
+        "channel_stat_downloaded",
+        "channel_keyword_distribution",
         "channel_library_delete",
     }
 
@@ -1507,6 +1552,8 @@ def test_channel_library_tab_has_one_complete_spa_dom_contract():
     assert "next.focus(); next.click();" in html
     for element_id in required_ids:
         assert len(re.findall(rf'id="{re.escape(element_id)}"', html)) == 1
+    assert 'id="channel_library_packages"' not in html
+    assert 'id="channel_library_filters"' not in html
 
 
 def test_aggregate_package_and_keyword_monitor_tabs_have_complete_dom_contracts():
@@ -1546,22 +1593,19 @@ def test_channel_library_script_has_security_state_and_polling_contracts():
     assert "else if (tab==='channel-library')" in html
     assert "escapeHtml(library.title" in html
     assert "escapeHtml(pkg.title" in html
-    assert "escapeHtml(item.file_name" in html
     assert "escapeHtml(message)" in html
 
 
-def test_channel_library_controls_resume_stopped_scans_and_offer_redownload():
+def test_channel_library_controls_resume_stopped_scans():
     html = INDEX_TEMPLATE.read_text(encoding="utf-8")
 
     assert "scan.status === 'paused_user' || scan.status === 'stopped'" in html
-    assert "error.code === 'redownload_required' && !redownload" in html
-    assert "return submitChannelDownload(true,libraryId,generation)" in html
 
 
 def test_channel_library_script_guards_async_identity_and_all_keyset_pages():
     html = INDEX_TEMPLATE.read_text(encoding="utf-8")
     detail_source = html.split("async function loadChannelDetail", 1)[1].split(
-        "function readChannelFilters", 1
+        "async function selectChannelLibrary", 1
     )[0]
 
     assert "generation:0" in html
@@ -1573,24 +1617,17 @@ def test_channel_library_script_guards_async_identity_and_all_keyset_pages():
     assert "pagesFetched < targetPages || !selectedFound()" in html
     assert "progress_total_id_count" in html
     assert "CHANNEL_SCAN_KIND" in html
-    assert "page.loading" in html
-    assert (
-        html.count(
-            "state.channel.expandedItems = {};\n          return loadChannelPackages({append:false});"
-        )
-        >= 2
-    )
     assert "catch (error)" in detail_source
     assert "throw error" in detail_source
 
 
-def test_channel_library_download_gate_exposes_accessible_disabled_reason():
+def test_keyword_monitor_form_preserves_unsaved_draft_during_polling():
     html = INDEX_TEMPLATE.read_text(encoding="utf-8")
 
-    assert 'aria-describedby="channel_download_reason"' in html
-    assert "首次全量扫描完成后可下载" in html
-    assert "请先选择稳定包" in html
-    assert "选择已失效" in html
+    assert "draftDirty:false" in html
+    assert "state.keywordMonitor.draftDirty" in html
+    assert "captureKeywordDraft()" in html
+    assert "if (selected&&!state.keywordMonitor.draftDirty)" in html
 
 
 @pytest.mark.parametrize(

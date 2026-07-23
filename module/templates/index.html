@@ -269,97 +269,48 @@
                     <span id="channel_library_status"></span>
                   </div>
                   <div class="channel-library-meta nums" id="channel_library_meta">—</div>
-                  <div class="channel-library-rate">首次全量 50 条/批，批次间隔 4–6 秒；有下载时自动让行</div>
+                  <div class="channel-library-rate">首次全量 50 条/批；自动增量按全局 cron 检查，无新消息不建任务</div>
                 </div>
                 <div class="channel-library-controls" id="channel_library_scan_controls"></div>
               </header>
 
-              <form class="channel-library-filters" id="channel_library_filters" hidden>
-                <div class="field channel-library-filter-wide">
-                  <label for="channel_filter_q">标题</label>
-                  <input class="input" id="channel_filter_q" name="q" autocomplete="off">
-                </div>
-                <div class="field">
-                  <label for="channel_filter_date_from">发布时间起</label>
-                  <input class="input nums" id="channel_filter_date_from" name="date_from" type="datetime-local">
-                </div>
-                <div class="field">
-                  <label for="channel_filter_date_to">发布时间止</label>
-                  <input class="input nums" id="channel_filter_date_to" name="date_to" type="datetime-local">
-                </div>
-                <div class="field">
-                  <label for="channel_filter_message_min">消息 ID 起</label>
-                  <input class="input nums" id="channel_filter_message_min" name="message_id_min" type="number" min="0">
-                </div>
-                <div class="field">
-                  <label for="channel_filter_message_max">消息 ID 止</label>
-                  <input class="input nums" id="channel_filter_message_max" name="message_id_max" type="number" min="0">
-                </div>
-                <div class="field">
-                  <label for="channel_filter_media_min">媒体数起</label>
-                  <input class="input nums" id="channel_filter_media_min" name="media_count_min" type="number" min="0">
-                </div>
-                <div class="field">
-                  <label for="channel_filter_media_max">媒体数止</label>
-                  <input class="input nums" id="channel_filter_media_max" name="media_count_max" type="number" min="0">
-                </div>
-                <div class="field">
-                  <label for="channel_filter_size_min">已知大小起（MiB）</label>
-                  <input class="input nums" id="channel_filter_size_min" name="size_min" type="number" min="0" step="0.1">
-                </div>
-                <div class="field">
-                  <label for="channel_filter_size_max">已知大小止（MiB）</label>
-                  <input class="input nums" id="channel_filter_size_max" name="size_max" type="number" min="0" step="0.1">
-                </div>
-                <div class="field">
-                  <label for="channel_filter_download_status">下载状态</label>
-                  <select class="input" id="channel_filter_download_status" name="download_status">
-                    <option value="">全部</option>
-                    <option value="never">未下载</option>
-                    <option value="queued">排队中</option>
-                    <option value="downloading">下载中</option>
-                    <option value="completed">已完成</option>
-                    <option value="outdated">内容已更新</option>
-                    <option value="failed">失败</option>
-                    <option value="cancelled">已取消</option>
-                  </select>
-                </div>
-                <label class="channel-library-check">
-                  <input id="channel_filter_unknown_size" name="include_unknown_size" type="checkbox">
-                  <span>包含大小未知的包</span>
-                </label>
-                <div class="channel-library-filter-actions">
-                  <button type="submit" class="btn btn-secondary">筛选</button>
-                  <button type="button" class="btn btn-ghost" id="channel_filter_clear">清除</button>
-                </div>
-              </form>
-
               <div class="channel-library-notice" id="channel_library_notice" hidden></div>
 
-              <div class="channel-library-selection" id="channel_library_selection" hidden>
-                <span class="nums" id="channel_selection_text">已选 0 包 · 0 个媒体 · 0 B</span>
-                <div class="channel-library-selection-actions">
-                  <button type="button" class="btn btn-secondary" id="channel_select_filtered">全选筛选结果</button>
-                  <button type="button" class="btn btn-ghost" id="channel_clear_selection">清空选择</button>
-                  <div class="channel-download-action">
-                    <span class="channel-download-reason" id="channel_download_reason">首次全量扫描完成后可下载</span>
-                    <button type="button" class="btn btn-primary" id="channel_download_selection" aria-describedby="channel_download_reason" disabled>下载所选</button>
+              <section class="channel-library-stats" id="channel_library_stats" aria-label="频道统计">
+                <div class="channel-stat-grid">
+                  <div class="channel-stat">
+                    <span>可用资源包</span>
+                    <strong class="nums" id="channel_stat_available">0</strong>
+                  </div>
+                  <div class="channel-stat">
+                    <span>已下载</span>
+                    <strong class="nums" id="channel_stat_downloaded">0</strong>
+                  </div>
+                  <div class="channel-stat">
+                    <span>待下载</span>
+                    <strong class="nums" id="channel_stat_pending">0</strong>
+                  </div>
+                  <div class="channel-stat">
+                    <span>媒体总量</span>
+                    <strong class="nums" id="channel_stat_media">0</strong>
+                  </div>
+                  <div class="channel-stat">
+                    <span>已知体积</span>
+                    <strong class="nums" id="channel_stat_size">0 B</strong>
+                  </div>
+                  <div class="channel-stat">
+                    <span>待修复区间</span>
+                    <strong class="nums" id="channel_stat_failures">0</strong>
                   </div>
                 </div>
-              </div>
-
-              <div class="table-scroll channel-library-table-scroll" hidden>
-                <table class="table channel-library-package-grid">
-                  <thead><tr>
-                    <th></th><th>选择</th><th>包 / 起始 ID</th><th>消息范围</th><th>标题</th><th>发布时间</th><th>媒体</th><th>大小</th><th>边界</th><th>下载</th>
-                  </tr></thead>
-                  <tbody id="channel_library_packages"></tbody>
-                </table>
-              </div>
-              <div class="channel-library-table-footer" hidden>
-                <span class="text-muted" id="channel_package_count">0 个包</span>
-                <button type="button" class="btn btn-secondary" id="channel_library_load_more" hidden>加载更多</button>
-              </div>
+                <div class="channel-keyword-section">
+                  <header>
+                    <strong>监控关键词分布</strong>
+                    <span class="text-muted">按当前启用的监控组统计稳定资源包</span>
+                  </header>
+                  <div id="channel_keyword_distribution" class="channel-keyword-distribution"></div>
+                </div>
+              </section>
               <div class="channel-library-delete-row">
                 <button type="button" class="btn btn-ghost" id="channel_library_delete">删除频道库</button>
               </div>
@@ -612,10 +563,10 @@
       prescanRows:{}, prescanSelected:new Set(), sys:null, timers:{}, channel:{
         csrfToken:null, csrfPromise:null, libraries:[], selectedLibraryId:null,
         libraryNextCursor:null, libraryPagesLoaded:0, generation:0,
-        detail:null, packages:[], nextCursor:null, packageRevision:null,
-        packageLoadingGeneration:null, expandedItems:{}, selection:null, polling:false,
+        detail:null, polling:false,
       }, aggregate:{items:[],nextCursor:null,expandedItems:{},selection:null,loading:false},
-      keywordMonitor:{groups:[],selectedGroupId:null,history:[],historyNextCursor:null} };
+      keywordMonitor:{groups:[],selectedGroupId:null,history:[],historyNextCursor:null,
+        draftDirty:false,draft:null} };
     let taskFilter = 'all';
 
     const ICONS = {
@@ -1005,8 +956,6 @@
         state.channel.generation += 1;
         state.channel.selectedLibraryId = null;
         state.channel.detail = null;
-        state.channel.packages = [];
-        state.channel.selection = null;
       }
       if (state.channel.selectedLibraryId === null && state.channel.libraries.length){
         await selectChannelLibrary(Number(state.channel.libraries[0].id));
@@ -1055,19 +1004,34 @@
       const library = detail.library;
       const scan = detail.scan;
       const counts = detail.counts || {};
+      const distribution = detail.keyword_distribution || [];
       $('#channel_library_workspace_empty').hidden = true;
       $('#channel_library_content').hidden = false;
       $('#channel_library_title').innerHTML = escapeHtml(library.title || '未命名频道');
       $('#channel_library_status').innerHTML = channelStatusTag(channelDetailStatus(detail));
       $('#channel_library_meta').textContent = `${Number(counts.package_count)||0} 包 · ${Number(counts.media_count)||0} 媒体 · ${channelScanProgress(scan)} · 索引版本 ${Number(library.index_revision)||0}`;
+      $('#channel_stat_available').textContent = Number(counts.available_package_count)||0;
+      $('#channel_stat_downloaded').textContent = Number(counts.downloaded_package_count)||0;
+      $('#channel_stat_pending').textContent = Number(counts.pending_download_package_count)||0;
+      $('#channel_stat_media').textContent = Number(counts.media_count)||0;
+      $('#channel_stat_size').textContent = formatChannelBytes(
+        counts.known_total_size,
+        Number(counts.unknown_size_package_count)===0
+      );
+      $('#channel_stat_failures').textContent = Number(counts.open_failure_count)||0;
+      $('#channel_keyword_distribution').innerHTML = distribution.length
+        ? distribution.map(group=>`<section class="channel-keyword-group">
+            <header><strong>${escapeHtml(group.group_name)}</strong><span class="nums">${Number(group.package_count)||0} 包</span></header>
+            <div>${(group.keywords||[]).map(item=>`<span class="channel-keyword"><span>${escapeHtml(item.keyword)}</span><b class="nums">${Number(item.package_count)||0}</b></span>`).join('')}</div>
+          </section>`).join('')
+        : '<div class="channel-keyword-empty">当前频道暂无匹配的启用监控关键词</div>';
       renderChannelScanControls(detail);
       $('#channel_library_delete').disabled = Boolean(scan && CHANNEL_ACTIVE_SCAN.has(scan.status));
     }
-    async function loadChannelDetail({refreshPackages=true}={}){
+    async function loadChannelDetail(){
       if (!state.channel.selectedLibraryId) return;
       const libraryId = state.channel.selectedLibraryId;
       const generation = state.channel.generation;
-      const previousRevision = state.channel.detail ? Number(state.channel.detail.library.index_revision) : null;
       let detail;
       try { detail = await channelRequest(`/api/channel-libraries/${libraryId}`); }
       catch (error){
@@ -1077,200 +1041,16 @@
       if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
       state.channel.detail = detail;
       renderChannelDetail();
-      const nextRevision = Number(detail.library.index_revision);
-      if (refreshPackages && state.channel.packageRevision !== null && previousRevision !== null && nextRevision !== state.channel.packageRevision){
-        showChannelNotice('频道索引已更新，结果已从第一页重新载入');
-        state.channel.expandedItems = {};
-        await loadChannelPackages({append:false});
-        await loadChannelSelection();
-      }
     }
 
-    function readChannelFilters(){
-      const value = id => $(id).value.trim();
-      const number = id => value(id) === '' ? null : Number(value(id));
-      const filters = {};
-      const q = value('#channel_filter_q');
-      if (q) filters.q = q;
-      for (const [id,key] of [['#channel_filter_date_from','date_from'],['#channel_filter_date_to','date_to']]){
-        const raw = value(id);
-        if (raw) filters[key] = new Date(raw).toISOString();
-      }
-      for (const [id,key] of [
-        ['#channel_filter_message_min','message_id_min'],['#channel_filter_message_max','message_id_max'],
-        ['#channel_filter_media_min','media_count_min'],['#channel_filter_media_max','media_count_max']
-      ]){
-        const parsed = number(id); if (parsed !== null) filters[key] = parsed;
-      }
-      for (const [id,key] of [['#channel_filter_size_min','size_min'],['#channel_filter_size_max','size_max']]){
-        const parsed = number(id); if (parsed !== null) filters[key] = Math.round(parsed * 1048576);
-      }
-      const downloadStatus = value('#channel_filter_download_status');
-      if (downloadStatus) filters.download_status = downloadStatus;
-      if ($('#channel_filter_unknown_size').checked) filters.include_unknown_size = true;
-      return filters;
-    }
-    function channelFilterQuery(filters){
-      const params = new URLSearchParams({page_size:'50'});
-      Object.entries(filters).forEach(([key,value]) => params.set(key, String(value)));
-      return params;
-    }
-    async function loadChannelPackages({append=false}={}){
-      if (!state.channel.selectedLibraryId) return;
-      const libraryId = state.channel.selectedLibraryId;
-      const generation = state.channel.generation;
-      if (state.channel.packageLoadingGeneration === generation) return;
-      state.channel.packageLoadingGeneration = generation;
-      try {
-        const filters = readChannelFilters();
-        let params = channelFilterQuery(filters);
-        if (append && state.channel.nextCursor) params.set('cursor', state.channel.nextCursor);
-        let data = await channelRequest(`/api/channel-libraries/${libraryId}/packages?${params}`);
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        if (append && state.channel.packageRevision !== null && Number(data.library_revision) !== state.channel.packageRevision){
-          showChannelNotice('筛选结果在翻页期间已更新，已回到第一页');
-          params = channelFilterQuery(filters);
-          data = await channelRequest(`/api/channel-libraries/${libraryId}/packages?${params}`);
-          if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-          append = false;
-          state.channel.expandedItems = {};
-        }
-        const combined = append ? [...state.channel.packages, ...(data.items||[])] : (data.items||[]);
-        state.channel.packages = [...new Map(combined.map(item=>[Number(item.id),item])).values()];
-        state.channel.nextCursor = data.next_cursor || null;
-        state.channel.packageRevision = Number(data.library_revision);
-        renderChannelPackages();
-      } catch (error){
-        if (generation === state.channel.generation && libraryId === state.channel.selectedLibraryId) showChannelNotice(error.message, 'error');
-      } finally {
-        if (state.channel.packageLoadingGeneration === generation) state.channel.packageLoadingGeneration = null;
-      }
-    }
-
-    function renderChannelItemRows(packageId){
-      const page = state.channel.expandedItems[packageId];
-      if (!page) return '';
-      const rows = page.items.length ? page.items.map(item => `<tr>
-        <td class="nums">${Number(item.message_id)}</td>
-        <td>${escapeHtml(item.media_type || '—')}</td>
-        <td>${escapeHtml(item.file_name || '—')}</td>
-        <td class="nums">${formatChannelBytes(item.file_size, true)}</td>
-        <td>${escapeHtml(item.caption || '')}</td>
-      </tr>`).join('') : '<tr><td colspan="5" class="text-muted">此包暂无媒体明细</td></tr>';
-      const more = page.nextCursor ? `<button type="button" class="btn btn-secondary" data-channel-item-more="${Number(packageId)}">加载更多明细</button>` : '';
-      return `<tr class="channel-library-item-row"><td colspan="10"><table class="channel-library-item-list">
-        <tbody>${rows}</tbody></table>${more}</td></tr>`;
-    }
-    function renderChannelPackages(){
-      const tbody = $('#channel_library_packages');
-      if (!state.channel.packages.length){
-        tbody.innerHTML = '<tr><td colspan="10" class="text-muted" style="padding:32px;text-align:center">当前筛选没有包</td></tr>';
-      } else {
-        tbody.innerHTML = state.channel.packages.map(pkg => {
-          const packageId = Number(pkg.id);
-          const expanded = Boolean(state.channel.expandedItems[packageId]);
-          return `<tr data-channel-package="${packageId}">
-            <td><button type="button" class="channel-library-expand" data-channel-expand="${packageId}" aria-expanded="${expanded?'true':'false'}" title="展开媒体明细">${icon('chevron',14)}</button></td>
-            <td><input type="checkbox" data-channel-select="${packageId}" ${pkg.selected?'checked':''} ${pkg.selectable?'':'disabled'} aria-label="选择包 ${packageId}"></td>
-            <td class="nums">#${packageId}<br><span class="text-muted">${Number(pkg.start_message_id)}</span></td>
-            <td class="nums">${Number(pkg.start_message_id)}–${Number(pkg.end_message_id)}</td>
-            <td class="channel-library-package-title" title="${escapeHtml(pkg.title || '')}">${escapeHtml(pkg.title || '未命名包')}</td>
-            <td>${formatChannelTime(pkg.published_at)}</td>
-            <td class="nums">${Number(pkg.media_count)||0}</td>
-            <td class="nums">${formatChannelBytes(pkg.known_total_size, Boolean(pkg.size_is_exact))}</td>
-            <td>${channelStatusTag(pkg.boundary_status, CHANNEL_BOUNDARY_STATUS)}</td>
-            <td>${channelStatusTag(pkg.current_download_status, CHANNEL_DOWNLOAD_STATUS)}</td>
-          </tr>${renderChannelItemRows(packageId)}`;
-        }).join('');
-      }
-      $('#channel_package_count').textContent = `已加载 ${state.channel.packages.length} 个包`;
-      $('#channel_library_load_more').hidden = !state.channel.nextCursor;
-      updateChannelDownloadButton();
-    }
-    async function toggleChannelItems(packageId){
-      if (state.channel.expandedItems[packageId]){
-        delete state.channel.expandedItems[packageId];
-        renderChannelPackages();
-        return;
-      }
-      const libraryId = state.channel.selectedLibraryId;
-      const generation = state.channel.generation;
-      try {
-        const data = await channelRequest(`/api/channel-libraries/${libraryId}/packages/${packageId}/items?page_size=50`);
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        if (state.channel.packageRevision !== null && Number(data.library_revision) !== state.channel.packageRevision){
-          showChannelNotice('包明细版本已变化，已重新载入列表');
-          state.channel.expandedItems = {};
-          return loadChannelPackages({append:false});
-        }
-        state.channel.expandedItems[packageId] = {items:data.items||[], nextCursor:data.next_cursor||null, loading:false};
-        renderChannelPackages();
-      } catch (error){ if (generation === state.channel.generation && libraryId === state.channel.selectedLibraryId) showChannelNotice(error.message, 'error'); }
-    }
-    async function loadMoreChannelItems(packageId){
-      const page = state.channel.expandedItems[packageId];
-      if (!page || !page.nextCursor || page.loading) return;
-      const libraryId = state.channel.selectedLibraryId;
-      const generation = state.channel.generation;
-      page.loading = true;
-      try {
-        const params = new URLSearchParams({page_size:'50', cursor:page.nextCursor});
-        const data = await channelRequest(`/api/channel-libraries/${libraryId}/packages/${packageId}/items?${params}`);
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId || state.channel.expandedItems[packageId] !== page) return;
-        if (Number(data.library_revision) !== state.channel.packageRevision){
-          showChannelNotice('包明细版本已变化，已重新载入列表');
-          state.channel.expandedItems = {};
-          return loadChannelPackages({append:false});
-        }
-        page.items.push(...(data.items||[]));
-        page.nextCursor = data.next_cursor || null;
-        renderChannelPackages();
-      } catch (error){ if (generation === state.channel.generation && libraryId === state.channel.selectedLibraryId) showChannelNotice(error.message, 'error'); }
-      finally { if (state.channel.expandedItems[packageId] === page) page.loading = false; }
-    }
-
-    function updateChannelDownloadButton(){
-      const selection = state.channel.selection;
-      const library = state.channel.detail && state.channel.detail.library;
-      const terminal = library && (library.status === 'ready' || library.status === 'partial');
-      const button = $('#channel_download_selection');
-      const reason = $('#channel_download_reason');
-      let message = '';
-      if (!terminal) message = '首次全量扫描完成后可下载';
-      else if (!selection) message = '正在读取服务端选择';
-      else if (selection.invalidated_count && selection.selected_count <= 0) message = '选择已失效，请重新选择稳定包';
-      else if (selection.selected_count <= 0) message = '请先选择稳定包';
-      button.disabled = Boolean(message);
-      reason.textContent = message;
-      reason.hidden = !message;
-    }
-    async function loadChannelSelection(){
-      if (!state.channel.selectedLibraryId) return;
-      const libraryId = state.channel.selectedLibraryId;
-      const generation = state.channel.generation;
-      try {
-        const summary = await channelRequest(`/api/channel-libraries/${libraryId}/selection`);
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        state.channel.selection = summary;
-        $('#channel_selection_text').textContent = `已选 ${Number(summary.selected_count)||0} 包 · ${Number(summary.media_count)||0} 个媒体 · ${formatChannelBytes(summary.known_total_size, Boolean(summary.size_is_exact))}`;
-        if (summary.invalidated_count) showChannelNotice(`${summary.invalidated_count} 个旧选择因包版本变化已失效`);
-        updateChannelDownloadButton();
-      } catch (error){ if (generation === state.channel.generation && libraryId === state.channel.selectedLibraryId) showChannelNotice(error.message, 'error'); }
-    }
     async function selectChannelLibrary(libraryId){
       state.channel.generation += 1;
       state.channel.selectedLibraryId = Number(libraryId);
       state.channel.detail = null;
-      state.channel.packages = [];
-      state.channel.nextCursor = null;
-      state.channel.packageRevision = null;
-      state.channel.expandedItems = {};
-      state.channel.selection = null;
-      state.channel.packageLoadingGeneration = null;
       renderChannelLibraries();
       showChannelNotice('');
       try {
-        await loadChannelDetail({refreshPackages:false});
+        await loadChannelDetail();
       } catch (error){ showChannelNotice(error.message, 'error'); }
     }
     async function pollChannelLibraries(){
@@ -1279,7 +1059,7 @@
       state.channel.polling = true;
       try {
         await loadChannelLibraries();
-        if (state.channel.selectedLibraryId) await loadChannelDetail({refreshPackages:false});
+        if (state.channel.selectedLibraryId) await loadChannelDetail();
       } catch (error){ showChannelNotice(error.message, 'error'); }
       finally { state.channel.polling = false; }
     }
@@ -1311,91 +1091,6 @@
     $('#channel_library_more').addEventListener('click', async () => {
       try { await loadChannelLibraries({append:true}); }
       catch (error){ showChannelNotice(error.message, 'error'); }
-    });
-    $('#channel_library_filters').addEventListener('submit', e => {
-      e.preventDefault(); state.channel.expandedItems = {}; loadChannelPackages({append:false});
-    });
-    $('#channel_filter_clear').addEventListener('click', () => {
-      $('#channel_library_filters').reset(); state.channel.expandedItems = {}; showChannelNotice(''); loadChannelPackages({append:false});
-    });
-    $('#channel_library_load_more').addEventListener('click', () => loadChannelPackages({append:true}));
-    $('#channel_library_packages').addEventListener('click', e => {
-      const expand = e.target.closest('[data-channel-expand]');
-      if (expand) toggleChannelItems(Number(expand.dataset.channelExpand));
-      const more = e.target.closest('[data-channel-item-more]');
-      if (more) loadMoreChannelItems(Number(more.dataset.channelItemMore));
-    });
-    $('#channel_library_packages').addEventListener('change', async e => {
-      const checkbox = e.target.closest('[data-channel-select]');
-      if (!checkbox) return;
-      const libraryId = state.channel.selectedLibraryId;
-      const generation = state.channel.generation;
-      checkbox.disabled = true;
-      try {
-        await channelApiWrite('PUT',`/api/channel-libraries/${libraryId}/selection/packages/${checkbox.dataset.channelSelect}`,{selected:checkbox.checked});
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        const pkg = state.channel.packages.find(item => Number(item.id) === Number(checkbox.dataset.channelSelect));
-        if (pkg) pkg.selected = checkbox.checked;
-        await loadChannelSelection();
-      } catch (error){
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        checkbox.checked = !checkbox.checked; showChannelNotice(error.message, 'error');
-      }
-      finally { checkbox.disabled = false; }
-    });
-    $('#channel_select_filtered').addEventListener('click', async () => {
-      if (!confirm('将选择全部筛选结果中的稳定包，可能包含大量数据。是否继续？')) return;
-      const libraryId = state.channel.selectedLibraryId;
-      const generation = state.channel.generation;
-      try {
-        const result = await channelApiWrite('POST',`/api/channel-libraries/${libraryId}/selection/select-filtered`,readChannelFilters());
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        showChannelNotice(`已选择 ${Number(result.selected_count)||0} 个包，跳过 ${Number(result.skipped_count)||0} 个不稳定包`);
-        await Promise.all([loadChannelPackages({append:false}), loadChannelSelection()]);
-      } catch (error){
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        showChannelNotice(error.message, 'error');
-      }
-    });
-    $('#channel_clear_selection').addEventListener('click', async () => {
-      const libraryId = state.channel.selectedLibraryId;
-      const generation = state.channel.generation;
-      try {
-        await channelApiWrite('POST',`/api/channel-libraries/${libraryId}/selection/clear`);
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        await Promise.all([loadChannelPackages({append:false}), loadChannelSelection()]);
-      } catch (error){
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        showChannelNotice(error.message, 'error');
-      }
-    });
-    async function submitChannelDownload(redownload=false, libraryId=state.channel.selectedLibraryId, generation=state.channel.generation){
-      const key = (globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID() : `channel-${Date.now()}-${Math.random()}`;
-      try {
-        const result = await channelApiWrite('POST',`/api/channel-libraries/${libraryId}/download-batches`,{redownload},{'Idempotency-Key':key});
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        showChannelNotice(result.created ? '下载批次已创建' : '相同下载请求已存在');
-        await Promise.all([loadChannelPackages({append:false}), loadChannelSelection()]);
-      } catch (error){
-        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-        if (error.code === 'redownload_required' && !redownload && confirm('所选内容包含已成功下载的版本。确认重新下载全部所选包？')) return submitChannelDownload(true,libraryId,generation);
-        showChannelNotice(error.message, 'error');
-      }
-    }
-    $('#channel_download_selection').addEventListener('click', async () => {
-      const libraryId = state.channel.selectedLibraryId;
-      const generation = state.channel.generation;
-      state.channel.selection = null;                     // 丢弃缓存，强制以本次刷新结果为准
-      await loadChannelSelection();                       // 拉取权威摘要
-      if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
-      if (!state.channel.selection) { showChannelNotice('无法读取服务端选择，请重试', 'error'); return; }
-      const sel = state.channel.selection;
-      const n = Number(sel.selected_count) || 0;
-      const m = Number(sel.media_count) || 0;
-      if (n <= 0) { showChannelNotice('请先选择稳定包', 'error'); return; }
-      if (!confirm(`即将下载 ${n} 个包 · ${m} 个文件（可能包含当前筛选下未显示的已选包）。确认下载？`)) return;
-      // redownload 判定改用服务端信号：有失效/需重下由后端 409 redownload_required 驱动
-      await submitChannelDownload(false);
     });
     $('#channel_library_scan_controls').addEventListener('click', async e => {
       const button = e.target.closest('[data-channel-action]');
@@ -1432,7 +1127,6 @@
         if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
         state.channel.selectedLibraryId = null;
         state.channel.detail = null;
-        state.channel.packages = [];
         state.channel.libraries = state.channel.libraries.filter(item=>Number(item.id)!==libraryId);
         state.channel.libraryNextCursor = null;
         state.channel.libraryPagesLoaded = 0;
@@ -1650,6 +1344,16 @@
       control.classList.toggle('on',enabled); control.classList.toggle('off',!enabled);
       control.dataset.on = enabled ? '1' : '0';
     }
+    function captureKeywordDraft(){
+      state.keywordMonitor.draft = {
+        name:$('#keyword_group_name').value,
+        enabled:$('#keyword_group_enabled').dataset.on==='1',
+        required:$('#keyword_required').value,
+        match:$('#keyword_match').value,
+        blacklist:$('#keyword_blacklist').value,
+      };
+      state.keywordMonitor.draftDirty = true;
+    }
     function renderKeywordGroups(){
       $('#keyword_group_empty').hidden = state.keywordMonitor.groups.length>0;
       $('#keyword_group_rows').innerHTML = state.keywordMonitor.groups.map(group=>`
@@ -1668,6 +1372,8 @@
       setKeywordEnabled(group ? Boolean(group.enabled) : true);
       $('#keyword_group_delete').hidden = !group;
       $('#keyword_group_notice').textContent = '';
+      state.keywordMonitor.draft = null;
+      state.keywordMonitor.draftDirty = false;
     }
     async function loadKeywordHistory({append=false}={}){
       const groupId = state.keywordMonitor.selectedGroupId;
@@ -1705,21 +1411,26 @@
       const data = await channelRequest('/api/keyword-monitor-groups');
       state.keywordMonitor.groups=data.items||[]; renderKeywordGroups();
       const selected = state.keywordMonitor.groups.find(item=>Number(item.id)===state.keywordMonitor.selectedGroupId);
-      if (selected){ fillKeywordGroup(selected); }
-      else if (selectFirst&&state.keywordMonitor.groups.length){ await selectKeywordGroup(Number(state.keywordMonitor.groups[0].id)); }
-      else if (!state.keywordMonitor.groups.length){ state.keywordMonitor.selectedGroupId=null; fillKeywordGroup(null); renderKeywordHistory(); }
+      if (selected&&!state.keywordMonitor.draftDirty){ fillKeywordGroup(selected); }
+      else if (selectFirst&&!state.keywordMonitor.draftDirty&&state.keywordMonitor.groups.length){ await selectKeywordGroup(Number(state.keywordMonitor.groups[0].id)); }
+      else if (!state.keywordMonitor.groups.length&&!state.keywordMonitor.draftDirty){ state.keywordMonitor.selectedGroupId=null; fillKeywordGroup(null); renderKeywordHistory(); }
     }
     async function activateKeywordMonitor(){
       try { await ensureChannelCsrf(); await loadKeywordGroups(); }
       catch (error){ $('#keyword_group_notice').textContent=error.message; }
     }
-    $('#keyword_group_enabled').addEventListener('click',()=>setKeywordEnabled($('#keyword_group_enabled').dataset.on!=='1'));
+    $('#keyword_group_enabled').addEventListener('click',()=>{
+      setKeywordEnabled($('#keyword_group_enabled').dataset.on!=='1');
+      captureKeywordDraft();
+    });
+    $('#keyword_group_form').addEventListener('input',captureKeywordDraft);
     $('#keyword_group_rows').addEventListener('click',e=>{
       const row=e.target.closest('[data-keyword-group]'); if (row) selectKeywordGroup(Number(row.dataset.keywordGroup));
     });
     $('#keyword_group_new').addEventListener('click',()=>{
       state.keywordMonitor.selectedGroupId=null; state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null;
-      renderKeywordGroups(); fillKeywordGroup(null); renderKeywordHistory(); $('#keyword_group_name').focus();
+      renderKeywordGroups(); fillKeywordGroup(null); state.keywordMonitor.draftDirty=true;
+      renderKeywordHistory(); $('#keyword_group_name').focus();
     });
     $('#keyword_group_form').addEventListener('submit',async e=>{
       e.preventDefault();
@@ -1733,6 +1444,7 @@
       try {
         const result = await channelApiWrite(groupId?'PUT':'POST',groupId?`/api/keyword-monitor-groups/${groupId}`:'/api/keyword-monitor-groups',payload);
         state.keywordMonitor.selectedGroupId=Number(result.group.id);
+        state.keywordMonitor.draftDirty=false; state.keywordMonitor.draft=null;
         await loadKeywordGroups({selectFirst:false}); await loadKeywordHistory();
         $('#keyword_group_notice').textContent='已保存';
       } catch (error){ $('#keyword_group_notice').textContent=error.message; }

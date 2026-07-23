@@ -23,6 +23,8 @@ def test_channel_library_config_is_clamped():
                 "full_scan_batch_size": 999,
                 "full_scan_delay_min_sec": 0,
                 "incremental_scan_delay_min_sec": 0,
+                "incremental_scan_cron": "*/15 * * * *",
+                "incremental_scan_timezone": "Asia/Shanghai",
             },
         }
     )
@@ -30,6 +32,8 @@ def test_channel_library_config_is_clamped():
     assert app.channel_library_config.full_scan_batch_size == 100
     assert app.channel_library_config.full_scan_delay_min_sec == 2.0
     assert app.channel_library_config.incremental_scan_delay_min_sec == 0.5
+    assert app.channel_library_config.incremental_scan_cron == "*/15 * * * *"
+    assert app.channel_library_config.incremental_scan_timezone == "Asia/Shanghai"
 
 
 class AppTestCase(unittest.TestCase):

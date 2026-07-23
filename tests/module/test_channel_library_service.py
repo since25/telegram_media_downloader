@@ -353,6 +353,49 @@ async def test_queue_incremental_rejects_incomplete_initial_full_before_snapshot
 
 
 @async_test
+async def test_scheduled_incremental_skips_unchanged_and_recoverable_channels(
+    tmp_path,
+):
+    service, first, _sleep = make_service(tmp_path)
+    finish_full_scan(service, first, snapshot_max=40)
+    second, _ = service.store.create_or_get_library(
+        -1002, "channel", "two", "Two", "https://t.me/two/1"
+    )
+    finish_full_scan(service, second, snapshot_max=40)
+    stopped = service.store.create_scan_job(second["id"], "incremental", 41, 50)
+    service.store.transition_job(stopped["id"], "stopped")
+    service.client.latest_message_id = 40
+    service.owner_loop = asyncio.get_running_loop()
+
+    queued = await service.queue_scheduled_incrementals()
+
+    assert queued == []
+    assert service.store.get_latest_job(first["id"])["kind"] == "full"
+    assert service.store.get_latest_job(second["id"])["id"] == stopped["id"]
+
+
+@async_test
+async def test_scheduled_incremental_queues_new_tail_for_each_eligible_channel(
+    tmp_path,
+):
+    service, first, _sleep = make_service(tmp_path)
+    finish_full_scan(service, first, snapshot_max=40)
+    second, _ = service.store.create_or_get_library(
+        -1002, "channel", "two", "Two", "https://t.me/two/1"
+    )
+    finish_full_scan(service, second, snapshot_max=40)
+    service.client.latest_message_id = 45
+    service.owner_loop = asyncio.get_running_loop()
+
+    queued = await service.queue_scheduled_incrementals()
+
+    assert [job["library_id"] for job in queued] == [first["id"], second["id"]]
+    assert all(job["kind"] == "incremental" for job in queued)
+    assert all(job["start_message_id"] == 41 for job in queued)
+    assert all(job["snapshot_max_message_id"] == 45 for job in queued)
+
+
+@async_test
 async def test_repair_defaults_to_all_failures_and_resolves_complete_closures(
     tmp_path,
 ):
@@ -923,6 +966,22 @@ async def test_start_stop_are_idempotent_and_recover_interrupted_job(tmp_path):
     await service.stop()
     await service.stop()
     assert scheduler.done()
+
+
+@async_test
+async def test_start_and_stop_own_global_incremental_cron_task(tmp_path):
+    config = ChannelLibraryConfig(incremental_scan_cron="* * * * *")
+    service, _library, _sleep = make_service(tmp_path, config=config)
+
+    await service.start()
+    cron_task = service.incremental_cron_task
+
+    assert cron_task is not None and not cron_task.done()
+
+    await service.stop()
+
+    assert cron_task.done()
+    assert service.incremental_cron_task is None
 
 
 @async_test
