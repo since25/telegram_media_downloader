@@ -1906,3 +1906,30 @@ Changed files:
 
 Rollback:
 - Revert the commit containing this task. Schema v8 is additive; stop the service and back up `channel_library.sqlite3` before manually removing the new columns or tables.
+
+## 2026-07-29 - Task: Deploy comment-thread channel scanning to RackNerd
+
+### What was done
+
+- Committed and pushed `00ee82e` to GitHub `master`, then fast-forwarded the RackNerd production checkout from `f990561` to `00ee82e`.
+- Stopped `tg-downloader.service` and created a restricted, consistent release backup with the SQLite backup API before deploying schema v8; production configuration and sessions were included without modification.
+- Restarted the service and confirmed the additive v8 migration retained all six existing channels as channel-message-only and preserved the existing 24,549 channel resource packages.
+
+### Testing
+
+- Pre-push full suite: `.venv/bin/python -m pytest -q` -> `540 passed, 1 skipped`; import, changed-module compile, and `git diff --check` checks passed.
+- Production backup: `/root/telegram_media_downloader/backups/release-20260729-021758-comment-scanning` (159MB); both SQLite backup integrity checks -> `ok`.
+- Production compile check passed and `.venv/bin/pip check` reported no broken requirements.
+- `tg-downloader.service` -> `active` on `00ee82e`; four download workers started and the post-restart journal contained no traceback, exception, critical, error, or failed lines.
+- Live schema versions -> `[3, 6, 7, 8]`; channel scan modes -> six `messages`; package kinds -> 24,549 `channel`; the new source-post table was empty before the first comment scan.
+- Live `channel_library.sqlite3` and `web_tasks.sqlite3` integrity checks -> `ok`; channel DB remained WAL mode `600`, and `config.yaml` matched the pre-deploy backup.
+- Local production `/` and the channel API redirected to login, `/login` returned `200`; public `https://tgdn.wyichuan.cc/` redirected to login and `/login` returned `200`.
+
+### Notes
+
+Changed files:
+- `progress.md`: recorded the feature push, production backup, schema migration, service restart, data-preservation checks, and Web smoke tests.
+
+Rollback:
+- Preferred code rollback: `git revert 00ee82e`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both live SQLite databases; schema v8 is additive and can remain unused by older code.
+- Release backup: `/root/telegram_media_downloader/backups/release-20260729-021758-comment-scanning`. Stop the service before restoring either database or configuration, and retain the current live files before replacement.
