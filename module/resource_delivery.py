@@ -302,19 +302,7 @@ class ResourceDeliveryService:
         return package
 
     async def _require_target_permission(self, job: dict) -> None:
-        if not self.resource_store.is_user_active(int(job["telegram_user_id"])):
-            raise DeliveryError(
-                "activation_revoked", "Resource Bot activation was revoked"
-            )
-        binding = self.resource_store.get_binding(int(job["telegram_user_id"]))
-        if (
-            binding is None
-            or binding["status"] != "active"
-            or int(binding["chat_id"]) != int(job["target_chat_id"])
-        ):
-            raise DeliveryError(
-                "target_permission_lost", "Target channel binding is not active"
-            )
+        self._require_local_authorization(job)
         try:
             member = await self.resource_client.get_chat_member(
                 int(job["target_chat_id"]), int(self.resource_client.me.id)
@@ -341,6 +329,21 @@ class ResourceDeliveryService:
             raise DeliveryError(
                 "target_permission_lost",
                 "Resource Bot can no longer post to the target channel",
+            )
+
+    def _require_local_authorization(self, job: dict) -> None:
+        if not self.resource_store.is_user_active(int(job["telegram_user_id"])):
+            raise DeliveryError(
+                "activation_revoked", "Resource Bot activation was revoked"
+            )
+        binding = self.resource_store.get_binding(int(job["telegram_user_id"]))
+        if (
+            binding is None
+            or binding["status"] != "active"
+            or int(binding["chat_id"]) != int(job["target_chat_id"])
+        ):
+            raise DeliveryError(
+                "target_permission_lost", "Target channel binding is not active"
             )
 
     def _prepare_items(self, job: dict) -> list[PreparedDeliveryItem]:
@@ -382,6 +385,7 @@ class ResourceDeliveryService:
         downloaded: list[PreparedDeliveryItem] = []
         async with self.activity_gate.download_permit():
             for item in items:
+                self._require_local_authorization(job)
                 message = await self._get_source_message(item)
                 local_path = job_dir / item.file_name
                 try:
@@ -448,10 +452,12 @@ class ResourceDeliveryService:
     ) -> int:
         uploaded = 0
         for group in build_delivery_groups(items):
+            self._require_local_authorization(job)
             try:
                 await self._upload_group(int(job["target_chat_id"]), group)
             except pyrogram.errors.FloodWait as error:
                 await self.sleep(error.value)
+                self._require_local_authorization(job)
                 try:
                     await self._upload_group(int(job["target_chat_id"]), group)
                 except Exception as retry_error:

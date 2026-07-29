@@ -459,16 +459,16 @@ class BotManager:
             return
         if app.resource_bot_token and not app.bot_token:
             raise ValueError("resource_bot_token requires bot_token")
-        admin_started = False
+        admin_start_attempted = False
         resource_started = False
         try:
+            admin_start_attempted = True
             await self.admin_role.start(
                 app,
                 client,
                 add_download_task,
                 download_chat_task,
             )
-            admin_started = True
             if app.resource_bot_token:
                 self.resource_store = self.store_factory(
                     self.db_path_resolver()
@@ -528,7 +528,7 @@ class BotManager:
                     await self.resource_role.stop()
                 except Exception as error:
                     logger.warning("Resource Bot rollback failed: {}", error)
-            if admin_started:
+            if admin_start_attempted:
                 try:
                     await self.admin_role.stop()
                 except Exception as error:

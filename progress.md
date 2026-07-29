@@ -2510,3 +2510,39 @@ Changed files:
 
 Rollback:
 - Revert the documentation commit. No production configuration, service, Bot account, Telegram channel, session, or database was changed by this task.
+
+## 2026-07-29 - Task: Complete local dual-role resource Bot verification
+
+### What was done
+
+- Audited the implementation against the approved design and confirmed two Bot accounts are owned by one `bot.py` lifecycle while the public `/forward` command remains removed and `/listen_forward` plus `/forward_to_comments` remain registered.
+- Added cleanup for a management Bot that fails during startup, restricted destination binding to Telegram channels, and rechecked activation/binding state at every media download/upload boundary so administrator revocation stops active work safely.
+- Confirmed one-time hashed activation keys, administrator revocation, one-user/one-channel binding, permission-loss handling, stable five-item searches, user-scoped expiring callbacks, idempotent enqueue, main-account download, resource-Bot upload, media-group ordering, serial delivery, cleanup, partial failure, and restart interruption behavior.
+- Confirmed the real local `.env.new` remains ignored and untracked, example/documentation values are placeholders, and production configuration/restart/live acceptance were not performed.
+
+### Testing
+
+- Focused resource feature tests: `.venv/bin/pytest -q tests/module/test_resource_bot_store.py tests/module/test_resource_delivery.py tests/module/test_resource_bot.py tests/module/test_bot_manager.py tests/module/test_bot_commands.py` -> `47 passed` before final audit hardening.
+- Management Bot and channel-library regressions: `.venv/bin/pytest -q tests/module/test_comment_workflow.py tests/module/test_channel_library_queries.py tests/module/test_channel_library_store.py tests/module/test_channel_library_service.py tests/module/test_channel_library_workflow.py` -> `240 passed`.
+- Final combined resource/management/channel regression after audit hardening -> `290 passed`.
+- Final complete suite with isolated `TMD_TASK_DB_PATH` and `TMD_RESOURCE_BOT_DB_PATH` -> `612 passed, 1 skipped`.
+- `.venv/bin/python check_imports.py` passed.
+- Changed application modules compiled with `.venv/bin/python -m py_compile`.
+- `.venv/bin/pip check` -> `No broken requirements found`.
+- Fresh `resource_bot.sqlite3` -> schema `1`, `PRAGMA integrity_check` -> `ok`, file mode -> `0600`.
+- `git diff --check` passed; `.env.new` is ignored by the exact `/.env.new` rule and is absent from tracked files.
+- Secret-pattern scan found no Bot-token-shaped value in tracked implementation or operational documentation.
+
+### Notes
+
+Changed files:
+- `module/bot.py`: Cleaned up partially started management Bot roles.
+- `module/resource_bot.py`: Restricted binding events to Telegram channels.
+- `module/resource_delivery.py`: Rechecked user activation and target binding at each safe media boundary and before FloodWait upload retry.
+- `tests/module/test_bot_manager.py`: Covered management-role partial-start rollback.
+- `tests/module/test_resource_bot.py`: Covered actual resource client Handler registration and channel-only binding.
+- `tests/module/test_resource_delivery.py`: Covered active delivery interruption after administrator revocation.
+- `progress.md`: Recorded the final requirement audit and local verification evidence.
+
+Rollback:
+- Revert the final verification commit to remove only the audit hardening and its tests/log entry, or revert the feature commits in reverse order for a complete local rollback. Production data/configuration rollback is not applicable because no production operation was performed.

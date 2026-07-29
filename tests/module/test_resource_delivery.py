@@ -405,6 +405,41 @@ def test_target_permission_loss_prevents_download(tmp_path, resource_store):
     run(scenario())
 
 
+def test_revocation_during_download_stops_at_next_item(
+    tmp_path, resource_store
+):
+    class RevokingMainClient(FakeMainClient):
+        async def download_media(self, message, file_name):
+            result = await super().download_media(message, file_name)
+            if message.id == 10:
+                resource_store.revoke_user(200)
+            return result
+
+    async def scenario():
+        items = [
+            package_item(0, 10, "document", file_name="one.bin"),
+            package_item(1, 11, "document", file_name="two.bin"),
+        ]
+        channel_store = FakeChannelStore(items=items)
+        main_client = RevokingMainClient(
+            {(-2001, 10): message(10), (-2001, 11): message(11)}
+        )
+        resource_client = FakeResourceClient()
+        service = make_service(
+            tmp_path, resource_store, channel_store, main_client, resource_client
+        )
+        job = create_job(resource_store, total_items=2)
+
+        result = await service.process_job(job)
+
+        assert main_client.download_calls == [10]
+        assert resource_client.upload_calls == []
+        assert result["status"] == "failed"
+        assert result["error_code"] == "activation_revoked"
+
+    run(scenario())
+
+
 def test_worker_processes_queued_jobs_serially(tmp_path, resource_store):
     class SerialResourceClient(FakeResourceClient):
         def __init__(self):

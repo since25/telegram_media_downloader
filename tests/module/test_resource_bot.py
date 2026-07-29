@@ -5,6 +5,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pyrogram import enums
+from pyrogram.handlers import (
+    CallbackQueryHandler,
+    ChatMemberUpdatedHandler,
+    MessageHandler,
+)
 
 from module.channel_library_store import QueryPage
 from module.resource_bot import (
@@ -51,8 +56,23 @@ class FakeBotClient:
     def __init__(self):
         self.sent_messages = []
         self.handlers = []
+        self.commands = []
         self.members = {}
         self.me = SimpleNamespace(id=999, username="resource_bot")
+        self.started = False
+        self.stopped = False
+
+    async def start(self):
+        self.started = True
+
+    async def stop(self):
+        self.stopped = True
+
+    async def get_me(self):
+        return self.me
+
+    async def set_bot_commands(self, commands):
+        self.commands = list(commands)
 
     async def send_message(self, chat_id, text, **kwargs):
         sent = SimpleNamespace(chat_id=chat_id, text=text, **kwargs)
@@ -172,6 +192,57 @@ def make_role(tmp_path, channel_store=None):
     return role
 
 
+def test_resource_role_starts_one_client_and_registers_handlers(tmp_path):
+    async def scenario():
+        bot = FakeBotClient()
+        app = SimpleNamespace(
+            application_name="test",
+            api_hash="hash",
+            api_id=1,
+            resource_bot_token="resource",
+            session_file_path=".",
+            proxy=None,
+        )
+        store = make_store(tmp_path)
+        role = ResourceBotRole(
+            app,
+            SimpleNamespace(),
+            store,
+            None,
+            client_factory=lambda *args, **kwargs: bot,
+        )
+
+        await role.start()
+
+        assert bot.started
+        assert len(
+            [handler for handler in bot.handlers if isinstance(handler, MessageHandler)]
+        ) == 8
+        assert any(
+            isinstance(handler, CallbackQueryHandler)
+            for handler in bot.handlers
+        )
+        assert any(
+            isinstance(handler, ChatMemberUpdatedHandler)
+            for handler in bot.handlers
+        )
+        assert {command.command for command in bot.commands} == {
+            "start",
+            "activate",
+            "status",
+            "bind",
+            "channel",
+            "unbind",
+            "search",
+            "help",
+        }
+
+        await role.stop()
+        assert bot.stopped
+
+    run(scenario())
+
+
 def test_admin_create_key_replies_privately_and_revoke_user(tmp_path):
     async def scenario():
         store = make_store(tmp_path)
@@ -284,6 +355,12 @@ def test_bind_event_requires_pending_admin_and_bot_post_permission(tmp_path):
         role.bot.members[(-1001, 200)] = member(
             enums.ChatMemberStatus.ADMINISTRATOR, can_post=True
         )
+        update.chat.type = enums.ChatType.SUPERGROUP
+        await role.handle_chat_member_updated(role.bot, update)
+        assert role.store.get_binding(200) is None
+        assert "频道" in role.bot.sent_messages[-1].text
+
+        update.chat.type = enums.ChatType.CHANNEL
         await role.handle_chat_member_updated(role.bot, update)
         assert role.store.get_binding(200)["chat_id"] == -1001
 

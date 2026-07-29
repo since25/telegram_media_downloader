@@ -368,6 +368,13 @@ class ResourceBotRole:
             or int(member_user.id) != int(self.bot_info.id)
         ):
             return
+        if getattr(chat, "type", None) != enums.ChatType.CHANNEL:
+            actor = getattr(update, "from_user", None)
+            if actor is not None and int(actor.id) in self.pending_bind_users:
+                await self._safe_private_notice(
+                    int(actor.id), "当前仅支持绑定 Telegram 频道。"
+                )
+            return
         chat_id = int(chat.id)
         existing = self.store.get_binding_by_chat(chat_id)
         if not bot_can_post_to_channel(new_member):

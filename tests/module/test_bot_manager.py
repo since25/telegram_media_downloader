@@ -15,13 +15,16 @@ def run(coroutine):
 
 
 class FakeAdminRole:
-    def __init__(self, events):
+    def __init__(self, events, fail=False):
         self.events = events
+        self.fail = fail
         self.bot = FakeAdminClient(events)
         self.allowed_user_ids = [1]
 
     async def start(self, app, client, add_download_task, download_chat_task):
         self.events.append("admin.start")
+        if self.fail:
+            raise RuntimeError("admin start failed")
 
     async def stop(self):
         self.events.append("admin.stop")
@@ -97,8 +100,8 @@ def app_config(*, admin_token="admin", resource_token=""):
     )
 
 
-def make_manager(events, *, resource_fail=False):
-    admin = FakeAdminRole(events)
+def make_manager(events, *, admin_fail=False, resource_fail=False):
+    admin = FakeAdminRole(events, fail=admin_fail)
     return BotManager(
         admin_role=admin,
         store_factory=lambda path: FakeStore(path, events),
@@ -198,6 +201,25 @@ def test_partial_start_failure_unwinds_started_roles():
             "resource.stop",
             "admin.stop",
         ]
+        assert not manager.started
+
+    run(scenario())
+
+
+def test_partial_management_start_failure_is_cleaned_up():
+    async def scenario():
+        events = []
+        manager = make_manager(events, admin_fail=True)
+
+        with pytest.raises(RuntimeError, match="admin start failed"):
+            await manager.start(
+                app_config(resource_token=""),
+                object(),
+                object(),
+                object(),
+            )
+
+        assert events == ["admin.start", "admin.stop"]
         assert not manager.started
 
     run(scenario())
