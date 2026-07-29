@@ -2046,3 +2046,30 @@ Changed files:
 
 Rollback:
 - Revert the task-panel implementation and documentation commits. No database, API, configuration, runtime dependency, or persisted-data rollback is required.
+
+## 2026-07-29 - Task: Deploy refined task panels to RackNerd
+
+### What was done
+
+- Pushed the four task-panel design, implementation, stale-detail fix, and documentation commits to GitHub `master`.
+- Confirmed production tracked files were clean, preserved existing untracked backups, sessions, database backup, and runtime directories, then fast-forwarded the RackNerd checkout from `47299a3` to `6d5a3f4`.
+- Verified the deployed task-page contracts and dependencies before restarting `tg-downloader.service`.
+- Restarted the service and confirmed the updated task-panel CSS is available through both the production-local and public Web entrypoints.
+
+### Testing
+
+- GitHub `master` push -> `47299a3..6d5a3f4`; local and remote `master` matched at `6d5a3f4`.
+- Production `.venv/bin/python` executed all four functions in `tests/module/test_task_page_ui.py` directly -> `4 task UI contracts passed`.
+- Production `.venv/bin/pip check` -> no broken requirements.
+- Production does not install the development-only `pytest` command or Node.js; no production dependencies were added. The full pytest suite and inline JavaScript syntax check had already passed locally before the push.
+- `tg-downloader.service` -> `active` at `6d5a3f4`; four download workers started and the post-restart journal contained zero traceback, exception, critical, or error lines.
+- Production-local Web: `/` -> `302`, `/login` -> `200`, updated CSS -> `200` with the `.task-table` marker.
+- Public Web: `https://tgdn.wyichuan.cc/` -> `302`, `/login` -> `200`, updated CSS -> `200` with the `.task-table` marker.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the push, production fast-forward, dependency boundaries, service restart, log review, and local/public smoke checks.
+
+Rollback:
+- Revert `160e2da` and `23bfe5f`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases, backups, sessions, and runtime files; this deployment made no schema, configuration, or dependency changes.
