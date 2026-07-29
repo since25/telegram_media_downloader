@@ -2396,3 +2396,29 @@ Changed files:
 
 Rollback:
 - Revert this task commit. The new `resource_bot.sqlite3` is independent and can be preserved unused or backed up and removed while the service is stopped.
+
+## 2026-07-29 - Task: Add main-account download and resource Bot upload delivery
+
+### What was done
+
+- Added the persistent resource-delivery worker that reads package snapshots with the main Telegram account and uploads the downloaded media with the resource Bot.
+- Enforced stable package revisions, active user/channel permissions, complete download before upload, safe temporary filenames, compatible Telegram album grouping, and deterministic cleanup.
+- Persisted per-item download/upload progress and terminal errors for missing sources, download failures, target permission loss, upload failures, partial uploads, and service interruption.
+- Kept delivery globally serial, recovered interrupted jobs at startup, notified users privately of terminal results, and prevented retries after a partial upload.
+
+### Testing
+
+- Focused delivery tests: `.venv/bin/pytest -q tests/module/test_resource_delivery.py` -> `12 passed`.
+- Resource state and delivery regression: `.venv/bin/pytest -q tests/module/test_resource_bot_store.py tests/module/test_resource_delivery.py` -> `25 passed`.
+- `.venv/bin/python -m py_compile module/resource_delivery.py tests/module/test_resource_delivery.py` passed.
+- `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/resource_delivery.py`: Added package snapshot validation, main-account download, resource-Bot upload, progress persistence, serial worker lifecycle, interruption handling, and cleanup.
+- `tests/module/test_resource_delivery.py`: Added executable coverage for media planning, success/failure paths, permission loss, serial execution, and active-job interruption.
+- `progress.md`: Recorded implementation and verification evidence.
+
+Rollback:
+- Revert the resource-delivery commit. Existing queued resource jobs should be backed up before rollback; this task does not modify the resource database schema.
