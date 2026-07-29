@@ -26,7 +26,9 @@
 
 > 支持两种默认运行
 
-* 机器人运行，从机器人下发命令`下载`或者`转发`
+* 管理机器人运行，从机器人下发下载、预扫和管理命令
+
+* 可选资源机器人：激活用户搜索已索引资源包，并发布到自己绑定的频道
 
 * 作为一个一次性的下载工具下载
 
@@ -77,6 +79,35 @@
 
 
 <img alt="Code style: black" style="width:60%; high:30%; " src="./screenshot/bot.gif"/>
+
+#### 双角色资源发布 Bot
+
+应用可以在同一个进程中运行两个 Telegram Bot 账号，但仍只有一个启动和停止入口：
+
+- `bot_token` 对应原管理 Bot，继续提供下载、预扫、过滤等管理能力，并负责创建和撤销资源用户。
+- `resource_bot_token` 对应资源 Bot，只服务已激活用户，提供频道绑定、资源搜索和一键发布。
+- 只配置管理 Bot 时，原有行为保持不变；不能只配置资源 Bot 而不配置管理 Bot。
+
+管理员在管理 Bot 私聊中使用：
+
+```text
+/create_resource_key
+/revoke_resource_user <telegram_user_id>
+```
+
+资源用户在资源 Bot 私聊中依次使用：
+
+```text
+/activate <激活密钥>
+/bind
+/search <关键词>
+```
+
+执行 `/bind` 后，用户只需把资源 Bot 添加到自己的目标频道，设为管理员并授予“发布消息”权限；不需要把后台主账号加入用户频道。绑定成功后，搜索结果会显示稳定资源包和“一键发布”按钮。
+
+发布时，后台主账号凭来源频道权限读取并下载资源，资源 Bot 再把本地临时文件上传到用户频道。因此资源 Bot 本身不需要加入来源频道；即使来源频道禁止原生转发，只要主账号仍可读取和下载，也可以走下载后上传路径。任务全局串行执行，会尽量保持资源包顺序和兼容的 Telegram 媒体组。若上传中途失败，任务会报告已发布数量且不会自动重试，以免频道出现重复内容。
+
+资源 Bot 使用独立的 `resource_bot.sqlite3` 保存激活、绑定和发布任务状态。完整生产接管步骤见 [`docs/resource-bot-server-handoff.md`](docs/resource-bot-server-handoff.md)。
 
 #### 手动添加标签功能
 
@@ -294,6 +325,7 @@ pip3 install -r requirements.txt
 api_hash: your_api_hash
 api_id: your_api_id
 bot_token: your_bot_token
+resource_bot_token: your_resource_bot_token
 chat:
 - chat_id: telegram_chat_id
   last_read_message_id: 0
@@ -345,6 +377,7 @@ enable_download_txt: false
 - **api_hash** - 你从电报应用程序获得的 api_hash
 - **api_id** - 您从电报应用程序获得的 api_id
 - **bot_token** - 你的机器人凭证
+- **resource_bot_token** - 可选资源 Bot 凭证。配置后与管理 Bot 在同一应用生命周期内运行；不得在没有 `bot_token` 时单独配置
 - **chat** -  多频道
   - `chat_id` -  您要下载媒体的聊天/频道的 ID。你从上述步骤中得到的。
   - `download_filter` - 下载过滤器, 查阅 [如何使用过滤器](https://github.com/tangyoha/telegram_media_downloader/wiki/%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8%E8%BF%87%E6%BB%A4%E5%99%A8)

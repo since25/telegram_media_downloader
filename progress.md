@@ -2480,3 +2480,33 @@ Changed files:
 
 Rollback:
 - Revert the unified-manager commit to restore the prior management-only lifecycle. Leave `resource_bot_token` unset during rollback so no unmanaged resource Bot client or delivery worker is expected.
+
+## 2026-07-29 - Task: Document resource Bot usage and production handoff
+
+### What was done
+
+- Documented the management Bot and resource Bot role split, activation/revocation commands, channel binding, stable-package search, and one-click publication flow in Chinese and English.
+- Clarified that the main Telegram account reads/downloads source media while only the resource Bot needs access to the user's destination channel.
+- Documented serial delivery, Telegram album preservation, partial-upload behavior, restart handling, and the independent `resource_bot.sqlite3` state boundary.
+- Added a production handoff checklist for restricted backups, the exact configuration delta, secret-safe validation, database initialization/integrity, service startup, live Telegram acceptance, and rollback.
+- Kept `.env.new` as a local ignored token source and excluded all real tokens and server credentials from tracked files.
+
+### Testing
+
+- RED verification: `.venv/bin/pytest -q tests/module/test_bot_commands.py::test_resource_bot_configuration_is_documented_without_real_secret` failed because `docs/resource-bot-server-handoff.md` did not exist.
+- Documentation contract: `.venv/bin/pytest -q tests/module/test_bot_commands.py` -> `3 passed`.
+- `git diff --check` passed.
+- Searched the updated documentation and example configuration for the expected resource token placeholder, resource commands, and independent database references.
+
+### Notes
+
+Changed files:
+- `README_CN.md`: Added the dual-role user workflow, transfer model, commands, configuration, and partial-upload warning.
+- `README.md`: Added the corresponding English role, workflow, configuration, and state summary.
+- `docs/web-control-console.md`: Documented how resource Bot search and delivery read the channel index without changing Web selections.
+- `docs/resource-bot-server-handoff.md`: Added the non-executed production backup, configuration, restart, acceptance, and rollback checklist.
+- `tests/module/test_bot_commands.py`: Added a secret-safe documentation/configuration contract.
+- `progress.md`: Recorded documentation and verification evidence.
+
+Rollback:
+- Revert the documentation commit. No production configuration, service, Bot account, Telegram channel, session, or database was changed by this task.

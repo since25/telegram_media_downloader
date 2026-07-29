@@ -124,6 +124,42 @@ A `partial` library remains browseable. Stable packages outside uncertain closur
 
 Duplicate protection applies at three levels: channel links deduplicate by Telegram `chat_id`, selections bind to a package revision, and every download submission requires an `Idempotency-Key`. A package with any successful attempt, or a changed package marked `outdated`, requires explicit `redownload=true`. A later failed redownload does not erase the successful-download history.
 
+## Resource Bot Publishing
+
+The optional resource Bot reads the same cross-channel package index but does not modify
+Web selections or download batches. Its search calls the aggregate package query with a
+title keyword, removes every non-stable package, and shows five results per private,
+user-scoped session. Search sessions expire after 30 minutes. Callback ownership is
+checked before pagination or publishing.
+
+The management Bot owns `/create_resource_key` and
+`/revoke_resource_user <telegram_user_id>`. The resource Bot owns `/activate`, `/status`,
+`/bind`, `/channel`, `/unbind`, and `/search`. Activation keys are one-time values; only a
+SHA-256 digest and short prefix are stored. A user can bind one channel, and a channel can
+belong to one active resource user. Binding requires a pending private `/bind` request,
+the acting user to be the channel owner/administrator, and the resource Bot to be an
+administrator with `can_post_messages`.
+
+Publishing does not use Telegram native forward/copy. The main account refetches and
+downloads every package item under its source permissions, then the resource Bot uploads
+the complete local set to the bound destination. This keeps private source access
+separate from destination-channel access and also works when native forwarding is
+restricted but downloading remains permitted. Compatible photo/video, audio, and
+document albums are preserved; unsupported album combinations are sent sequentially.
+
+`resource_bot.sqlite3` is independent from `channel_library.sqlite3` and
+`web_tasks.sqlite3`. It stores hashed activation keys, activated users, one-channel
+bindings, and persistent FIFO delivery jobs. Only one delivery job runs at a time.
+Queued jobs survive restart; a job interrupted while downloading or uploading is closed
+as `restart_interrupted` and is not retried automatically. Partial uploads retain their
+published count and are also not retried automatically, preventing duplicate posts.
+Temporary files are removed after every terminal outcome.
+
+The resource Bot and its delivery worker share the existing `start_download_bot` and
+`stop_download_bot` application entry. Leaving `resource_bot_token` empty preserves the
+management-only behavior. Production configuration and acceptance are documented in
+[`resource-bot-server-handoff.md`](resource-bot-server-handoff.md).
+
 ## Keyword Monitor Groups
 
 Keyword rules are stored in the channel-library database and managed only from the

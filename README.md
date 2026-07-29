@@ -24,11 +24,14 @@
 ## Overview
 > Support two default running
 
-* The robot is running, and the command `download` or `forward` is issued from the robot
+* Run the management Bot for download, prescan, and administration commands
 
 * Download as a one-time download tool
 
 * Download matching indexed channel-library packages automatically
+
+* Optionally run a second resource Bot for activated users to search indexed packages
+  and publish them to their own bound channel
 
 ### Indexed Package Monitoring
 
@@ -67,6 +70,30 @@ recoverable scan work.
 > Need to configure bot_token, please refer to [Documentation](https://github.com/tangyoha/telegram_media_downloader/wiki/How-to-Download-Using-Robots)
 
 <img alt="Code style: black" style="width:60%; high:30%; " src="./screenshot/bot.gif"/>
+
+#### Dual-role resource publishing Bot
+
+The process can run two Telegram Bot accounts through the same application lifecycle:
+
+- `bot_token` is the existing management Bot for download and administration.
+- `resource_bot_token` is the optional activated-user Bot for binding a destination
+  channel, searching stable indexed packages, and publishing them.
+- The resource Bot requires the management Bot because activation keys are issued and
+  users are revoked through the management role.
+
+Administrators use `/create_resource_key` and
+`/revoke_resource_user <telegram_user_id>` in the management Bot. A resource user then
+uses `/activate <key>`, `/bind`, and `/search <keyword>` in the resource Bot. The user
+adds only the resource Bot to the destination channel as an administrator with permission
+to post messages.
+
+The main Telegram account reads and downloads source media; the resource Bot uploads the
+temporary files to the bound channel. The resource Bot therefore does not need access to
+private source channels. Delivery is globally serial and preserves compatible Telegram
+media groups. A partial upload is reported without automatic retry to avoid duplicate
+channel posts. State is stored separately in `resource_bot.sqlite3`. See
+[`docs/resource-bot-server-handoff.md`](docs/resource-bot-server-handoff.md) for the
+production handoff.
 
 ### Support
 
@@ -167,6 +194,8 @@ The very first step requires you to obtain a valid Telegram API key (API id/hash
 ```yaml
 api_hash: your_api_hash
 api_id: your_api_id
+bot_token: your_bot_token
+resource_bot_token: your_resource_bot_token
 chat:
 - chat_id: telegram_chat_id
   last_read_message_id: 0
@@ -226,6 +255,8 @@ enable_download_txt: false
 - **api_hash**  - The api_hash you got from telegram apps
 - **api_id** - The api_id you got from telegram apps
 - **bot_token** - Your bot token
+- **resource_bot_token** - Optional activated-user resource Bot token. It shares the
+  management Bot lifecycle and cannot be configured without `bot_token`.
 - **chat** - Chat list
   - `chat_id` -  The id of the chat/channel you want to download media. Which you get from the above-mentioned steps.
   - `download_filter` - Download filter, see [How to use Filter](https://github.com/tangyoha/telegram_media_downloader/wiki/How-to-use-Filter)
