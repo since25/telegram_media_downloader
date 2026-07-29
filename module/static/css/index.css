@@ -713,6 +713,15 @@ textarea.input { min-height: 90px; resize: vertical; }
 .aggregate-channel-filter { grid-column: span 2; grid-row: span 2; }
 .aggregate-channel-filter select { min-height: 86px; }
 .aggregate-package-grid { min-width: 1120px; }
+.aggregate-download-status { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.aggregate-package-download,
+.aggregate-package-download-placeholder {
+  min-width: 42px; min-height: 26px; padding: 3px 8px; font-size: 11px;
+}
+.aggregate-package-download-placeholder {
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid transparent; visibility: hidden;
+}
 
 .keyword-monitor-layout {
   display: grid; grid-template-columns: 248px minmax(0, 1fr);

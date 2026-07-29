@@ -245,6 +245,7 @@ def test_all_channel_routes_require_existing_login(web_env):
         ("POST", "/api/channel-libraries/1/selection/clear"),
         ("GET", "/api/channel-libraries/1/selection"),
         ("POST", "/api/channel-libraries/1/download-batches"),
+        ("POST", "/api/packages/1/download-batch"),
     ]
 
     for method, route in routes:
@@ -266,6 +267,7 @@ def test_mutating_routes_require_session_bound_csrf(web_env):
         ("POST", "/api/channel-libraries/1/selection/select-filtered"),
         ("POST", "/api/channel-libraries/1/selection/clear"),
         ("POST", "/api/channel-libraries/1/download-batches"),
+        ("POST", "/api/packages/1/download-batch"),
     ]
 
     for method, route in routes:
@@ -1109,6 +1111,74 @@ def test_aggregate_packages_filter_select_and_download_across_channels(web_env):
     assert scheduled == {batch["id"] for batch in created.get_json()["batches"]}
 
 
+def test_aggregate_single_package_download_preserves_existing_selection(web_env):
+    env = web_env
+    library, job = create_library(env, chat_id=-1001, title="Alpha")
+    selected_package = insert_package(
+        env.store, library["id"], 10, title="Keep Selected"
+    )
+    target_package = insert_package(
+        env.store, library["id"], 20, title="Download Directly"
+    )
+    insert_package_item(env.store, library["id"], selected_package, 10)
+    insert_package_item(env.store, library["id"], target_package, 20)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
+            (job["id"],),
+        )
+    headers = csrf_headers(env)
+    selected = env.client.put(
+        f"/api/packages/{selected_package}/selection",
+        json={"selected": True},
+        headers=headers,
+    )
+    scheduled = set()
+    env.service.schedule_download_batch_threadsafe = scheduled.add
+    download_headers = {**headers, "Idempotency-Key": "single-package-request"}
+
+    created = env.client.post(
+        f"/api/packages/{target_package}/download-batch",
+        json={},
+        headers=download_headers,
+    )
+    replayed = env.client.post(
+        f"/api/packages/{target_package}/download-batch",
+        json={},
+        headers=download_headers,
+    )
+    selection = env.client.get("/api/packages/selection").get_json()
+
+    assert selected.status_code == 200
+    assert created.status_code == 202
+    assert created.get_json()["created"] is True
+    assert created.get_json()["batch"]["package_count"] == 1
+    assert replayed.status_code == 200
+    assert replayed.get_json()["created"] is False
+    assert replayed.get_json()["batch"]["id"] == created.get_json()["batch"]["id"]
+    assert scheduled == {created.get_json()["batch"]["id"]}
+    assert selection["selected_count"] == 1
+    with env.store.connect() as connection:
+        selection_rows = connection.execute(
+            """
+            SELECT package_id, selected
+            FROM channel_package_selections
+            WHERE library_id = ?
+            ORDER BY package_id
+            """,
+            (library["id"],),
+        ).fetchall()
+    assert [(row["package_id"], row["selected"]) for row in selection_rows] == [
+        (selected_package, 1)
+    ]
+    batch = env.store.get_download_batch(created.get_json()["batch"]["id"])
+    assert [item["package_id"] for item in batch["packages"]] == [target_package]
+
+
 def test_keyword_monitor_group_api_triggers_existing_index_and_returns_history(web_env):
     env = web_env
     library, job = create_library(env, title="Courses")
@@ -1760,6 +1830,11 @@ def test_aggregate_package_and_keyword_monitor_tabs_have_complete_dom_contracts(
     assert html.count('data-tab="keyword-monitor"') == 1
     assert "/api/packages" in html
     assert "/api/keyword-monitor-groups" in html
+    assert "pkg.current_download_status==='never'" in html
+    assert 'data-aggregate-download="${id}"' in html
+    assert "aggregate-package-download-placeholder" in html
+    assert "async function downloadAggregatePackage(packageId,button)" in html
+    assert "`/api/packages/${packageId}/download-batch`" in html
     for element_id in required_ids:
         assert len(re.findall(rf'id="{re.escape(element_id)}"', html)) == 1
 
@@ -1850,6 +1925,8 @@ def test_channel_library_styles_define_responsive_split_workspace():
     assert ".channel-library-workspace-empty[hidden]" in css
     assert ".channel-library-table-footer .btn[hidden]" in css
     assert ".channel-library-package-grid" in css
+    assert ".aggregate-package-download-placeholder" in css
+    assert "visibility: hidden" in css
     assert "@media (max-width: 900px)" in css
     assert "@media (max-width: 560px)" in css
     assert ".app-tab-list, .app-tab, .app-nav > button" in css

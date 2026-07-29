@@ -143,6 +143,9 @@ Aggregate package, selection, and download routes:
   `library_ids` plus package filters, `cursor`, and `page_size`.
 - `GET /api/packages/<package_id>/items`: keyset-paginated media metadata.
 - `PUT /api/packages/<package_id>/selection`: `{"selected": true|false}`.
+- `POST /api/packages/<package_id>/download-batch`: create one exact package batch
+  without changing the current aggregate selection; accepts no fields and requires an
+  `Idempotency-Key`.
 - `POST /api/packages/selection/select-filtered`: package filters plus optional
   `library_ids`.
 - `POST /api/packages/selection/clear` and `GET /api/packages/selection`: clear or

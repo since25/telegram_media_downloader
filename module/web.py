@@ -1008,6 +1008,52 @@ def set_aggregate_package_selection(package_id: int):
     return jsonify({"selection": result})
 
 
+@_flask_app.route("/api/packages/<int:package_id>/download-batch", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def create_aggregate_package_download_batch(package_id: int):
+    """Persist and schedule one exact aggregate package without changing selection."""
+
+    _require_empty_command_input()
+    idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+    if not idempotency_key or len(idempotency_key) > 160:
+        _invalid_request("Idempotency-Key is required")
+    service = _channel_service()
+    package = service.store.get_package(package_id)
+    if package is None:
+        raise KeyError(f"Channel package {package_id} does not exist")
+    try:
+        batch, created = service.create_download_batch_result(
+            int(package["library_id"]),
+            idempotency_key,
+            package_ids=[package_id],
+        )
+    except RedownloadRequiredError:
+        raise _ChannelApiError(
+            409,
+            "redownload_required",
+            "Package requires explicit redownload confirmation",
+        )
+    except ValueError:
+        raise _ChannelApiError(
+            409,
+            "state_conflict",
+            "Package cannot be downloaded in its current state",
+        )
+    try:
+        service.schedule_download_batch_threadsafe(int(batch["id"]))
+    except RuntimeError:
+        raise _ChannelApiError(
+            503,
+            "service_unavailable",
+            "Download batch was persisted and will resume when service is available",
+        )
+    return jsonify({"batch": _batch_summary(batch), "created": created}), (
+        202 if created else 200
+    )
+
+
 @_flask_app.route("/api/packages/selection/select-filtered", methods=["POST"])
 @login_required
 @_channel_api

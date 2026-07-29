@@ -2073,3 +2073,59 @@ Changed files:
 
 Rollback:
 - Revert `160e2da` and `23bfe5f`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases, backups, sessions, and runtime files; this deployment made no schema, configuration, or dependency changes.
+
+## 2026-07-29 - Task: Add direct download action for an undownloaded resource package
+
+### What was done
+
+- Added a compact download button beside the `未下载` status for stable aggregate resource packages.
+- Added an exact-package download endpoint that creates and schedules a batch for only the clicked package.
+- Kept the existing aggregate package selection unchanged when a direct package download is submitted.
+- Added duplicate-submit protection through the existing idempotency-key contract and refreshed the package row after a successful submission.
+- Documented the new aggregate single-package download API.
+
+### Testing
+
+- TDD red check: `.venv/bin/python -m pytest tests/module/test_channel_library_web.py::test_aggregate_single_package_download_preserves_existing_selection tests/module/test_channel_library_web.py::test_aggregate_package_and_keyword_monitor_tabs_have_complete_dom_contracts -q` -> `2 failed` before implementation because the route and UI action did not exist.
+- Channel-library Web regression: `.venv/bin/python -m pytest tests/module/test_channel_library_web.py -q` -> `107 passed`.
+- Full suite: `.venv/bin/python -m pytest -q` -> `545 passed, 1 skipped`.
+- `.venv/bin/python check_imports.py` -> compatibility imports passed.
+- Inline JavaScript parsed successfully with Node's `vm.Script`; `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/templates/index.html`: Rendered and handled the direct package download button.
+- `module/static/css/index.css`: Added compact inline status/action styling.
+- `module/web.py`: Added the exact-package download-batch endpoint.
+- `tests/module/test_channel_library_web.py`: Covered authentication, CSRF, idempotent exact-package creation, selection preservation, and UI contracts.
+- `docs/web-control-console.md`: Documented the new endpoint.
+- `progress.md`: Recorded the implementation and verification evidence.
+
+Rollback:
+- Revert this task's changes. No database schema, configuration, dependency, persisted selection, or deployment rollback is required.
+
+## 2026-07-29 - Task: Align resource-package download status actions
+
+### What was done
+
+- Reserved a fixed-width invisible action slot beside non-downloadable package statuses.
+- Kept the visible direct-download button and all empty status slots at the same width so the download-status column aligns vertically.
+- Left download eligibility and click behavior unchanged.
+
+### Testing
+
+- TDD red check: `.venv/bin/python -m pytest tests/module/test_channel_library_web.py::test_aggregate_package_and_keyword_monitor_tabs_have_complete_dom_contracts tests/module/test_channel_library_web.py::test_channel_library_styles_define_responsive_split_workspace -q` -> `2 failed` before implementation because no placeholder contract or style existed.
+- Channel-library Web regression: `.venv/bin/python -m pytest tests/module/test_channel_library_web.py -q` -> `107 passed`.
+- Inline JavaScript parsed successfully with Node's `vm.Script`; `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/templates/index.html`: Added the invisible status-action placeholder.
+- `module/static/css/index.css`: Gave the button and placeholder a shared fixed action width.
+- `tests/module/test_channel_library_web.py`: Added placeholder rendering and styling contracts.
+- `progress.md`: Recorded the alignment change and verification evidence.
+
+Rollback:
+- Revert this alignment task to restore variable-width status cells. No API, database, configuration, dependency, or persisted-data rollback is required.

@@ -1580,6 +1580,9 @@
       } else {
         rows.innerHTML = state.aggregate.items.map(pkg=>{
           const id = Number(pkg.id), expanded = Boolean(state.aggregate.expandedItems[id]);
+          const directDownload = pkg.current_download_status==='never' && pkg.selectable
+            ? `<button type="button" class="btn btn-secondary aggregate-package-download" data-aggregate-download="${id}">下载</button>`
+            : '<span class="aggregate-package-download-placeholder" aria-hidden="true">下载</span>';
           return `<tr data-aggregate-package="${id}">
             <td><button type="button" class="channel-library-expand" data-aggregate-expand="${id}" aria-expanded="${expanded?'true':'false'}" title="展开媒体明细">${icon('chevron',14)}</button></td>
             <td><input type="checkbox" data-aggregate-select="${id}" ${pkg.selected?'checked':''} ${pkg.selectable?'':'disabled'} aria-label="选择资源包 ${id}"></td>
@@ -1589,7 +1592,7 @@
             <td>${formatChannelTime(pkg.published_at)}</td><td class="nums">${Number(pkg.media_count)||0}</td>
             <td class="nums">${formatChannelBytes(pkg.known_total_size,Boolean(pkg.size_is_exact))}</td>
             <td>${channelStatusTag(pkg.boundary_status,CHANNEL_BOUNDARY_STATUS)}</td>
-            <td>${channelStatusTag(pkg.current_download_status,CHANNEL_DOWNLOAD_STATUS)}</td>
+            <td><div class="aggregate-download-status">${channelStatusTag(pkg.current_download_status,CHANNEL_DOWNLOAD_STATUS)}${directDownload}</div></td>
           </tr>${renderAggregateItemRows(id)}`;
         }).join('');
       }
@@ -1644,6 +1647,20 @@
       } catch (error){ showAggregateNotice(error.message,'error'); }
       finally { page.loading = false; }
     }
+    async function downloadAggregatePackage(packageId,button){
+      const key = (globalThis.crypto&&crypto.randomUUID) ? crypto.randomUUID() : `package-${packageId}-${Date.now()}-${Math.random()}`;
+      button.disabled = true;
+      button.textContent = '提交中';
+      try {
+        await channelApiWrite('POST',`/api/packages/${packageId}/download-batch`,{}, {'Idempotency-Key':key});
+        showAggregateNotice(`资源包 #${packageId} 已创建下载任务`);
+        await loadAggregatePackages();
+      } catch (error){
+        showAggregateNotice(error.message,'error');
+        button.disabled = false;
+        button.textContent = '下载';
+      }
+    }
     async function activateAggregatePackages(){
       try {
         await ensureChannelCsrf();
@@ -1667,6 +1684,8 @@
       if (expand) toggleAggregateItems(Number(expand.dataset.aggregateExpand));
       const more = e.target.closest('[data-aggregate-item-more]');
       if (more) loadMoreAggregateItems(Number(more.dataset.aggregateItemMore));
+      const download = e.target.closest('[data-aggregate-download]');
+      if (download&&!download.disabled) downloadAggregatePackage(Number(download.dataset.aggregateDownload),download);
     });
     $('#aggregate_package_rows').addEventListener('change',async e=>{
       const checkbox = e.target.closest('[data-aggregate-select]');
