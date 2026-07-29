@@ -2129,3 +2129,32 @@ Changed files:
 
 Rollback:
 - Revert this alignment task to restore variable-width status cells. No API, database, configuration, dependency, or persisted-data rollback is required.
+
+## 2026-07-29 - Task: Deploy direct resource-package download to RackNerd
+
+### What was done
+
+- Committed and pushed the direct resource-package download button, exact-package endpoint, and aligned status-action slots to GitHub `master`.
+- Confirmed the production checkout had no tracked local changes, then fast-forwarded it from `9b1a1ef` to `ab47028`.
+- Ran production compile and dependency checks before restarting `tg-downloader.service`.
+- Verified the single-package route remains login-protected and the updated download-button CSS is served through both the production-local and public Web entrypoints.
+
+### Testing
+
+- Deployment-preflight full suite: `.venv/bin/python -m pytest -q` -> `545 passed, 1 skipped`.
+- `.venv/bin/python check_imports.py` -> compatibility imports passed.
+- Inline JavaScript parsed successfully with Node's `vm.Script`; `git diff --check` passed.
+- GitHub `master` push -> `9b1a1ef..ab47028`.
+- Production `.venv/bin/python -m py_compile module/web.py` passed and `.venv/bin/pip check` reported no broken requirements.
+- `tg-downloader.service` -> `active` on `ab47028`; five worker-start log lines were present.
+- The only post-restart line matching the broad failure keyword scan was the healthy performance counter `Failed downloads: 0`; there were no traceback, exception, critical, or real error lines.
+- Production-local `/` -> `302`, `/login` -> `200`, the new single-package POST route -> authenticated `302`, and the CSS/template contained the new direct-download markers.
+- Public `https://tgdn.wyichuan.cc/` -> `302`, `/login` -> `200`, the new single-package POST route -> authenticated `302`, and the public CSS contained the new placeholder marker.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the push, production fast-forward, service restart, log review, and local/public smoke checks.
+
+Rollback:
+- Revert `ab47028`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases, backups, sessions, and runtime files; this release made no schema, configuration, dependency, or persisted-selection migration.
