@@ -2341,3 +2341,33 @@ Changed files:
 
 Rollback:
 - Revert the implementation-plan commit; runtime code, local configuration, databases, Telegram clients, and production state remain unchanged.
+
+## 2026-07-29 - Task: Prepare dual-role Bot configuration and remove `/forward`
+
+### What was done
+
+- Added the optional `resource_bot_token` application setting and safe placeholder values for both Bot roles in the example configuration.
+- Added an exact local ignore rule for `.env.new` so the real resource Bot Token cannot be staged accidentally.
+- Extracted the management Bot command menu and help text into testable builders.
+- Removed the legacy `/forward` command from the management Bot menu, help text, and Handler registration while preserving `/listen_forward`, `/forward_to_comments`, and their shared implementation.
+
+### Testing
+
+- RED verification: focused configuration and command tests failed with missing `resource_bot_token`, `build_admin_bot_commands`, and `build_admin_help_text`.
+- Focused GREEN verification: `.venv/bin/pytest -q tests/module/test_app.py::test_resource_bot_token_defaults_empty tests/module/test_app.py::test_resource_bot_token_loads_from_config tests/module/test_bot_commands.py` -> `4 passed`.
+- Management Bot regression: `.venv/bin/pytest -q tests/module/test_comment_workflow.py tests/module/test_app.py` -> `111 passed`.
+- `git check-ignore .env.new` confirmed the real local Token file is ignored.
+
+### Notes
+
+Changed files:
+- `.gitignore`: Added the exact `.env.new` ignore rule.
+- `config.example.yaml`: Added management and resource Bot Token placeholders.
+- `module/app.py`: Loaded the optional resource Bot Token.
+- `module/bot.py`: Added pure command/help builders and removed the `/forward` public entry.
+- `tests/module/test_app.py`: Covered resource Bot configuration defaults and loading.
+- `tests/module/test_bot_commands.py`: Covered the management command and help surface.
+- `progress.md`: Recorded implementation and verification evidence.
+
+Rollback:
+- Revert this task commit to restore the original command entry and configuration surface; no database or production configuration was changed.

@@ -413,6 +413,7 @@ class Application:
         self.api_id: str = ""
         self.api_hash: str = ""
         self.bot_token: str = ""
+        self.resource_bot_token: str = ""
         self._chat_id: str = ""
         self.media_types: List[str] = []
         self.file_formats: dict = {}
@@ -479,6 +480,7 @@ class Application:
         self.api_id = _config["api_id"]
         self.api_hash = _config["api_hash"]
         self.bot_token = _config.get("bot_token", "")
+        self.resource_bot_token = _config.get("resource_bot_token", "")
         self.channel_library_config = ChannelLibraryConfig.from_mapping(
             _config.get("channel_library")
         )

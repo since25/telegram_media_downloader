@@ -76,6 +76,63 @@ COMMENT_MISSING_STREAK_LIMIT = 5
 PACKAGE_WITH_FOLLOWING_ACTION = "with_following"
 
 
+def build_admin_bot_commands():
+    """Return the management Bot command menu."""
+
+    return [
+        types.BotCommand("help", _t("Help")),
+        types.BotCommand(
+            "get_info", _t("Get group and user info from message link")
+        ),
+        types.BotCommand(
+            "download",
+            _t(
+                "To download the video, use the method to directly enter /download to view"
+            ),
+        ),
+        types.BotCommand("prescan", "预扫模式"),
+        types.BotCommand(
+            "listen_forward",
+            _t(
+                "Listen forward, use the method to directly enter /listen_forward to view"
+            ),
+        ),
+        types.BotCommand(
+            "add_filter",
+            _t(
+                "Add download filter, use the method to directly enter /add_filter to view"
+            ),
+        ),
+        types.BotCommand("set_language", _t("Set language")),
+        types.BotCommand("stop", _t("Stop bot download or forward")),
+        types.BotCommand(
+            "retry_failed",
+            _t("Retry failed download tasks with chat_id|message_id pairs"),
+        ),
+    ]
+
+
+def build_admin_help_text(latest_release_str: str = "") -> str:
+    """Return the management Bot help text."""
+
+    return (
+        f"`\n🤖 {_t('Telegram Media Downloader')}\n"
+        f"🌐 {_t('Version')}: {utils.__version__}`\n"
+        f"{latest_release_str}\n"
+        f"{_t('Available commands:')}\n"
+        f"/help - {_t('Show available commands')}\n"
+        f"/get_info - {_t('Get group and user info from message link')}\n"
+        f"/download - {_t('Download messages')}\n"
+        f"/listen_forward - {_t('Listen for forwarded messages')}\n"
+        f"/forward_to_comments - {_t('Forward a specific media to a comment section')}\n"
+        f"/set_language - {_t('Set language')}\n"
+        f"/stop - {_t('Stop bot download or forward')}\n\n"
+        f"{_t('**Note**: 1 means the start of the entire chat')},"
+        f"{_t('0 means the end of the entire chat')}\n"
+        f"`[` `]` {_t('means optional, not required')}\n"
+    )
+
+
 class DownloadBot:
     """Download bot"""
 
@@ -186,43 +243,6 @@ class DownloadBot:
             proxy=app.proxy,
         )
 
-        # 命令列表
-        commands = [
-            types.BotCommand("help", _t("Help")),
-            types.BotCommand(
-                "get_info", _t("Get group and user info from message link")
-            ),
-            types.BotCommand(
-                "download",
-                _t(
-                    "To download the video, use the method to directly enter /download to view"
-                ),
-            ),
-            types.BotCommand("prescan", "预扫模式"),
-            types.BotCommand(
-                "forward",
-                _t("Forward video, use the method to directly enter /forward to view"),
-            ),
-            types.BotCommand(
-                "listen_forward",
-                _t(
-                    "Listen forward, use the method to directly enter /listen_forward to view"
-                ),
-            ),
-            types.BotCommand(
-                "add_filter",
-                _t(
-                    "Add download filter, use the method to directly enter /add_filter to view"
-                ),
-            ),
-            types.BotCommand("set_language", _t("Set language")),
-            types.BotCommand("stop", _t("Stop bot download or forward")),
-            types.BotCommand(
-                "retry_failed",
-                _t("Retry failed download tasks with chat_id|message_id pairs"),
-            ),
-        ]
-
         self.app = app
         self.client = client
         self.add_download_task = add_download_task
@@ -250,7 +270,7 @@ class DownloadBot:
         admin = await self.client.get_me()
         self.allowed_user_ids.append(admin.id)
 
-        await self.bot.set_bot_commands(commands)
+        await self.bot.set_bot_commands(build_admin_bot_commands())
 
         self.bot.add_handler(
             MessageHandler(
@@ -263,13 +283,6 @@ class DownloadBot:
             MessageHandler(
                 start_prescan_mode,
                 filters=pyrogram.filters.command(["prescan"])
-                & pyrogram.filters.user(self.allowed_user_ids),
-            )
-        )
-        self.bot.add_handler(
-            MessageHandler(
-                forward_messages,
-                filters=pyrogram.filters.command(["forward"])
                 & pyrogram.filters.user(self.allowed_user_ids),
             )
         )
@@ -443,25 +456,11 @@ async def send_help_str(client: pyrogram.Client, chat_id):
     # except Exception:
     #     latest_release_str = ""
 
-    msg = (
-        f"`\n🤖 {_t('Telegram Media Downloader')}\n"
-        f"🌐 {_t('Version')}: {utils.__version__}`\n"
-        f"{latest_release_str}\n"
-        f"{_t('Available commands:')}\n"
-        f"/help - {_t('Show available commands')}\n"
-        f"/get_info - {_t('Get group and user info from message link')}\n"
-        f"/download - {_t('Download messages')}\n"
-        f"/forward - {_t('Forward messages')}\n"
-        f"/listen_forward - {_t('Listen for forwarded messages')}\n"
-        f"/forward_to_comments - {_t('Forward a specific media to a comment section')}\n"
-        f"/set_language - {_t('Set language')}\n"
-        f"/stop - {_t('Stop bot download or forward')}\n\n"
-        f"{_t('**Note**: 1 means the start of the entire chat')},"
-        f"{_t('0 means the end of the entire chat')}\n"
-        f"`[` `]` {_t('means optional, not required')}\n"
+    await client.send_message(
+        chat_id,
+        build_admin_help_text(latest_release_str),
+        reply_markup=update_keyboard,
     )
-
-    await client.send_message(chat_id, msg, reply_markup=update_keyboard)
 
 
 async def help_command(client: pyrogram.Client, message: pyrogram.types.Message):

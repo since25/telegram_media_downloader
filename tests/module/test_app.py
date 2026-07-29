@@ -36,6 +36,30 @@ def test_channel_library_config_is_clamped():
     assert not hasattr(app.channel_library_config, "incremental_scan_timezone")
 
 
+def test_resource_bot_token_defaults_empty():
+    app = Application("", "")
+
+    assert app.resource_bot_token == ""
+
+
+def test_resource_bot_token_loads_from_config():
+    app = Application("", "")
+
+    app.assign_config(
+        {
+            "api_id": "",
+            "api_hash": "",
+            "bot_token": "admin-token",
+            "resource_bot_token": "resource-token",
+            "media_types": [],
+            "file_formats": {},
+        }
+    )
+
+    assert app.bot_token == "admin-token"
+    assert app.resource_bot_token == "resource-token"
+
+
 class AppTestCase(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):

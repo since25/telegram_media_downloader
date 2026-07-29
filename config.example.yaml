@@ -1,5 +1,7 @@
 api_hash: your_api_hash
 api_id: your_api_id
+bot_token: your_bot_token
+resource_bot_token: your_resource_bot_token
 chat:
 - chat_id: telegram_chat_id
   last_read_message_id: 0
