@@ -2422,3 +2422,31 @@ Changed files:
 
 Rollback:
 - Revert the resource-delivery commit. Existing queued resource jobs should be backed up before rollback; this task does not modify the resource database schema.
+
+## 2026-07-29 - Task: Add activated resource Bot access, binding, search, and publishing
+
+### What was done
+
+- Added management commands to create one-time resource activation keys and revoke activated users without logging full keys.
+- Added the resource Bot private command flow for activation, status, binding instructions, channel status, unbinding, help, and keyword search.
+- Bound channels only after a pending activated user is verified as the channel owner/administrator and the resource Bot is verified as an administrator with post permission.
+- Added permission-loss handling for channel membership updates and revalidation before every publish action.
+- Added user-scoped 30-minute search sessions, five-result stable-package pages, bounded session retention, callback ownership checks, and idempotent one-click delivery enqueue.
+
+### Testing
+
+- RED verification: `.venv/bin/pytest -q tests/module/test_resource_bot.py` failed during collection because `module.resource_bot` did not exist.
+- Resource Bot command, permission, binding, search, and publish tests: `.venv/bin/pytest -q tests/module/test_resource_bot.py` -> `12 passed`.
+- Resource store, delivery, and interaction regression: `.venv/bin/pytest -q tests/module/test_resource_bot_store.py tests/module/test_resource_delivery.py tests/module/test_resource_bot.py` -> `37 passed`.
+- `.venv/bin/python -m py_compile module/resource_bot.py tests/module/test_resource_bot.py` passed.
+- `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/resource_bot.py`: Added management commands, resource Bot lifecycle/handlers, permission helpers, activation and channel binding, stable search sessions, pagination, and publish callbacks.
+- `tests/module/test_resource_bot.py`: Added access, permission, binding, search, session isolation, and idempotent publish coverage.
+- `progress.md`: Recorded implementation and verification evidence.
+
+Rollback:
+- Revert the resource Bot interaction commit. The independent resource database can remain unused; any issued activation keys and bindings should be preserved or explicitly revoked before a later deployment rollback.
