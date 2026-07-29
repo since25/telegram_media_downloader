@@ -2262,3 +2262,35 @@ Changed files:
 
 Rollback:
 - Revert the phase-three implementation commit before deployment. If schema v1 has already been deployed, preserve the SQLite database: the two added columns and schema marker are additive, while production rollback should use the verified pre-deploy database backup if the older code must see schema version 0.
+
+## 2026-07-29 - Task: Deploy persistent task restart recovery to RackNerd
+
+### What was done
+
+- Confirmed the production checkout had no tracked changes, fetched the reviewed `master`, and stopped `tg-downloader.service`.
+- Created a restricted release backup with the SQLite backup API for both production databases, plus `config.yaml`, sessions, and the pre-deploy commit marker.
+- Verified the schema-v0 task database migration on a separate backup copy before updating production.
+- Fast-forwarded production from `7805353` to `96df898`, ran compile and dependency checks, then started the service.
+- Confirmed the live task database migrated to schema v1 with the new upload-progress columns while the channel database remained intact.
+- Verified the production-local and public Web entrypoints and the deployed task-detail error styling.
+
+### Testing
+
+- Backup directory: `/root/telegram_media_downloader/backups/release-20260729-093149-phase3`; database, configuration, and session backup files are mode `0600`.
+- Backup `web_tasks.sqlite3` -> schema `0`, `PRAGMA integrity_check` -> `ok`; backup `channel_library.sqlite3` -> schema `0`, integrity -> `ok`.
+- Migration check copy -> schema `1`, integrity -> `ok`, with `uploaded_size` and `upload_speed` present.
+- Production `.venv/bin/python -m py_compile module/task_state.py module/channel_library_service.py module/channel_library_store.py module/web.py` passed; `.venv/bin/pip check` reported no broken requirements.
+- Live `web_tasks.sqlite3` -> schema `1`, integrity -> `ok`, upload-progress columns present; live `channel_library.sqlite3` integrity -> `ok`.
+- No ordinary task required `restart_interrupted` recovery during this deployment.
+- `tg-downloader.service` -> `active`; four workers started and the post-start journal contained no traceback, exception, critical, or error lines.
+- Current and backed-up `config.yaml` SHA-256 checksums match.
+- Production-local `/` -> `302 /login`, `/login` -> `200`; public `/` -> `302 /login`, public `/login` -> `200`; public CSS contains `task-detail-error`.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the production backup, migration rehearsal, fast-forward deployment, schema verification, service health, and Web smoke checks.
+
+Rollback:
+- Preferred code rollback: revert `96df898`, push `master`, fast-forward production, and restart `tg-downloader.service`; the additive columns can remain in place for the previous code.
+- Exact pre-deploy data rollback, only if required and with the service stopped, is available from `/root/telegram_media_downloader/backups/release-20260729-093149-phase3`. Restoring that snapshot would discard task-state changes written after this deployment, so preserve the current databases before any restore.
