@@ -16,6 +16,13 @@ Web-submitted package/comment tasks first scan into a preview state. The task ro
 
 Confirmed tasks use the existing scan and download pipeline and the recommended naming strategy. Task rows move through scan, confirmation, queue, download, upload, and completion states on `/api/task-dashboard`.
 
+The Tasks tab uses a compact five-column task table. Each row groups the task title,
+source, type, and short task ID so status, progress, results, and available actions remain
+easy to scan. Selecting a row opens the detail panel below it; ordinary file tasks and
+prescan tasks share the same task identity, status, current-file, and action header while
+retaining their existing file/package APIs and controls. The selected row is keyboard
+focusable and can be opened with Enter or Space.
+
 Prescan mode scans a bounded message window, writes package summaries to the Web state, and waits for the user to include packages before `Start`. Selected packages are downloaded serially through the existing prescan download path. The scan window is configurable per submission via `max_messages` (default 2000, capped at 10000).
 
 Confirming a prescan keeps its package list in Web state instead of discarding it, so `GET /api/prescans/<task_id>/packages` keeps returning `200` (with each package's `selected` flag as of confirmation time) while the download is in progress, which is what backs the prescan download detail view. Cancelling a prescan, or clearing/clear-completing its task once it reaches a terminal state, drops the retained package list so it does not linger in memory.

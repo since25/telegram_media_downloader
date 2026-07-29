@@ -2011,3 +2011,38 @@ Changed files:
 
 Rollback:
 - Revert the design-only commit; no runtime, configuration, API, or persisted-data rollback is required.
+
+## 2026-07-29 - Task: Optimize download-task and task-detail panels
+
+### What was done
+
+- Consolidated the task list from eight independent columns into five stable columns: task identity, status, progress, results, and actions.
+- Grouped task title, source, type, and short ID into one hierarchy; added filter-specific empty states, a stronger selected-row marker, keyboard row selection, and accessible filter/selection state.
+- Standardized ordinary and prescan task details around one title/status/action header, one metadata row, and one current-file row while retaining all existing APIs and task commands.
+- Guarded asynchronous task and prescan detail responses so an older request cannot overwrite a newly selected task.
+- Added scoped responsive styles without changing the application palette, global design system, backend, database, configuration, or polling frequency.
+
+### Testing
+
+- TDD red check: `.venv/bin/python -m pytest tests/module/test_task_page_ui.py -q` -> `4 failed` before implementation for the missing five-column, accessibility, detail, and CSS contracts.
+- Focused UI contract: `.venv/bin/python -m pytest tests/module/test_task_page_ui.py -q` -> `4 passed`.
+- Targeted Web regression: `.venv/bin/python -m pytest tests/module/test_task_page_ui.py tests/module/test_web.py tests/module/test_channel_library_web.py -q` -> `138 passed`.
+- Full suite: `.venv/bin/python -m pytest -q` -> `544 passed, 1 skipped`.
+- `.venv/bin/python check_imports.py` -> compatibility imports passed.
+- Inline JavaScript parsed successfully with Node's `vm.Script`; `git diff --check` passed.
+- Local mock-data browser check at 1440x1000: the 1240px application and task table fit without page or table overflow; row selection opened the correct detail and rendered the current filename, 37% progress, and 7.0 MB/s speed.
+- Local mock-data browser check at 390x844: document width matched the viewport, the 820px task table scrolled only inside its 347px container, filters exposed the correct pressed state, Enter opened the selected task detail, and the console reported no errors.
+- Browser checks used an isolated local Web preview with synthetic task rows only; Telegram was not connected and no download command was submitted.
+
+### Notes
+
+Changed files:
+- `module/templates/index.html`: Added the five-column task renderer, unified detail hierarchy, accessible interactions, empty states, and stale-response guards.
+- `module/static/css/index.css`: Added task-scoped desktop and narrow-screen styles.
+- `tests/module/test_task_page_ui.py`: Added static DOM, interaction-contract, async-guard, and CSS tests.
+- `docs/web-control-console.md`: Documented the compact task list and shared task-detail behavior.
+- `docs/superpowers/plans/2026-07-29-task-panels-density.md`: Recorded the test-first implementation and verification plan.
+- `progress.md`: Recorded implementation and fresh verification evidence.
+
+Rollback:
+- Revert the task-panel implementation and documentation commits. No database, API, configuration, runtime dependency, or persisted-data rollback is required.
