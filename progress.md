@@ -2319,3 +2319,25 @@ Changed files:
 
 Rollback:
 - Revert the design commit; no runtime code, configuration, database, Telegram account, or production service state was changed.
+
+## 2026-07-29 - Task: Plan dual-role resource Bot implementation
+
+### What was done
+
+- Converted the approved design into eight independently testable implementation tasks covering configuration, persistent access state, delivery, Bot interaction, lifecycle integration, documentation, and final verification.
+- Locked the implementation interfaces for activation keys, channel binding, delivery-job idempotency, serial worker recovery, search sessions, and the unified Bot manager.
+- Selected inline test-driven execution on the dedicated feature branch, with no multi-agent file modification.
+
+### Testing
+
+- Reviewed the plan against every section of `docs/superpowers/specs/2026-07-29-dual-role-resource-bot-design.md`.
+- Scanned the plan for placeholder actions, missing test commands, inconsistent signatures, unowned files, and production actions outside the authorized boundary.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/plans/2026-07-29-dual-role-resource-bot.md`: Added the test-driven implementation plan and final completion audit.
+- `progress.md`: Recorded the implementation-plan boundary and review evidence.
+
+Rollback:
+- Revert the implementation-plan commit; runtime code, local configuration, databases, Telegram clients, and production state remain unchanged.
