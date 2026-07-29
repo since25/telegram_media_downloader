@@ -10,6 +10,7 @@ from module.channel_library_store import (
     ChannelLibraryConfig,
     ChannelLibraryStore,
 )
+from module.channel_library_workflow import comment_storage_message_id
 
 
 REQUIRED_TABLES = {
@@ -17,6 +18,7 @@ REQUIRED_TABLES = {
     "channel_libraries",
     "channel_scan_jobs",
     "channel_media_messages",
+    "channel_source_posts",
     "channel_packages",
     "channel_package_items",
     "channel_scan_failures",
@@ -87,6 +89,21 @@ def media_row(message_id, media_type="video"):
     }
 
 
+def comment_media_row(post_id, comment_id, discussion_group_id=-2001):
+    row = media_row(comment_storage_message_id(post_id, comment_id))
+    row.update(
+        {
+            "source_kind": "comment",
+            "source_chat_id": discussion_group_id,
+            "source_message_id": comment_id,
+            "source_post_id": post_id,
+            "caption": f"Comment {comment_id}",
+            "raw_fingerprint": f"comment-{post_id}-{comment_id}",
+        }
+    )
+    return row
+
+
 def make_partial_job_with_failures(store):
     job = make_full_job(store, snapshot_max_id=40)
     store.transition_job(job["id"], "running", now=1.0)
@@ -127,6 +144,118 @@ def test_store_initializes_secure_wal_schema(tmp_path):
             )
         }
     assert REQUIRED_TABLES <= tables
+
+
+def test_existing_and_default_libraries_use_message_only_scan_mode(store):
+    library = make_library(store)
+
+    assert library["scan_mode"] == "messages"
+
+
+def test_comment_package_keeps_source_ids_and_download_group(store):
+    library, job, _created = store.create_or_get_library_with_full_job(
+        -1001,
+        "channel",
+        "demo",
+        "Demo",
+        "https://t.me/demo/1",
+        1,
+        scan_mode="comments",
+        now=1.0,
+    )
+    store.transition_job(job["id"], "running", now=2.0)
+    publication = store.publish_comment_package(
+        job["id"],
+        {
+            "post_id": 1,
+            "message_date": "2026-07-29T00:00:00+00:00",
+            "title": "Comment package",
+            "observed_comment_count": 2,
+        },
+        -2001,
+        [
+            comment_media_row(1, 101),
+            comment_media_row(1, 102),
+        ],
+        now=3.0,
+    )
+    package_id = publication["package_id"]
+    store.commit_fetched_batch(job["id"], [], end_id=1, now=3.5)
+    store.advance_index_checkpoint(job["id"], 1, now=3.6)
+    store.transition_job(job["id"], "completed", now=3.7)
+    store.set_package_selected(library["id"], package_id, True, now=4.0)
+
+    package = store.get_package(package_id)
+    items = store.list_package_items_aggregate(package_id).items
+    first_item_page = store.list_package_items_aggregate(package_id, limit=1)
+    second_item_page = store.list_package_items_aggregate(
+        package_id, cursor=first_item_page.next_cursor, limit=1
+    )
+    groups = store.selected_download_groups()
+    batch, created = store.create_download_batch_result(
+        library["id"],
+        "comment-source",
+        "comment-source-task",
+        package_ids=(package_id,),
+        now=5.0,
+    )
+
+    assert package["package_kind"] == "comment"
+    assert package["source_post_id"] == 1
+    assert package["source_chat_id"] == -2001
+    assert [item["source_message_id"] for item in items] == [101, 102]
+    assert first_item_page.items[0]["source_message_id"] == 101
+    assert second_item_page.items[0]["source_message_id"] == 102
+    assert groups == [
+        {
+            "library_id": library["id"],
+            "source_chat_id": -2001,
+            "package_ids": [package_id],
+        }
+    ]
+    assert created is True
+    assert batch["source_chat_id"] == -2001
+    assert batch["packages"][0]["package_kind"] == "comment"
+    assert [
+        item["source_message_id"] for item in batch["packages"][0]["items"]
+    ] == [101, 102]
+
+
+def test_changing_existing_scan_mode_queues_full_revisit(store):
+    library, job, created = store.create_or_get_library_with_full_job(
+        -1001,
+        "channel",
+        "demo",
+        "Demo",
+        "https://t.me/demo/1",
+        1,
+        scan_mode="messages",
+        now=1.0,
+    )
+    assert created is True
+    store.transition_job(job["id"], "running", now=2.0)
+    store.commit_fetched_batch(job["id"], [], end_id=1, now=3.0)
+    store.commit_indexed_revision(job["id"], 1, now=4.0)
+    store.transition_job(job["id"], "completed", now=5.0)
+
+    updated, revisit, created = store.create_or_get_library_with_full_job(
+        -1001,
+        "channel",
+        "demo",
+        "Demo",
+        "https://t.me/demo/1",
+        2,
+        scan_mode="both",
+        now=6.0,
+    )
+
+    assert created is False
+    assert updated["scan_mode"] == "both"
+    assert revisit["id"] != job["id"]
+    assert revisit["status"] == "queued"
+    assert revisit["next_message_id"] == 1
+    assert revisit["fetched_through_message_id"] == 0
+    assert revisit["indexed_through_message_id"] == 0
 
 
 def test_channel_library_config_does_not_read_cron_settings():
@@ -198,8 +327,8 @@ def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
             (job["id"],),
         ).fetchone()[0]
 
-    assert SCHEMA_VERSION == 7
-    assert versions == [1, 2, 3, 7]
+    assert SCHEMA_VERSION == 8
+    assert versions == [1, 2, 3, 8]
     assert "control_requested" in columns
     assert "channel_title" in batch_columns
     assert {"rule_key", "matched_keywords", "batch_id"} <= trigger_columns
@@ -240,7 +369,7 @@ def test_v5_database_adds_keyword_monitor_tables_without_losing_rows(tmp_path):
         "keyword_monitor_terms",
         "keyword_monitor_history",
     } <= tables
-    assert versions >= {5, 7}
+    assert versions >= {5, 8}
     assert migrated.get_library(library["id"])["title"] == "Demo"
 
 

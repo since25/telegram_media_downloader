@@ -29,8 +29,10 @@ than the parent navigation required to reach a package.
 
 Open the Channels tab to submit any accessible message link from a channel or supergroup.
 The link identifies the conversation; the initial scan snapshots the latest visible
-message ID and indexes the complete visible ID range. Submitting another link for the
-same Telegram `chat_id` opens the existing library and its persisted checkpoint. Package
+message ID and indexes the complete visible ID range. Each library has a scan mode:
+`messages`, `comments`, or `both`. Existing rows migrate to `messages`. Submitting another
+link for the same Telegram `chat_id` and mode opens the existing library; changing the
+mode queues a full revisit from message ID 1. Package
 search and download controls live only in Resources; the selected channel workspace
 shows stable/available, downloaded, pending, media, known-size, and failure counts plus
 the stable-package distribution for enabled keyword monitor groups and match terms.
@@ -39,9 +41,17 @@ The initial full scan requests 50 consecutive message IDs per batch and waits a 
 
 The scheduler runs one channel scan at a time. A queued or active Telegram media download takes priority: the current scan finishes its API call, moves to `auto_paused_download` at the batch boundary, and returns to the queue when Telegram download activity is idle. Upload-only work does not hold the Telegram activity gate. User pause and stop also take effect at a committed batch boundary, preserving metadata and the next-message checkpoint.
 
+For comment-enabled libraries, every visible source post is retained with its observed
+and successfully scanned comment counts. One source post's supported media comments form
+one stable package titled from the source post. Incremental scans first batch-refetch
+historical source posts and only rescan reply content when the visible count differs from
+the successfully fetched count. If Telegram reports a new count before all replies are
+available, the lower fetched count remains the checkpoint so the next incremental retries.
+Comment package items retain the discussion-group chat ID and real comment message ID.
+
 The Channels tab manages one optional global five-field cron expression and IANA
 timezone for all libraries. The singleton setting is stored in
-`channel_library.sqlite3`, is disabled after schema-v7 migration, and is never read from
+`channel_library.sqlite3`, is disabled after schema-v8 migration, and is never read from
 or written to `config.yaml`. Saving through the Web console wakes the owner-loop watcher
 and applies the new schedule without restarting or cancelling an active Telegram
 request. The disabled state retains its saved expression.
@@ -49,7 +59,8 @@ request. The disabled state retains its saved expression.
 At each tick the watcher checks libraries in ID order. If any initial or manual full scan
 is queued, running, paused, rate-limited, or stopped, the whole automatic sweep yields.
 Otherwise, a library with any recoverable scan is skipped individually. A latest-message
-check that finds no new ID creates no job. Missed or skipped ticks are not accumulated.
+check that finds no new ID creates no job for `messages` mode; `comments` and `both` still
+create a refresh job so old posts can receive late comments. Missed or skipped ticks are not accumulated.
 New tails are persisted into the same FIFO scan scheduler as manual work, so the cron
 watcher never starts a parallel Telegram scanner.
 
@@ -68,8 +79,10 @@ Aggregate filters cover source channels, normalized title substring, UTC publica
 range, inclusive media-count and known-size bounds, unknown-size inclusion, and download
 status. Package and item lists use keyset cursors. “Select all filtered” is evaluated by
 the server across every matching page and channel. One aggregate download submission is
-split into one existing channel batch per source channel so Telegram refetch identity and
-package naming remain stable.
+split by indexed channel and actual Telegram source chat. Channel-message packages refetch
+from the channel; comment packages refetch from the discussion group and use the existing
+recommended comment-link naming context. This prevents equal message IDs in different
+Telegram chats from sharing one task-file identity.
 
 A `partial` library remains browseable. Stable packages outside uncertain closures can be selected and downloaded; use Repair for all open failure ranges or selected failure IDs. A successful repair rebuilds the complete affected closure before publishing stable packages. After the first full scan finishes, Incremental snapshots and scans only the new ID tail.
 

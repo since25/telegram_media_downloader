@@ -16,12 +16,13 @@ import pytz
 from croniter import croniter
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 LIBRARY_STATUSES = frozenset(
     {"new", "indexing", "ready", "partial", "paused", "stopped", "failed"}
 )
 SCAN_JOB_KINDS = frozenset({"full", "incremental", "repair"})
+CHANNEL_SCAN_MODES = frozenset({"messages", "comments", "both"})
 SCAN_JOB_STATUSES = frozenset(
     {
         "queued",
@@ -76,6 +77,7 @@ DOWNLOAD_ERROR_CODES = frozenset(
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
 SQLITE_MAX_INTEGER = 2**63 - 1
+SIGNED_CURSOR_KEYS = frozenset({"start_message_id", "message_id"})
 
 
 class RedownloadRequiredError(ValueError):
@@ -213,8 +215,8 @@ def _decode_cursor(cursor: str, required_keys: frozenset[str]) -> dict[str, int]
         raise ValueError("Invalid cursor")
     if any(
         type(payload[key]) is not int
-        or payload[key] < 0
-        or payload[key] > SQLITE_MAX_INTEGER
+        or abs(payload[key]) > SQLITE_MAX_INTEGER
+        or (payload[key] < 0 and key not in SIGNED_CURSOR_KEYS)
         for key in required_keys
     ):
         raise ValueError("Invalid cursor")
@@ -283,6 +285,13 @@ class ChannelLibraryStore:
         connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 
+    @staticmethod
+    def validate_scan_mode(scan_mode: str) -> str:
+        value = str(scan_mode or "").strip()
+        if value not in CHANNEL_SCAN_MODES:
+            raise ValueError(f"Unsupported channel scan mode: {value}")
+        return value
+
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
@@ -310,6 +319,8 @@ class ChannelLibraryStore:
                     chat_id INTEGER NOT NULL UNIQUE,
                     chat_type TEXT NOT NULL
                         CHECK (chat_type IN ('channel', 'supergroup')),
+                    scan_mode TEXT NOT NULL DEFAULT 'messages'
+                        CHECK (scan_mode IN ('messages', 'comments', 'both')),
                     username TEXT,
                     title TEXT NOT NULL,
                     source_link TEXT NOT NULL,
@@ -366,6 +377,11 @@ class ChannelLibraryStore:
                 CREATE TABLE IF NOT EXISTS channel_media_messages (
                     library_id INTEGER NOT NULL,
                     message_id INTEGER NOT NULL,
+                    source_kind TEXT NOT NULL DEFAULT 'channel'
+                        CHECK (source_kind IN ('channel', 'comment')),
+                    source_chat_id INTEGER,
+                    source_message_id INTEGER,
+                    source_post_id INTEGER,
                     message_date TEXT,
                     media_type TEXT NOT NULL,
                     media_group_id TEXT,
@@ -384,9 +400,31 @@ class ChannelLibraryStore:
                         ON DELETE CASCADE
                 );
 
+                CREATE TABLE IF NOT EXISTS channel_source_posts (
+                    library_id INTEGER NOT NULL,
+                    post_id INTEGER NOT NULL,
+                    message_date TEXT,
+                    title TEXT NOT NULL,
+                    observed_comment_count INTEGER,
+                    scanned_comment_count INTEGER,
+                    discussion_group_id INTEGER,
+                    last_error TEXT,
+                    first_seen_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    last_scanned_at REAL,
+                    PRIMARY KEY (library_id, post_id),
+                    FOREIGN KEY (library_id) REFERENCES channel_libraries(id)
+                        ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS channel_packages (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     library_id INTEGER NOT NULL,
+                    package_kind TEXT NOT NULL DEFAULT 'channel'
+                        CHECK (package_kind IN ('channel', 'comment')),
+                    source_chat_id INTEGER,
+                    source_post_id INTEGER,
+                    source_comment_count INTEGER,
                     start_message_id INTEGER NOT NULL,
                     end_message_id INTEGER NOT NULL,
                     title TEXT NOT NULL,
@@ -501,6 +539,7 @@ class ChannelLibraryStore:
                 CREATE TABLE IF NOT EXISTS channel_download_batches (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     library_id INTEGER NOT NULL,
+                    source_chat_id INTEGER,
                     task_id TEXT NOT NULL UNIQUE,
                     idempotency_key TEXT NOT NULL,
                     channel_title TEXT NOT NULL,
@@ -526,6 +565,9 @@ class ChannelLibraryStore:
                     batch_id INTEGER NOT NULL,
                     library_id INTEGER NOT NULL,
                     package_id INTEGER NOT NULL,
+                    package_kind TEXT NOT NULL DEFAULT 'channel',
+                    source_chat_id INTEGER,
+                    source_post_id INTEGER,
                     package_revision INTEGER NOT NULL,
                     title TEXT NOT NULL,
                     start_message_id INTEGER NOT NULL,
@@ -553,6 +595,8 @@ class ChannelLibraryStore:
                     package_id INTEGER NOT NULL,
                     library_id INTEGER NOT NULL,
                     message_id INTEGER NOT NULL,
+                    source_chat_id INTEGER,
+                    source_message_id INTEGER,
                     ordinal INTEGER NOT NULL,
                     media_type TEXT NOT NULL,
                     caption_for_naming TEXT,
@@ -642,6 +686,11 @@ class ChannelLibraryStore:
                     ON channel_scan_jobs(status, created_at, id);
                 CREATE INDEX IF NOT EXISTS idx_channel_media_messages_group
                     ON channel_media_messages(library_id, media_group_id);
+                CREATE INDEX IF NOT EXISTS idx_channel_source_posts_refresh
+                    ON channel_source_posts(
+                        library_id, observed_comment_count, scanned_comment_count,
+                        post_id
+                    );
                 CREATE INDEX IF NOT EXISTS idx_channel_packages_listing
                     ON channel_packages(
                         library_id, boundary_status, start_message_id, id
@@ -765,6 +814,168 @@ class ChannelLibraryStore:
                         )
                     """
                 )
+            library_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(channel_libraries)")
+            }
+            if "scan_mode" not in library_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE channel_libraries
+                    ADD COLUMN scan_mode TEXT NOT NULL DEFAULT 'messages'
+                        CHECK (scan_mode IN ('messages', 'comments', 'both'))
+                    """
+                )
+            media_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(channel_media_messages)"
+                )
+            }
+            for column_sql in (
+                "source_kind TEXT NOT NULL DEFAULT 'channel'",
+                "source_chat_id INTEGER",
+                "source_message_id INTEGER",
+                "source_post_id INTEGER",
+            ):
+                column_name = column_sql.split()[0]
+                if column_name not in media_columns:
+                    connection.execute(
+                        f"ALTER TABLE channel_media_messages ADD COLUMN {column_sql}"
+                    )
+            package_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(channel_packages)")
+            }
+            for column_sql in (
+                "package_kind TEXT NOT NULL DEFAULT 'channel'",
+                "source_chat_id INTEGER",
+                "source_post_id INTEGER",
+                "source_comment_count INTEGER",
+            ):
+                column_name = column_sql.split()[0]
+                if column_name not in package_columns:
+                    connection.execute(
+                        f"ALTER TABLE channel_packages ADD COLUMN {column_sql}"
+                    )
+            batch_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(channel_download_batches)"
+                )
+            }
+            if "source_chat_id" not in batch_columns:
+                connection.execute(
+                    "ALTER TABLE channel_download_batches ADD COLUMN source_chat_id INTEGER"
+                )
+            batch_package_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(channel_download_batch_packages)"
+                )
+            }
+            for column_sql in (
+                "package_kind TEXT NOT NULL DEFAULT 'channel'",
+                "source_chat_id INTEGER",
+                "source_post_id INTEGER",
+            ):
+                column_name = column_sql.split()[0]
+                if column_name not in batch_package_columns:
+                    connection.execute(
+                        "ALTER TABLE channel_download_batch_packages "
+                        f"ADD COLUMN {column_sql}"
+                    )
+            batch_item_columns = {
+                row[1]
+                for row in connection.execute(
+                    "PRAGMA table_info(channel_download_batch_items)"
+                )
+            }
+            for column_sql in (
+                "source_chat_id INTEGER",
+                "source_message_id INTEGER",
+            ):
+                column_name = column_sql.split()[0]
+                if column_name not in batch_item_columns:
+                    connection.execute(
+                        f"ALTER TABLE channel_download_batch_items ADD COLUMN {column_sql}"
+                    )
+            connection.execute(
+                """
+                UPDATE channel_media_messages
+                SET source_kind = COALESCE(source_kind, 'channel'),
+                    source_chat_id = COALESCE(
+                        source_chat_id,
+                        (SELECT chat_id FROM channel_libraries AS library
+                         WHERE library.id = channel_media_messages.library_id)
+                    ),
+                    source_message_id = COALESCE(source_message_id, message_id)
+                """
+            )
+            connection.execute(
+                """
+                UPDATE channel_packages
+                SET package_kind = COALESCE(package_kind, 'channel'),
+                    source_chat_id = COALESCE(
+                        source_chat_id,
+                        (SELECT chat_id FROM channel_libraries AS library
+                         WHERE library.id = channel_packages.library_id)
+                    )
+                """
+            )
+            connection.execute(
+                """
+                UPDATE channel_download_batches
+                SET source_chat_id = COALESCE(
+                    source_chat_id,
+                    (SELECT chat_id FROM channel_libraries AS library
+                     WHERE library.id = channel_download_batches.library_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                UPDATE channel_download_batch_packages AS package
+                SET package_kind = COALESCE(
+                        package_kind,
+                        (SELECT source.package_kind
+                         FROM channel_packages AS source
+                         WHERE source.id = package.package_id)
+                    ),
+                    source_chat_id = COALESCE(
+                        source_chat_id,
+                        (SELECT source.source_chat_id
+                         FROM channel_packages AS source
+                         WHERE source.id = package.package_id)
+                    ),
+                    source_post_id = COALESCE(
+                        source_post_id,
+                        (SELECT source.source_post_id
+                         FROM channel_packages AS source
+                         WHERE source.id = package.package_id)
+                    )
+                """
+            )
+            connection.execute(
+                """
+                UPDATE channel_download_batch_items AS item
+                SET source_chat_id = COALESCE(
+                        source_chat_id,
+                        (SELECT media.source_chat_id
+                         FROM channel_media_messages AS media
+                         WHERE media.library_id = item.library_id
+                           AND media.message_id = item.message_id)
+                    ),
+                    source_message_id = COALESCE(
+                        source_message_id,
+                        (SELECT media.source_message_id
+                         FROM channel_media_messages AS media
+                         WHERE media.library_id = item.library_id
+                           AND media.message_id = item.message_id),
+                        message_id
+                    )
+                """
+            )
             connection.execute(
                 "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (?, ?)",
                 (SCHEMA_VERSION, time.time()),
@@ -872,18 +1083,29 @@ class ChannelLibraryStore:
         username: Optional[str],
         title: str,
         source_link: str,
+        scan_mode: str = "messages",
     ) -> tuple[dict, bool]:
+        scan_mode = self.validate_scan_mode(scan_mode)
         now = time.time()
         with self.connect() as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO channel_libraries (
-                    chat_id, chat_type, username, title, source_link,
+                    chat_id, chat_type, scan_mode, username, title, source_link,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id) DO NOTHING
                 """,
-                (chat_id, chat_type, username, title, source_link, now, now),
+                (
+                    chat_id,
+                    chat_type,
+                    scan_mode,
+                    username,
+                    title,
+                    source_link,
+                    now,
+                    now,
+                ),
             )
             created = cursor.rowcount == 1
             if not created:
@@ -909,35 +1131,75 @@ class ChannelLibraryStore:
         title: str,
         source_link: str,
         snapshot_max_message_id: int,
+        scan_mode: str = "messages",
         now: Optional[float] = None,
     ) -> tuple[dict, dict, bool]:
         """Atomically create/deduplicate a library and its initial full job."""
 
         if snapshot_max_message_id < 0:
             raise ValueError("Invalid scan message range")
+        scan_mode = self.validate_scan_mode(scan_mode)
         now = time.time() if now is None else now
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(
                 """
                 INSERT INTO channel_libraries (
-                    chat_id, chat_type, username, title, source_link,
+                    chat_id, chat_type, scan_mode, username, title, source_link,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id) DO NOTHING
                 """,
-                (chat_id, chat_type, username, title, source_link, now, now),
+                (
+                    chat_id,
+                    chat_type,
+                    scan_mode,
+                    username,
+                    title,
+                    source_link,
+                    now,
+                    now,
+                ),
             )
             created = cursor.rowcount == 1
+            mode_changed = False
             if not created:
+                existing = connection.execute(
+                    "SELECT * FROM channel_libraries WHERE chat_id = ?", (chat_id,)
+                ).fetchone()
+                mode_changed = existing["scan_mode"] != scan_mode
+                if mode_changed:
+                    active = connection.execute(
+                        """
+                        SELECT 1 FROM channel_scan_jobs
+                        WHERE library_id = ? AND status IN (
+                            'queued', 'running', 'paused_user',
+                            'auto_paused_download', 'waiting_rate_limit', 'stopped'
+                        )
+                        LIMIT 1
+                        """,
+                        (existing["id"],),
+                    ).fetchone()
+                    if active is not None:
+                        raise ValueError(
+                            "Cannot change scan mode while a scan is recoverable"
+                        )
                 connection.execute(
                     """
                     UPDATE channel_libraries
-                    SET chat_type = ?, username = ?, title = ?, source_link = ?,
-                        updated_at = ?
+                    SET chat_type = ?, scan_mode = ?, username = ?, title = ?,
+                        source_link = ?, updated_at = ?
                     WHERE chat_id = ?
                     """,
-                    (chat_type, username, title, source_link, now, chat_id),
+                    (
+                        chat_type,
+                        scan_mode,
+                        username,
+                        title,
+                        source_link,
+                        now,
+                        chat_id,
+                    ),
                 )
             library = connection.execute(
                 "SELECT * FROM channel_libraries WHERE chat_id = ?", (chat_id,)
@@ -951,9 +1213,12 @@ class ChannelLibraryStore:
                 """,
                 (library["id"],),
             ).fetchone()
-            if job is None:
+            if job is None or (not created and mode_changed):
                 if not created and library["status"] != "new":
-                    raise ValueError(f"Library {library['id']} has no initial scan job")
+                    if not mode_changed:
+                        raise ValueError(
+                            f"Library {library['id']} has no initial scan job"
+                        )
                 job_id = self._insert_scan_job(
                     connection,
                     library,
@@ -962,6 +1227,30 @@ class ChannelLibraryStore:
                     snapshot_max_message_id,
                     now,
                 )
+                if mode_changed:
+                    connection.execute(
+                        """
+                        UPDATE channel_scan_jobs
+                        SET next_message_id = 1,
+                            fetched_through_message_id = 0,
+                            indexed_through_message_id = 0
+                        WHERE id = ?
+                        """,
+                        (job_id,),
+                    )
+                    excluded_kind = (
+                        "comment" if scan_mode == "messages" else "channel"
+                    )
+                    if scan_mode != "both":
+                        connection.execute(
+                            """
+                            UPDATE channel_packages
+                            SET boundary_status = 'superseded', updated_at = ?
+                            WHERE library_id = ? AND package_kind = ?
+                              AND boundary_status != 'superseded'
+                            """,
+                            (now, library["id"], excluded_kind),
+                        )
                 connection.execute(
                     """
                     UPDATE channel_libraries
@@ -1339,10 +1628,14 @@ class ChannelLibraryStore:
             predicates.append("p.published_at < ?")
             parameters.append(date_to)
         if package_filter.message_id_min is not None:
-            predicates.append("p.end_message_id >= ?")
+            predicates.append(
+                "COALESCE(p.source_post_id, p.end_message_id) >= ?"
+            )
             parameters.append(package_filter.message_id_min)
         if package_filter.message_id_max is not None:
-            predicates.append("p.start_message_id <= ?")
+            predicates.append(
+                "COALESCE(p.source_post_id, p.start_message_id) <= ?"
+            )
             parameters.append(package_filter.message_id_max)
         if package_filter.media_count_min is not None:
             predicates.append("p.media_count >= ?")
@@ -1891,7 +2184,8 @@ class ChannelLibraryStore:
                 f"""
                 SELECT i.*, m.message_date, m.media_group_id, m.caption,
                        m.file_name, m.file_size, m.mime_type, m.duration,
-                       m.width, m.height
+                       m.width, m.height, m.source_kind, m.source_chat_id,
+                       m.source_message_id, m.source_post_id
                 FROM channel_package_items AS i
                 JOIN channel_media_messages AS m
                   ON m.library_id = i.library_id AND m.message_id = i.message_id
@@ -2263,6 +2557,38 @@ class ChannelLibraryStore:
             ).fetchall()
         return [int(row["library_id"]) for row in rows]
 
+    def selected_download_groups(self) -> list[dict]:
+        """Group selected packages by library and actual Telegram source chat."""
+
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT s.library_id,
+                       COALESCE(p.source_chat_id, l.chat_id) AS source_chat_id,
+                       p.id AS package_id
+                FROM channel_package_selections AS s
+                JOIN channel_packages AS p
+                  ON p.library_id = s.library_id AND p.id = s.package_id
+                JOIN channel_libraries AS l ON l.id = p.library_id
+                WHERE s.selected = 1
+                  AND s.package_revision = p.index_revision
+                  AND p.boundary_status = 'stable'
+                ORDER BY s.library_id, source_chat_id, p.start_message_id, p.id
+                """
+            ).fetchall()
+        groups: dict[tuple[int, int], list[int]] = {}
+        for row in rows:
+            key = (int(row["library_id"]), int(row["source_chat_id"]))
+            groups.setdefault(key, []).append(int(row["package_id"]))
+        return [
+            {
+                "library_id": library_id,
+                "source_chat_id": source_chat_id,
+                "package_ids": package_ids,
+            }
+            for (library_id, source_chat_id), package_ids in groups.items()
+        ]
+
     def create_download_batch(
         self,
         library_id: int,
@@ -2339,10 +2665,6 @@ class ChannelLibraryStore:
             )
             if not requested_package_ids:
                 raise ValueError("At least one channel package is required")
-            if auto_download_rule_key is None and not monitor_hits:
-                raise ValueError(
-                    "Explicit packages require an automatic-download source"
-                )
         if auto_download_rule_key is not None and requested_package_ids is None:
             raise ValueError("Auto-download rule requires explicit packages")
         if monitor_hits and requested_package_ids is None:
@@ -2401,6 +2723,15 @@ class ChannelLibraryStore:
                         raise ValueError("Channel package does not exist")
                 if not selected:
                     raise ValueError("No channel packages are selected")
+                source_chat_ids = {
+                    int(package["source_chat_id"] or library["chat_id"])
+                    for package in selected
+                }
+                if len(source_chat_ids) != 1:
+                    raise ValueError(
+                        "A download batch cannot mix Telegram source chats"
+                    )
+                source_chat_id = next(iter(source_chat_ids))
                 for package in selected:
                     if int(package["selected_revision"]) != int(
                         package["index_revision"]
@@ -2445,12 +2776,13 @@ class ChannelLibraryStore:
                 cursor = connection.execute(
                     """
                     INSERT INTO channel_download_batches (
-                        library_id, task_id, idempotency_key, channel_title,
-                        allow_redownload, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        library_id, source_chat_id, task_id, idempotency_key,
+                        channel_title, allow_redownload, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         library_id,
+                        source_chat_id,
                         task_id,
                         key,
                         library["title"],
@@ -2465,16 +2797,20 @@ class ChannelLibraryStore:
                     connection.execute(
                         """
                         INSERT INTO channel_download_batch_packages (
-                            batch_id, library_id, package_id, package_revision,
+                            batch_id, library_id, package_id, package_kind,
+                            source_chat_id, source_post_id, package_revision,
                             title, start_message_id, end_message_id,
                             known_total_size, unknown_size_count, ordinal,
                             created_at, updated_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             batch_id,
                             library_id,
                             package_id,
+                            package["package_kind"],
+                            int(package["source_chat_id"] or library["chat_id"]),
+                            package["source_post_id"],
                             int(package["index_revision"]),
                             package["title"],
                             int(package["start_message_id"]),
@@ -2503,9 +2839,10 @@ class ChannelLibraryStore:
                         """
                         INSERT INTO channel_download_batch_items (
                             batch_id, package_id, library_id, message_id,
-                            ordinal, media_type, caption_for_naming,
+                            source_chat_id, source_message_id, ordinal,
+                            media_type, caption_for_naming,
                             original_caption, inherited_caption
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             (
@@ -2513,13 +2850,30 @@ class ChannelLibraryStore:
                                 package_id,
                                 library_id,
                                 int(item["message_id"]),
+                                int(
+                                    item["source_chat_id"]
+                                    or package["source_chat_id"]
+                                    or library["chat_id"]
+                                ),
+                                int(item["source_message_id"] or item["message_id"]),
                                 int(item["ordinal"]),
                                 item["media_type"],
                                 item["caption_for_naming"],
                                 item["original_caption"],
                                 item["inherited_caption"],
                             )
-                            for item in item_rows
+                            for item in connection.execute(
+                                """
+                                SELECT i.*, m.source_chat_id, m.source_message_id
+                                FROM channel_package_items AS i
+                                JOIN channel_media_messages AS m
+                                  ON m.library_id = i.library_id
+                                 AND m.message_id = i.message_id
+                                WHERE i.library_id = ? AND i.package_id = ?
+                                ORDER BY i.ordinal, i.message_id
+                                """,
+                                (library_id, package_id),
+                            ).fetchall()
                         ],
                     )
                     connection.execute(
@@ -3579,6 +3933,7 @@ class ChannelLibraryStore:
         job_id: int,
         media_rows: Sequence[Mapping[str, object]],
         end_id: int,
+        source_posts: Sequence[Mapping[str, object]] = (),
         repair_failure_id: Optional[int] = None,
         now: Optional[float] = None,
     ) -> dict:
@@ -3622,12 +3977,20 @@ class ChannelLibraryStore:
                 connection.execute(
                     """
                     INSERT INTO channel_media_messages (
-                        library_id, message_id, message_date, media_type,
+                        library_id, message_id, source_kind, source_chat_id,
+                        source_message_id, source_post_id,
+                        message_date, media_type,
                         media_group_id, caption, file_name, file_size, mime_type,
                         duration, width, height, raw_fingerprint,
                         first_seen_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
                     ON CONFLICT(library_id, message_id) DO UPDATE SET
+                        source_kind = excluded.source_kind,
+                        source_chat_id = excluded.source_chat_id,
+                        source_message_id = excluded.source_message_id,
+                        source_post_id = excluded.source_post_id,
                         message_date = excluded.message_date,
                         media_type = excluded.media_type,
                         media_group_id = excluded.media_group_id,
@@ -3644,6 +4007,10 @@ class ChannelLibraryStore:
                     (
                         job["library_id"],
                         media["message_id"],
+                        media.get("source_kind", "channel"),
+                        media.get("source_chat_id"),
+                        media.get("source_message_id", media["message_id"]),
+                        media.get("source_post_id"),
                         media.get("message_date"),
                         media["media_type"],
                         media.get("media_group_id"),
@@ -3656,6 +4023,29 @@ class ChannelLibraryStore:
                         media.get("height"),
                         media["raw_fingerprint"],
                         media.get("first_seen_at", now),
+                        now,
+                    ),
+                )
+            for post in source_posts:
+                connection.execute(
+                    """
+                    INSERT INTO channel_source_posts (
+                        library_id, post_id, message_date, title,
+                        observed_comment_count, first_seen_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(library_id, post_id) DO UPDATE SET
+                        message_date = excluded.message_date,
+                        title = excluded.title,
+                        observed_comment_count = excluded.observed_comment_count,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        job["library_id"],
+                        int(post["post_id"]),
+                        post.get("message_date"),
+                        str(post["title"]),
+                        post.get("observed_comment_count"),
+                        now,
                         now,
                     ),
                 )
@@ -3724,6 +4114,471 @@ class ChannelLibraryStore:
                 (library_id, message_id),
             ).fetchone()
         return dict(row) if row is not None else None
+
+    def get_source_post(self, library_id: int, post_id: int) -> Optional[dict]:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM channel_source_posts
+                WHERE library_id = ? AND post_id = ?
+                """,
+                (int(library_id), int(post_id)),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_source_post_ids(self, library_id: int) -> list[int]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT post_id FROM channel_source_posts
+                WHERE library_id = ?
+                ORDER BY post_id
+                """,
+                (int(library_id),),
+            ).fetchall()
+        return [int(row["post_id"]) for row in rows]
+
+    def upsert_source_posts(
+        self,
+        library_id: int,
+        source_posts: Sequence[Mapping[str, object]],
+        now: Optional[float] = None,
+    ) -> None:
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.executemany(
+                """
+                INSERT INTO channel_source_posts (
+                    library_id, post_id, message_date, title,
+                    observed_comment_count, first_seen_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(library_id, post_id) DO UPDATE SET
+                    message_date = excluded.message_date,
+                    title = excluded.title,
+                    observed_comment_count = excluded.observed_comment_count,
+                    updated_at = excluded.updated_at
+                """,
+                [
+                    (
+                        int(library_id),
+                        int(post["post_id"]),
+                        post.get("message_date"),
+                        str(post["title"]),
+                        post.get("observed_comment_count"),
+                        now,
+                        now,
+                    )
+                    for post in source_posts
+                ],
+            )
+
+    def advance_index_checkpoint(
+        self,
+        job_id: int,
+        through_message_id: int,
+        now: Optional[float] = None,
+    ) -> dict:
+        """Advance a comments-only job without deriving channel-message packages."""
+
+        now = time.time() if now is None else now
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (int(job_id),)
+            ).fetchone()
+            if job is None:
+                raise KeyError(f"Scan job {job_id} does not exist")
+            if job["status"] != "running":
+                raise ValueError("Package indexing requires a running scan job")
+            if through_message_id > int(job["fetched_through_message_id"]):
+                raise ValueError("Index checkpoint exceeds the fetched watermark")
+            indexed = max(
+                int(job["indexed_through_message_id"]), int(through_message_id)
+            )
+            stable_count = connection.execute(
+                """
+                SELECT COUNT(*) FROM channel_packages
+                WHERE library_id = ? AND boundary_status = 'stable'
+                """,
+                (int(job["library_id"]),),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                UPDATE channel_scan_jobs
+                SET indexed_through_message_id = ?, stable_package_count = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (indexed, stable_count, now, int(job_id)),
+            )
+            connection.execute(
+                """
+                UPDATE channel_libraries
+                SET indexed_through_message_id = MAX(
+                        indexed_through_message_id, ?
+                    ),
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (indexed, now, int(job["library_id"])),
+            )
+            updated = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (int(job_id),)
+            ).fetchone()
+        return dict(updated)
+
+    def publish_comment_package(
+        self,
+        job_id: int,
+        source_post: Mapping[str, object],
+        discussion_group_id: Optional[int],
+        media_rows: Sequence[Mapping[str, object]],
+        now: Optional[float] = None,
+    ) -> dict:
+        """Replace one post's comment-media package and update its scan count."""
+
+        now = time.time() if now is None else now
+        post_id = int(source_post["post_id"])
+        package_start = -post_id
+        desired_media = [dict(row) for row in media_rows]
+        desired_ids = [int(row["message_id"]) for row in desired_media]
+        if len(desired_ids) != len(set(desired_ids)):
+            raise ValueError("Comment package item IDs must be unique")
+
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            job = connection.execute(
+                "SELECT * FROM channel_scan_jobs WHERE id = ?", (int(job_id),)
+            ).fetchone()
+            if job is None:
+                raise KeyError(f"Scan job {job_id} does not exist")
+            if job["status"] != "running":
+                raise ValueError("Comment publication requires a running scan job")
+            library_id = int(job["library_id"])
+            library = connection.execute(
+                "SELECT * FROM channel_libraries WHERE id = ?", (library_id,)
+            ).fetchone()
+            existing = connection.execute(
+                """
+                SELECT * FROM channel_packages
+                WHERE library_id = ? AND start_message_id = ?
+                """,
+                (library_id, package_start),
+            ).fetchone()
+            existing_items = []
+            if existing is not None:
+                existing_items = connection.execute(
+                    """
+                    SELECT i.*, m.raw_fingerprint
+                    FROM channel_package_items AS i
+                    JOIN channel_media_messages AS m
+                      ON m.library_id = i.library_id
+                     AND m.message_id = i.message_id
+                    WHERE i.library_id = ? AND i.package_id = ?
+                    ORDER BY i.ordinal
+                    """,
+                    (library_id, int(existing["id"])),
+                ).fetchall()
+            old_signature = (
+                None
+                if existing is None
+                else (
+                    str(existing["title"]),
+                    existing["published_at"],
+                    tuple(
+                        (
+                            int(item["message_id"]),
+                            str(item["media_type"]),
+                            item["caption_for_naming"],
+                            item["original_caption"],
+                            item["raw_fingerprint"],
+                        )
+                        for item in existing_items
+                    ),
+                )
+            )
+            new_signature = (
+                str(source_post["title"]),
+                source_post.get("message_date"),
+                tuple(
+                    (
+                        int(row["message_id"]),
+                        str(row["media_type"]),
+                        row.get("caption"),
+                        row.get("caption"),
+                        row["raw_fingerprint"],
+                    )
+                    for row in desired_media
+                ),
+            )
+            changed = (
+                (existing is not None or bool(desired_media))
+                and (
+                    old_signature != new_signature
+                    or (
+                        existing is not None
+                        and existing["boundary_status"] != "stable"
+                    )
+                )
+            )
+            if (
+                changed
+                and existing is not None
+                and existing["current_download_status"] == "downloading"
+            ):
+                return {"publication_deferred": True}
+
+            old_revision = max(
+                int(job["index_revision"]), int(library["index_revision"])
+            )
+            revision = old_revision + 1 if changed else old_revision
+            package_id = int(existing["id"]) if existing is not None else None
+            if changed and existing is not None:
+                connection.execute(
+                    """
+                    DELETE FROM channel_package_items
+                    WHERE library_id = ? AND package_id = ?
+                    """,
+                    (library_id, package_id),
+                )
+            if changed:
+                connection.execute(
+                    """
+                    DELETE FROM channel_media_messages
+                    WHERE library_id = ? AND source_kind = 'comment'
+                      AND source_post_id = ?
+                    """,
+                    (library_id, post_id),
+                )
+                for media in desired_media:
+                    connection.execute(
+                        """
+                        INSERT INTO channel_media_messages (
+                            library_id, message_id, source_kind, source_chat_id,
+                            source_message_id, source_post_id, message_date,
+                            media_type, media_group_id, caption, file_name,
+                            file_size, mime_type, duration, width, height,
+                            raw_fingerprint, first_seen_at, updated_at
+                        ) VALUES (
+                            ?, ?, 'comment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?
+                        )
+                        """,
+                        (
+                            library_id,
+                            int(media["message_id"]),
+                            media.get("source_chat_id"),
+                            media.get("source_message_id"),
+                            post_id,
+                            media.get("message_date"),
+                            str(media["media_type"]),
+                            media.get("media_group_id"),
+                            media.get("caption"),
+                            media.get("file_name"),
+                            media.get("file_size"),
+                            media.get("mime_type"),
+                            media.get("duration"),
+                            media.get("width"),
+                            media.get("height"),
+                            media["raw_fingerprint"],
+                            now,
+                            now,
+                        ),
+                    )
+
+                if desired_media:
+                    known_total = sum(
+                        int(row["file_size"])
+                        for row in desired_media
+                        if isinstance(row.get("file_size"), int)
+                        and int(row["file_size"]) > 0
+                    )
+                    unknown_count = sum(
+                        1
+                        for row in desired_media
+                        if not isinstance(row.get("file_size"), int)
+                        or int(row["file_size"]) <= 0
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO channel_packages (
+                            library_id, package_kind, source_chat_id,
+                            source_post_id, source_comment_count,
+                            start_message_id, end_message_id, title,
+                            published_at, boundary_status, media_count,
+                            known_total_size, unknown_size_count, index_revision,
+                            created_at, updated_at
+                        ) VALUES (
+                            ?, 'comment', ?, ?, ?, ?, ?, ?, ?, 'stable', ?, ?, ?,
+                            ?, ?, ?
+                        )
+                        ON CONFLICT(library_id, start_message_id) DO UPDATE SET
+                            package_kind = 'comment',
+                            source_chat_id = excluded.source_chat_id,
+                            source_post_id = excluded.source_post_id,
+                            source_comment_count = excluded.source_comment_count,
+                            end_message_id = excluded.end_message_id,
+                            title = excluded.title,
+                            published_at = excluded.published_at,
+                            boundary_status = 'stable',
+                            media_count = excluded.media_count,
+                            known_total_size = excluded.known_total_size,
+                            unknown_size_count = excluded.unknown_size_count,
+                            current_download_status = CASE
+                                WHEN channel_packages.has_successful_attempt = 1
+                                THEN 'outdated'
+                                ELSE channel_packages.current_download_status
+                            END,
+                            superseded_by_package_id = NULL,
+                            index_revision = excluded.index_revision,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            library_id,
+                            discussion_group_id,
+                            post_id,
+                            int(source_post.get("observed_comment_count") or 0),
+                            package_start,
+                            package_start,
+                            str(source_post["title"]),
+                            source_post.get("message_date"),
+                            len(desired_media),
+                            known_total,
+                            unknown_count,
+                            revision,
+                            now,
+                            now,
+                        ),
+                    )
+                    package_id = int(
+                        connection.execute(
+                            """
+                            SELECT id FROM channel_packages
+                            WHERE library_id = ? AND start_message_id = ?
+                            """,
+                            (library_id, package_start),
+                        ).fetchone()[0]
+                    )
+                    connection.executemany(
+                        """
+                        INSERT INTO channel_package_items (
+                            library_id, package_id, message_id, ordinal,
+                            media_type, caption_for_naming, original_caption,
+                            inherited_caption
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                        """,
+                        [
+                            (
+                                library_id,
+                                package_id,
+                                int(media["message_id"]),
+                                ordinal,
+                                str(media["media_type"]),
+                                media.get("caption"),
+                                media.get("caption"),
+                            )
+                            for ordinal, media in enumerate(desired_media)
+                        ],
+                    )
+                elif existing is not None:
+                    connection.execute(
+                        """
+                        UPDATE channel_packages
+                        SET boundary_status = 'superseded',
+                            index_revision = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (revision, now, package_id),
+                    )
+                if package_id is not None:
+                    connection.execute(
+                        """
+                        UPDATE channel_package_selections
+                        SET selected = 0,
+                            invalidation_reason = 'package_revision_changed',
+                            updated_at = ?
+                        WHERE library_id = ? AND package_id = ? AND selected = 1
+                        """,
+                        (now, library_id, package_id),
+                    )
+            elif existing is not None:
+                connection.execute(
+                    """
+                    UPDATE channel_packages
+                    SET source_chat_id = ?, source_comment_count = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        discussion_group_id,
+                        int(source_post.get("observed_comment_count") or 0),
+                        now,
+                        int(existing["id"]),
+                    ),
+                )
+
+            connection.execute(
+                """
+                INSERT INTO channel_source_posts (
+                    library_id, post_id, message_date, title,
+                    observed_comment_count, scanned_comment_count,
+                    discussion_group_id, last_error, first_seen_at, updated_at,
+                    last_scanned_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                ON CONFLICT(library_id, post_id) DO UPDATE SET
+                    message_date = excluded.message_date,
+                    title = excluded.title,
+                    observed_comment_count = excluded.observed_comment_count,
+                    scanned_comment_count = excluded.scanned_comment_count,
+                    discussion_group_id = excluded.discussion_group_id,
+                    last_error = NULL,
+                    updated_at = excluded.updated_at,
+                    last_scanned_at = excluded.last_scanned_at
+                """,
+                (
+                    library_id,
+                    post_id,
+                    source_post.get("message_date"),
+                    str(source_post["title"]),
+                    source_post.get("observed_comment_count"),
+                    source_post.get(
+                        "scanned_comment_count",
+                        source_post.get("observed_comment_count"),
+                    ),
+                    discussion_group_id,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+            stable_count = connection.execute(
+                """
+                SELECT COUNT(*) FROM channel_packages
+                WHERE library_id = ? AND boundary_status = 'stable'
+                """,
+                (library_id,),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                UPDATE channel_scan_jobs
+                SET index_revision = ?, stable_package_count = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (revision, stable_count, now, int(job_id)),
+            )
+            connection.execute(
+                """
+                UPDATE channel_libraries
+                SET index_revision = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (revision, now, library_id),
+            )
+        return {
+            "publication_deferred": False,
+            "changed": changed,
+            "package_id": package_id,
+            "index_revision": revision,
+        }
 
     def load_package_index_context(
         self,
@@ -4031,12 +4886,15 @@ class ChannelLibraryStore:
                 connection.execute(
                     """
                     INSERT INTO channel_packages (
-                        library_id, start_message_id, end_message_id, title,
+                        library_id, package_kind, source_chat_id,
+                        start_message_id, end_message_id, title,
                         published_at, boundary_status, media_count,
                         known_total_size, unknown_size_count, index_revision,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, 'channel', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(library_id, start_message_id) DO UPDATE SET
+                        package_kind = 'channel',
+                        source_chat_id = excluded.source_chat_id,
                         end_message_id = excluded.end_message_id,
                         title = excluded.title,
                         published_at = excluded.published_at,
@@ -4056,6 +4914,7 @@ class ChannelLibraryStore:
                     """,
                     (
                         library_id,
+                        int(library["chat_id"]),
                         start,
                         int(package["end_message_id"]),
                         str(package["title"]),

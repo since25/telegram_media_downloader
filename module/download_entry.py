@@ -239,6 +239,41 @@ async def _scan_comment_replies_from_source(
     return CommentScanResult(chat_id, comments, [])
 
 
+async def scan_post_comments(
+    client,
+    chat_id,
+    base_message_id,
+    expected_comment_count: int,
+):
+    """Fetch every currently visible reply for one source-channel post."""
+
+    count = int(expected_comment_count)
+    if count <= 0:
+        return CommentScanResult(chat_id, [], [])
+    result = await _scan_comment_replies_from_source(
+        client,
+        chat_id,
+        base_message_id,
+        1,
+        2**31 - 2,
+        expected_comment_count=count,
+        max_scan_count=count,
+    )
+    discussion_group_id = next(
+        (
+            int(comment.chat.id)
+            for comment in result.comments
+            if getattr(getattr(comment, "chat", None), "id", None) is not None
+        ),
+        int(chat_id),
+    )
+    return CommentScanResult(
+        discussion_group_id,
+        result.comments,
+        result.failed_comment_ids,
+    )
+
+
 # ---- performance monitoring ----
 PERFORMANCE_STATS: dict[str, float] = {
     "total_download_time": 0,  # 总下载时间

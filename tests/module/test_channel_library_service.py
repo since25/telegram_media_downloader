@@ -16,6 +16,7 @@ from module.channel_library_service import ChannelLibraryService
 from module.channel_library_store import (
     ChannelLibraryConfig,
     ChannelLibraryStore,
+    PackageFilter,
 )
 from module.channel_library_workflow import extract_media_row
 from module.telegram_activity import TelegramActivityGate
@@ -1366,3 +1367,111 @@ async def test_resolve_rejects_non_channel_chat(tmp_path):
         await service.resolve_and_create_library("https://t.me/demo/1")
 
     await service.stop()
+
+
+@async_test
+async def test_comment_mode_rescans_historical_post_only_when_count_changes(
+    tmp_path, monkeypatch
+):
+    class CommentClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.latest_message_id = 1
+            self.comment_count = 2
+            self.available_comment_count = 2
+
+        async def get_messages(self, chat_id, message_ids):
+            ids = list(message_ids) if isinstance(message_ids, list) else [message_ids]
+            self.requested_chats.append(chat_id)
+            self.requested_ids.append(ids)
+            messages = []
+            for message_id in ids:
+                if message_id != 1:
+                    messages.append(SimpleNamespace(id=message_id, empty=True))
+                    continue
+                messages.append(
+                    SimpleNamespace(
+                        id=1,
+                        empty=False,
+                        text="Source post",
+                        caption=None,
+                        media=None,
+                        media_group_id=None,
+                        date=datetime.datetime(2026, 7, 29, tzinfo=UTC),
+                        replies=SimpleNamespace(comments=self.comment_count),
+                        raw=None,
+                        audio=None,
+                        document=None,
+                        photo=None,
+                        video=None,
+                        voice=None,
+                        video_note=None,
+                    )
+                )
+            return messages[0] if len(messages) == 1 else messages
+
+    scan_counts = []
+
+    async def fake_scan_post_comments(
+        _client, _chat_id, _post_id, expected_comment_count
+    ):
+        scan_counts.append(expected_comment_count)
+        comments = []
+        available_count = min(
+            expected_comment_count, client.available_comment_count
+        )
+        for offset in range(available_count):
+            comment = fake_media(101 + offset, f"Comment {offset + 1}")
+            comment.chat = SimpleNamespace(id=-2001)
+            comments.append(comment)
+        return SimpleNamespace(
+            discussion_group_id=-2001,
+            comments=comments,
+            failed_comment_ids=[],
+        )
+
+    monkeypatch.setattr(
+        "media_downloader.scan_post_comments", fake_scan_post_comments
+    )
+    client = CommentClient()
+    service, library, _sleep = make_service(tmp_path, client=client)
+    with service.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET scan_mode = 'comments' WHERE id = ?",
+            (library["id"],),
+        )
+    full = service.store.create_scan_job(library["id"], "full", 1, 1)
+
+    await service._run_job(full)
+
+    packages = service.store.list_packages_aggregate(
+        [], PackageFilter()
+    ).items
+    assert scan_counts == [2]
+    assert len(packages) == 1
+    assert packages[0]["package_kind"] == "comment"
+    assert packages[0]["source_post_id"] == 1
+    assert packages[0]["media_count"] == 2
+
+    service.owner_loop = asyncio.get_running_loop()
+    unchanged = await service.queue_incremental(library["id"])
+    await service._run_job(unchanged)
+    assert scan_counts == [2]
+
+    client.comment_count = 3
+    delayed = await service.queue_incremental(library["id"])
+    await service._run_job(delayed)
+
+    assert scan_counts == [2, 3]
+    assert service.store.get_source_post(library["id"], 1)[
+        "scanned_comment_count"
+    ] == 2
+
+    client.available_comment_count = 3
+    changed = await service.queue_incremental(library["id"])
+    await service._run_job(changed)
+
+    refreshed = service.store.get_package(packages[0]["id"])
+    assert scan_counts == [2, 3, 3]
+    assert refreshed["media_count"] == 3
+    assert refreshed["source_comment_count"] == 3

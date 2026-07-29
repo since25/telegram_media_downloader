@@ -1876,3 +1876,33 @@ Changed files:
 Rollback:
 - Preferred code rollback: `git revert 780ee78`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both live SQLite databases; schema v7 is additive and can remain unused.
 - Release backup: `/root/telegram_media_downloader/backups/release-20260723-115134-web-cron`. Stop the service before restoring either database or `config.yaml`, and retain the current live files before replacement.
+
+## 2026-07-29 - Task: Integrate comment threads into channel scanning and resource packages
+
+### What was done
+
+- Added per-channel scan modes for channel messages, comment threads, or both; existing and default channels remain channel-message-only.
+- Integrated comment-thread discovery into full and incremental channel scans. Each source post's media comments now form one resource package that inherits the source post title while retaining the discussion-group message identity needed for downloading.
+- Added source-post comment-count tracking so incremental scans skip unchanged threads and retry threads whose visible count has changed or whose replies have not yet synchronized completely.
+- Routed mixed channel-message and comment-package selections into download batches grouped by their actual Telegram source, and exposed scan mode and package source type in the Web console.
+- Upgraded the channel-library database to schema v8 and documented the new scan modes, comment package behavior, and migration semantics.
+
+### Testing
+
+- `.venv/bin/python -m pytest -q` -> `540 passed, 1 skipped`.
+- `.venv/bin/python check_imports.py` -> passed.
+- Python compile checks for the changed implementation modules -> passed.
+- `git diff --check` -> passed.
+
+### Notes
+
+Changed files:
+- `README_CN.md`, `docs/web-control-console.md`: documented comment scanning, resource packages, incremental synchronization, and scan modes.
+- `module/channel_library_store.py`, `module/channel_library_service.py`, `module/channel_library_workflow.py`: schema v8, comment source tracking, package construction, incremental count checks, and scan orchestration.
+- `module/download_entry.py`, `module/package_download.py`: discussion-group message resolution, comment naming, and source-aware download batching.
+- `module/web.py`, `module/templates/index.html`: scan-mode API validation and Web controls/source labels.
+- `tests/module/test_channel_library_store.py`, `tests/module/test_channel_library_service.py`, `tests/module/test_channel_library_web.py`: migration, comment packaging, pagination, incremental synchronization, downloading, and Web API coverage.
+- `progress.md`: recorded implementation and verification evidence.
+
+Rollback:
+- Revert the commit containing this task. Schema v8 is additive; stop the service and back up `channel_library.sqlite3` before manually removing the new columns or tables.

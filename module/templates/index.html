@@ -277,6 +277,11 @@
                 <input class="input nums" id="channel_library_link" type="url" placeholder="https://t.me/example/1" autocomplete="off">
                 <button type="submit" class="btn btn-primary" id="channel_library_add">添加</button>
               </div>
+              <select class="input" id="channel_library_scan_mode" aria-label="扫描内容">
+                <option value="messages">仅频道消息</option>
+                <option value="comments">仅评论区</option>
+                <option value="both">频道消息和评论区</option>
+              </select>
             </form>
             <div class="channel-library-list" id="channel_library_rows"></div>
             <button type="button" class="btn btn-ghost channel-library-more" id="channel_library_more" data-channel-library-more hidden>加载更多频道</button>
@@ -1010,7 +1015,7 @@
         return `<button type="button" class="channel-library-row" data-channel-library="${Number(library.id)}" aria-current="${selected?'true':'false'}">
           <span class="channel-library-row-title">${escapeHtml(library.title || '未命名频道')}</span>
           <span class="channel-library-row-meta"><span>${channelStatusTag(displayStatus)}</span><span class="nums">${Number(count)||0} 包</span></span>
-          <span class="channel-library-row-meta"><span>${escapeHtml(library.chat_type || 'channel')}</span><span>${formatChannelTime(library.updated_at)}</span></span>
+          <span class="channel-library-row-meta"><span>${escapeHtml(({messages:'仅消息',comments:'仅评论',both:'消息+评论'})[library.scan_mode] || '仅消息')}</span><span>${formatChannelTime(library.updated_at)}</span></span>
         </button>`;
       }).join('');
     }
@@ -1112,7 +1117,8 @@
       $('#channel_library_content').hidden = false;
       $('#channel_library_title').innerHTML = escapeHtml(library.title || '未命名频道');
       $('#channel_library_status').innerHTML = channelStatusTag(channelDetailStatus(detail));
-      $('#channel_library_meta').textContent = `${Number(counts.package_count)||0} 包 · ${Number(counts.media_count)||0} 媒体 · ${channelScanProgress(scan)} · 索引版本 ${Number(library.index_revision)||0}`;
+      const scanModeLabel = ({messages:'仅频道消息',comments:'仅评论区',both:'频道消息和评论区'})[library.scan_mode] || '仅频道消息';
+      $('#channel_library_meta').textContent = `${scanModeLabel} · ${Number(counts.package_count)||0} 包 · ${Number(counts.media_count)||0} 媒体 · ${channelScanProgress(scan)} · 索引版本 ${Number(library.index_revision)||0}`;
       $('#channel_stat_available').textContent = Number(counts.available_package_count)||0;
       $('#channel_stat_downloaded').textContent = Number(counts.downloaded_package_count)||0;
       $('#channel_stat_pending').textContent = Number(counts.pending_download_package_count)||0;
@@ -1189,14 +1195,15 @@
     $('#channel_library_add_form').addEventListener('submit', async e => {
       e.preventDefault();
       const link = $('#channel_library_link').value.trim();
+      const scanMode = $('#channel_library_scan_mode').value;
       if (!link){ showChannelNotice('请输入频道消息链接', 'error'); return; }
       $('#channel_library_add').disabled = true;
       try {
-        const result = await channelApiWrite('POST','/api/channel-libraries',{link});
+        const result = await channelApiWrite('POST','/api/channel-libraries',{link,scan_mode:scanMode});
         $('#channel_library_link').value = '';
         await loadChannelLibraries();
         await selectChannelLibrary(Number(result.library.id));
-        showChannelNotice(result.created ? '频道已添加，首次全量扫描已排队' : '频道库已存在，已切换到该频道');
+        showChannelNotice(result.created ? '频道已添加，首次全量扫描已排队' : '频道库已存在；如扫描模式有变化，重扫任务已排队');
       } catch (error){ showChannelNotice(error.message, 'error'); }
       finally { $('#channel_library_add').disabled = false; }
     });
@@ -1312,7 +1319,7 @@
       const page = state.aggregate.expandedItems[packageId];
       if (!page) return '';
       const rows = page.items.length ? page.items.map(item=>`<tr>
-        <td class="nums">${Number(item.message_id)}</td><td>${escapeHtml(item.media_type||'—')}</td>
+        <td class="nums">${Number(item.source_message_id||item.message_id)}</td><td>${escapeHtml(item.media_type||'—')}</td>
         <td>${escapeHtml(item.file_name||'—')}</td><td class="nums">${formatChannelBytes(item.file_size,true)}</td>
         <td>${escapeHtml(item.caption||'')}</td></tr>`).join('')
         : '<tr><td colspan="5" class="text-muted">此包暂无媒体明细</td></tr>';
@@ -1329,8 +1336,8 @@
           return `<tr data-aggregate-package="${id}">
             <td><button type="button" class="channel-library-expand" data-aggregate-expand="${id}" aria-expanded="${expanded?'true':'false'}" title="展开媒体明细">${icon('chevron',14)}</button></td>
             <td><input type="checkbox" data-aggregate-select="${id}" ${pkg.selected?'checked':''} ${pkg.selectable?'':'disabled'} aria-label="选择资源包 ${id}"></td>
-            <td class="nums">#${id}<br><span class="text-muted">${Number(pkg.start_message_id)}</span></td>
-            <td>${escapeHtml(pkg.channel_title||'未命名频道')}<br><span class="text-muted nums">${Number(pkg.chat_id)}</span></td>
+            <td class="nums">#${id}<br><span class="text-muted">${Number(pkg.source_post_id||pkg.start_message_id)}</span></td>
+            <td>${escapeHtml(pkg.channel_title||'未命名频道')}<br><span class="text-muted">${pkg.package_kind==='comment'?'评论区':'频道消息'}</span></td>
             <td class="channel-library-package-title" title="${escapeHtml(pkg.title||'')}">${escapeHtml(pkg.title||'未命名包')}</td>
             <td>${formatChannelTime(pkg.published_at)}</td><td class="nums">${Number(pkg.media_count)||0}</td>
             <td class="nums">${formatChannelBytes(pkg.known_total_size,Boolean(pkg.size_is_exact))}</td>

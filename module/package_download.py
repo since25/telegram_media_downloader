@@ -127,7 +127,11 @@ async def run_packages(
 ) -> list[PackageDownloadResult]:
     """Run selected resource packages serially in their snapshot order."""
 
-    from module.comment_workflow import NamingStrategy, PackageNamingContext
+    from module.comment_workflow import (
+        CommentNamingContext,
+        NamingStrategy,
+        PackageNamingContext,
+    )
     from module.download_stat import (
         add_active_task_node,
         get_active_task_nodes,
@@ -138,7 +142,12 @@ async def run_packages(
     selected_ids = set(selected_package_ids)
     ordered_packages = [
         package
-        for package in sorted(packages, key=lambda item: item.start_message_id)
+        for package in sorted(
+            packages,
+            key=lambda item: getattr(
+                item, "sort_message_id", item.start_message_id
+            ),
+        )
         if package.package_id in selected_ids
     ]
     parent_node.prescan_batch_in_progress = True
@@ -171,12 +180,22 @@ async def run_packages(
                 if prepare_package is None
                 else await prepare_package(descriptor)
             )
-            parent_node.package_naming_context = PackageNamingContext(
-                strategy=NamingStrategy.RECOMMENDED,
-                channel=channel,
-                start_message_id=package.start_message_id,
-                package_title=package.title,
-            )
+            if getattr(package, "package_kind", "channel") == "comment":
+                parent_node.package_naming_context = None
+                parent_node.comment_naming_context = CommentNamingContext(
+                    strategy=NamingStrategy.RECOMMENDED,
+                    channel=channel,
+                    post_id=int(package.source_post_id),
+                    post_title=package.title,
+                )
+            else:
+                parent_node.comment_naming_context = None
+                parent_node.package_naming_context = PackageNamingContext(
+                    strategy=NamingStrategy.RECOMMENDED,
+                    channel=channel,
+                    start_message_id=package.start_message_id,
+                    package_title=package.title,
+                )
             parent_node.package_plan = package.package_plan
             parent_node.package_media_items = {
                 item.message.id: item for item in package.items

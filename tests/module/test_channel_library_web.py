@@ -473,6 +473,48 @@ def test_create_library_returns_202_then_duplicate_200(web_env):
     assert duplicate.get_json()["library"]["id"] == created.get_json()["library"]["id"]
 
 
+def test_create_library_accepts_comment_scan_mode(web_env):
+    env = web_env
+    submitted = []
+
+    def submit(link, scan_mode):
+        submitted.append((link, scan_mode))
+        library, job, created = env.store.create_or_get_library_with_full_job(
+            -1001,
+            "channel",
+            "demo",
+            "Demo",
+            link,
+            10,
+            scan_mode=scan_mode,
+        )
+        return ImmediateFuture(
+            value=SubmitLibraryResult(library=library, created=created, job=job)
+        )
+
+    env.service.submit_library_link_threadsafe = submit
+    response = env.client.post(
+        "/api/channel-libraries",
+        json={"link": "https://t.me/demo/1", "scan_mode": "both"},
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 202
+    assert response.get_json()["library"]["scan_mode"] == "both"
+    assert submitted == [("https://t.me/demo/1", "both")]
+
+
+def test_create_library_rejects_unknown_scan_mode(web_env):
+    response = web_env.client.post(
+        "/api/channel-libraries",
+        json={"link": "https://t.me/demo/1", "scan_mode": "everything"},
+        headers=csrf_headers(web_env),
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["error_code"] == "invalid_request"
+
+
 @pytest.mark.parametrize(
     "payload",
     [None, [], {}, {"link": 7}, {"link": ""}],

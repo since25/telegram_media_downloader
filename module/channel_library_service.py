@@ -21,8 +21,15 @@ from pyrogram import errors
 
 from module.channel_library_store import ChannelLibraryConfig, ChannelLibraryStore
 from module.download_admission import DiskReservation, DiskSpaceAdmission
-from module.channel_library_workflow import ChannelPackageIndexer, extract_media_row
-from module.comment_workflow import build_message_package_workflow_request
+from module.channel_library_workflow import (
+    ChannelPackageIndexer,
+    extract_media_row,
+    extract_source_post_row,
+)
+from module.comment_workflow import (
+    build_message_package_workflow_request,
+    filter_media_comments,
+)
 from module.telegram_activity import get_telegram_activity_gate
 from module.task_state import (
     FileStatus,
@@ -624,7 +631,7 @@ class ChannelLibraryService:
                 batch["task_id"],
                 source="web",
                 task_type="channel_library",
-                chat_id=int(library["chat_id"]),
+                chat_id=int(batch.get("source_chat_id") or library["chat_id"]),
                 title=f"{batch['channel_title']} / {len(batch['packages'])} packages",
                 status=TaskStatus.QUEUED,
                 total_count=total_count,
@@ -662,7 +669,9 @@ class ChannelLibraryService:
                     TaskStatus.COMPLETED_WITH_ERRORS,
                 }:
                     item_files = [
-                        task.files.get(str(item["message_id"]))
+                        task.files.get(
+                            str(item.get("source_message_id") or item["message_id"])
+                        )
                         for item in package["items"]
                     ]
                     file_statuses = {
@@ -781,7 +790,7 @@ class ChannelLibraryService:
                 ):
                     self.task_store.upsert_file(
                         batch["task_id"],
-                        item["message_id"],
+                        item.get("source_message_id") or item["message_id"],
                         status=FileStatus.FAILED,
                         error="unknown_package_size",
                     )
@@ -794,13 +803,20 @@ class ChannelLibraryService:
                 start_message_id=int(summary["start_message_id"]),
                 end_message_id=int(summary["end_message_id"]),
                 known_total_size=int(summary["known_total_size"]),
+                package_kind=summary.get("package_kind", "channel"),
+                source_chat_id=int(
+                    summary.get("source_chat_id")
+                    or batch.get("source_chat_id")
+                    or library["chat_id"]
+                ),
+                source_post_id=summary.get("source_post_id"),
                 attempt_id=attempt_id,
             )
             descriptors.append(descriptor)
             attempt_packages[attempt_id] = descriptor.package_id
 
         node = TaskNode(
-            chat_id=int(library["chat_id"]),
+            chat_id=int(batch.get("source_chat_id") or library["chat_id"]),
             bot=None,
             task_id=batch["task_id"],
         )
@@ -811,12 +827,15 @@ class ChannelLibraryService:
             item_snapshots = self.store.get_download_batch_package_items(
                 batch_id, descriptor.package_id
             )
-            message_ids = [int(item["message_id"]) for item in item_snapshots]
+            message_ids = [
+                int(item.get("source_message_id") or item["message_id"])
+                for item in item_snapshots
+            ]
             fetch_error: Optional[str] = None
             try:
                 async with self.gate.download_permit():
                     raw_messages = await self.client.get_messages(
-                        int(library["chat_id"]), message_ids
+                        int(descriptor.source_chat_id), message_ids
                     )
             except Exception:  # noqa: BLE001 - contained to one package
                 raw_messages = []
@@ -833,7 +852,10 @@ class ChannelLibraryService:
             media_items = []
             failed_message_ids = []
             for item_snapshot in item_snapshots:
-                message_id = int(item_snapshot["message_id"])
+                message_id = int(
+                    item_snapshot.get("source_message_id")
+                    or item_snapshot["message_id"]
+                )
                 message = found_by_id.get(message_id)
                 if message is None or getattr(message, "empty", False):
                     failed_message_ids.append(message_id)
@@ -869,6 +891,13 @@ class ChannelLibraryService:
             )
             package.package_revision = descriptor.package_revision
             package.attempt_id = descriptor.attempt_id
+            package.package_kind = descriptor.package_kind
+            package.source_post_id = descriptor.source_post_id
+            package.sort_message_id = (
+                int(descriptor.source_post_id)
+                if descriptor.source_post_id is not None
+                else descriptor.start_message_id
+            )
             package.not_found_message_ids = (
                 set(failed_message_ids) if fetch_error is None else set()
             )
@@ -1106,7 +1135,9 @@ class ChannelLibraryService:
             "next_run_at": self._next_incremental_scan_at(settings),
         }
 
-    async def resolve_and_create_library(self, link: str) -> SubmitLibraryResult:
+    async def resolve_and_create_library(
+        self, link: str, scan_mode: str = "messages"
+    ) -> SubmitLibraryResult:
         """Resolve a Telegram message link and queue a snapshotted full scan."""
 
         self._require_owner_loop()
@@ -1137,6 +1168,7 @@ class ChannelLibraryService:
             ),
             request.url,
             snapshot_max,
+            scan_mode=scan_mode,
         )
         if job["status"] == "queued":
             await self.wake()
@@ -1163,7 +1195,11 @@ class ChannelLibraryService:
                     snapshot_max = int(message.id)
                     break
         start_message_id = int(library["fetched_through_message_id"]) + 1
-        if skip_if_unchanged and snapshot_max < start_message_id:
+        if (
+            skip_if_unchanged
+            and snapshot_max < start_message_id
+            and library.get("scan_mode", "messages") == "messages"
+        ):
             return None
         snapshot_max = max(snapshot_max, start_message_id - 1)
         job = self.store.create_scan_job(
@@ -1241,11 +1277,13 @@ class ChannelLibraryService:
         return retried
 
     def submit_library_link_threadsafe(
-        self, link: str
+        self, link: str, scan_mode: str = "messages"
     ) -> concurrent.futures.Future[SubmitLibraryResult]:
         """Schedule link resolution from Flask without calling Pyrogram there."""
 
-        return self._submit_owner_command(lambda: self.resolve_and_create_library(link))
+        return self._submit_owner_command(
+            lambda: self.resolve_and_create_library(link, scan_mode)
+        )
 
     def submit_incremental_threadsafe(
         self, library_id: int
@@ -1356,12 +1394,29 @@ class ChannelLibraryService:
                     )
                     current = self._get_required_job(current["id"])
             else:
+                library = self.store.get_library(int(current["library_id"]))
+                if library is None:
+                    raise KeyError(
+                        f"Channel library {current['library_id']} does not exist"
+                    )
+                if (
+                    current["kind"] == "incremental"
+                    and library.get("scan_mode") in {"comments", "both"}
+                ):
+                    if not await self._refresh_comment_posts(current):
+                        return
+                    current = self._get_required_job(current["id"])
                 if int(current["indexed_through_message_id"]) < int(
                     current["fetched_through_message_id"]
                 ):
-                    await self._index_until_published(
-                        current, int(current["fetched_through_message_id"])
-                    )
+                    if library.get("scan_mode") == "comments":
+                        self.store.advance_index_checkpoint(
+                            current["id"], int(current["fetched_through_message_id"])
+                        )
+                    else:
+                        await self._index_until_published(
+                            current, int(current["fetched_through_message_id"])
+                        )
                     current = self._get_required_job(current["id"])
                 delay_range = (
                     self._full_delay_range()
@@ -1503,22 +1558,160 @@ class ChannelLibraryService:
         messages = await self._fetch_batch(
             int(job["id"]), int(job["library_id"]), batch_ids
         )
+        library = self.store.get_library(int(job["library_id"]))
+        if library is None:
+            raise KeyError(f"Channel library {job['library_id']} does not exist")
+        normalized = normalize_messages(messages)
+        source_posts = [
+            post
+            for item in normalized
+            if (post := extract_source_post_row(item)) is not None
+        ]
+        if library.get("scan_mode") in {"comments", "both"}:
+            await self._scan_changed_comment_posts(job, source_posts)
         rows = [
             row
-            for item in normalize_messages(messages)
-            if (row := extract_media_row(item)) is not None
+            for item in normalized
+            if library.get("scan_mode") in {"messages", "both"}
+            and (
+                row := extract_media_row(
+                    item,
+                    source_chat_id=int(library["chat_id"]),
+                    source_message_id=getattr(item, "id", None),
+                )
+            )
+            is not None
         ]
         self.store.commit_fetched_batch(
             job["id"],
             rows,
             end_id=batch_ids[-1],
+            source_posts=(
+                source_posts
+                if library.get("scan_mode") in {"comments", "both"}
+                else ()
+            ),
             repair_failure_id=job.get("repair_failure_id"),
         )
-        await self._index_until_published(
-            self._get_required_job(job["id"]),
-            batch_ids[-1],
-            repair_failure_id=job.get("repair_failure_id"),
-        )
+        if library.get("scan_mode") == "comments":
+            self.store.advance_index_checkpoint(job["id"], batch_ids[-1])
+        else:
+            await self._index_until_published(
+                self._get_required_job(job["id"]),
+                batch_ids[-1],
+                repair_failure_id=job.get("repair_failure_id"),
+            )
+
+    async def _refresh_comment_posts(self, job: dict) -> bool:
+        """Recheck historical source posts and rescan only changed comment counts."""
+
+        post_ids = self.store.list_source_post_ids(int(job["library_id"]))
+        batch_size = self._batch_size(job)
+        for index in range(0, len(post_ids), batch_size):
+            current = self._get_required_job(job["id"])
+            if current["status"] != "running":
+                return False
+            if self.store.consume_job_control(current["id"]) is not None:
+                return False
+            if await self.gate.has_download_activity():
+                self.store.transition_job(
+                    current["id"], "auto_paused_download"
+                )
+                await self.gate.wait_until_downloads_idle()
+                paused = self.store.get_job(current["id"])
+                if paused is not None and paused["status"] == "auto_paused_download":
+                    self.store.transition_job(current["id"], "queued")
+                    await self.wake()
+                return False
+            batch_ids = post_ids[index : index + batch_size]
+            messages = await self._fetch_batch(
+                int(job["id"]), int(job["library_id"]), batch_ids
+            )
+            source_posts = [
+                post
+                for item in normalize_messages(messages)
+                if (post := extract_source_post_row(item)) is not None
+            ]
+            await self._scan_changed_comment_posts(current, source_posts)
+            self.store.upsert_source_posts(int(job["library_id"]), source_posts)
+            if index + batch_size < len(post_ids):
+                await self.sleep(
+                    self.random_uniform(*self._incremental_delay_range())
+                )
+        return True
+
+    async def _scan_changed_comment_posts(
+        self,
+        job: dict,
+        source_posts: Sequence[dict],
+    ) -> None:
+        """Publish comment packages only when Telegram's visible count changed."""
+
+        from media_downloader import scan_post_comments
+
+        library = self.store.get_library(int(job["library_id"]))
+        if library is None:
+            raise KeyError(f"Channel library {job['library_id']} does not exist")
+        for source_post in source_posts:
+            observed = source_post.get("observed_comment_count")
+            if observed is None:
+                continue
+            previous = self.store.get_source_post(
+                int(job["library_id"]), int(source_post["post_id"])
+            )
+            if (
+                previous is not None
+                and previous.get("scanned_comment_count") == observed
+            ):
+                continue
+
+            discussion_group_id = (
+                previous.get("discussion_group_id") if previous is not None else None
+            )
+            media_rows = []
+            scanned_comment_count = 0
+            if int(observed) > 0:
+                async with self.gate.scan_permit():
+                    self._mark_request_started()
+                    try:
+                        result = await scan_post_comments(
+                            self.client,
+                            int(library["chat_id"]),
+                            int(source_post["post_id"]),
+                            int(observed),
+                        )
+                    finally:
+                        self._mark_request_finished()
+                discussion_group_id = int(result.discussion_group_id)
+                scanned_comment_count = len(result.comments)
+                media_rows = [
+                    row
+                    for comment in filter_media_comments(result.comments)
+                    if (
+                        row := extract_media_row(
+                            comment,
+                            source_kind="comment",
+                            source_chat_id=discussion_group_id,
+                            source_message_id=int(comment.id),
+                            source_post_id=int(source_post["post_id"]),
+                        )
+                    )
+                    is not None
+                ]
+
+            while True:
+                publication = self.store.publish_comment_package(
+                    int(job["id"]),
+                    {
+                        **source_post,
+                        "scanned_comment_count": scanned_comment_count,
+                    },
+                    discussion_group_id,
+                    media_rows,
+                )
+                if not publication["publication_deferred"]:
+                    break
+                await self.gate.wait_until_downloads_idle()
 
     async def _index_until_published(
         self,

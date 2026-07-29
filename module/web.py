@@ -738,13 +738,20 @@ def channel_libraries():
 def create_channel_library():
     """Resolve one Telegram link on the owner loop and persist a full scan."""
 
-    payload = _json_object(frozenset({"link"}))
+    payload = _json_object(frozenset({"link", "scan_mode"}))
     link = payload.get("link")
+    scan_mode = payload.get("scan_mode", "messages")
     if not isinstance(link, str) or not link.strip():
         _invalid_request("link must be a non-empty string")
+    if scan_mode not in {"messages", "comments", "both"}:
+        _invalid_request("scan_mode must be messages, comments, or both")
     service = _channel_service()
     try:
-        future = service.submit_library_link_threadsafe(link.strip())
+        future = (
+            service.submit_library_link_threadsafe(link.strip())
+            if scan_mode == "messages"
+            else service.submit_library_link_threadsafe(link.strip(), scan_mode)
+        )
         result = future.result(timeout=30)
     except concurrent.futures.TimeoutError:
         raise _ChannelApiError(
@@ -1081,15 +1088,19 @@ def create_aggregate_download_batches():
     batches = []
     any_created = False
     try:
-        for library_id in service.store.selected_library_ids():
+        for group in service.store.selected_download_groups():
+            library_id = int(group["library_id"])
+            source_chat_id = int(group["source_chat_id"])
             batch, created = service.create_download_batch_result(
                 library_id,
-                f"{idempotency_key}:library:{library_id}",
+                f"{idempotency_key}:library:{library_id}:source:{source_chat_id}",
                 redownload=redownload,
+                package_ids=group["package_ids"],
             )
             service.schedule_download_batch_threadsafe(int(batch["id"]))
             batches.append(_batch_summary(batch))
             any_created = any_created or created
+        service.store.clear_selection_aggregate()
     except RedownloadRequiredError:
         raise _ChannelApiError(
             409,

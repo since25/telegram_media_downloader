@@ -19,6 +19,57 @@ from module.comment_workflow import (
 UTC = datetime.timezone.utc
 
 
+def comment_count_from_message(message: Any) -> Optional[int]:
+    """Extract Telegram's visible comment/reply count when available."""
+
+    if message is None:
+        return None
+    containers = (
+        getattr(message, "replies", None),
+        getattr(getattr(message, "raw", None), "replies", None),
+        message,
+    )
+    for container in containers:
+        if container is None:
+            continue
+        for attribute in ("comments", "replies", "reply_count", "count"):
+            value = getattr(container, attribute, None)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, int) and value >= 0:
+                return value
+    return None
+
+
+def extract_source_post_row(message: Any) -> Optional[dict]:
+    """Extract one visible source post used for comment-count refreshes."""
+
+    if (
+        message is None
+        or getattr(message, "empty", False)
+        or not isinstance(getattr(message, "id", None), int)
+    ):
+        return None
+    message_date = parse_utc_datetime(getattr(message, "date", None))
+    title = getattr(message, "text", None) or getattr(message, "caption", None)
+    return {
+        "post_id": int(message.id),
+        "message_date": message_date.isoformat() if message_date else None,
+        "title": str(title or f"post-{message.id}"),
+        "observed_comment_count": comment_count_from_message(message),
+    }
+
+
+def comment_storage_message_id(post_id: int, comment_id: int) -> int:
+    """Return a stable negative key for a comment in the channel-media table."""
+
+    post = int(post_id)
+    comment = int(comment_id)
+    if post <= 0 or comment <= 0 or post >= 2**31 or comment >= 2**31:
+        raise ValueError("Telegram post/comment IDs must fit signed 31-bit values")
+    return -((post << 31) | comment)
+
+
 @dataclass
 class MediaDTO:
     file_name: Optional[str] = None
@@ -77,7 +128,14 @@ class PersistedMessageAdapter:
         return cls(row)
 
 
-def extract_media_row(message: Any) -> Optional[dict]:
+def extract_media_row(
+    message: Any,
+    *,
+    source_kind: str = "channel",
+    source_chat_id: Optional[int] = None,
+    source_message_id: Optional[int] = None,
+    source_post_id: Optional[int] = None,
+) -> Optional[dict]:
     """Extract planner and listing metadata from one supported media message."""
 
     media_type, media = media_payload_for_message(message)
@@ -85,7 +143,11 @@ def extract_media_row(message: Any) -> Optional[dict]:
         return None
     message_date = parse_utc_datetime(getattr(message, "date", None))
     row = {
-        "message_id": int(message.id),
+        "message_id": (
+            int(message.id)
+            if source_kind == "channel"
+            else comment_storage_message_id(int(source_post_id), int(message.id))
+        ),
         "message_date": message_date.isoformat() if message_date else None,
         "media_type": media_type,
         "media_group_id": (
@@ -100,6 +162,12 @@ def extract_media_row(message: Any) -> Optional[dict]:
         "duration": getattr(media, "duration", None),
         "width": getattr(media, "width", None),
         "height": getattr(media, "height", None),
+        "source_kind": source_kind,
+        "source_chat_id": source_chat_id,
+        "source_message_id": (
+            int(message.id) if source_message_id is None else int(source_message_id)
+        ),
+        "source_post_id": source_post_id,
     }
     fingerprint_payload = json.dumps(
         row,
