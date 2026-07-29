@@ -2450,3 +2450,33 @@ Changed files:
 
 Rollback:
 - Revert the resource Bot interaction commit. The independent resource database can remain unused; any issued activation keys and bindings should be preserved or explicitly revoked before a later deployment rollback.
+
+## 2026-07-29 - Task: Unify management and resource Bot lifecycle
+
+### What was done
+
+- Replaced the single-role global startup with one manager behind the existing `start_download_bot` and `stop_download_bot` entrypoints.
+- Kept the existing management `DownloadBot` as the compatibility role while conditionally starting the resource state store, resource Bot role, and serial delivery worker when `resource_bot_token` is configured.
+- Added reverse cleanup for partial startup failures, idempotent repeated start/stop calls, resource administrator Handler registration, and a combined management command menu.
+- Added the independent `resource_bot.sqlite3` default path plus `TMD_RESOURCE_BOT_DB_PATH` test override.
+- Updated runtime liveness to use the same single entry for either configured Bot token and reject a resource Bot token without the management Bot token.
+
+### Testing
+
+- RED verification: `.venv/bin/pytest -q tests/module/test_bot_manager.py` failed during collection because `BotManager` did not exist.
+- Unified lifecycle tests: `.venv/bin/pytest -q tests/module/test_bot_manager.py` -> `7 passed`.
+- Management and lifecycle regression: `.venv/bin/pytest -q tests/module/test_bot_manager.py tests/module/test_comment_workflow.py tests/module/test_bot_commands.py tests/module/test_app.py` -> `120 passed`.
+- `.venv/bin/python -m py_compile module/bot.py module/download_runtime.py module/resource_bot.py tests/module/test_bot_manager.py` passed.
+- `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/bot.py`: Added the unified manager, resource component construction/rollback, resource admin registration, and management-role stop lifecycle.
+- `module/download_runtime.py`: Started and stopped the single Bot manager when either Bot token is configured.
+- `module/resource_bot.py`: Added the management Bot resource command-menu entries.
+- `tests/module/test_bot_manager.py`: Covered optional startup, dual-role startup, configuration rejection, rollback, stop ordering, idempotency, database paths, and runtime liveness.
+- `progress.md`: Recorded implementation and verification evidence.
+
+Rollback:
+- Revert the unified-manager commit to restore the prior management-only lifecycle. Leave `resource_bot_token` unset during rollback so no unmanaged resource Bot client or delivery worker is expected.

@@ -67,6 +67,15 @@ def build_resource_bot_commands() -> list[types.BotCommand]:
     ]
 
 
+def build_resource_admin_bot_commands() -> list[types.BotCommand]:
+    """Return management Bot commands for resource access administration."""
+
+    return [
+        types.BotCommand("create_resource_key", "创建一次性资源激活密钥"),
+        types.BotCommand("revoke_resource_user", "撤销资源用户"),
+    ]
+
+
 @dataclass
 class SearchSession:
     """One bounded, private search session."""

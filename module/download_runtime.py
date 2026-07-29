@@ -59,7 +59,7 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
         for _ in range(application.max_download_task):
             tasks.append(application.loop.create_task(runtime.worker(client)))
 
-        if application.bot_token:
+        if application.bot_token or application.resource_bot_token:
             application.loop.run_until_complete(
                 runtime.start_download_bot(
                     application,
@@ -76,7 +76,7 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
     finally:
         application.is_running = False
         runtime.stop_channel_library_service(application)
-        if application.bot_token:
+        if application.bot_token or application.resource_bot_token:
             try:
                 application.loop.run_until_complete(runtime.stop_download_bot())
             except Exception as error:

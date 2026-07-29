@@ -3,6 +3,7 @@
 import asyncio
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Callable, List, Union
 
 import pyrogram
@@ -56,6 +57,13 @@ from module.prescan_workflow import (
     parse_prescan_callback_data,
     summarize_prescan_progress,
 )
+from module.resource_bot import (
+    ResourceAdminCommands,
+    ResourceBotRole,
+    build_resource_admin_bot_commands,
+)
+from module.resource_bot_store import ResourceBotStore
+from module.resource_delivery import ResourceDeliveryService
 from module.pyrogram_extension import (
     check_user_permission,
     parse_link,
@@ -234,6 +242,8 @@ class DownloadBot:
         download_chat_task: Callable,
     ):
         """Start bot"""
+        self.is_running = True
+        self.allowed_user_ids = []
         self.bot = pyrogram.Client(
             app.application_name + "_bot",
             api_hash=app.api_hash,
@@ -373,7 +383,7 @@ class DownloadBot:
         except Exception:
             pass
 
-        self.reply_task = _bot.app.loop.create_task(_bot.update_reply_message())
+        self.reply_task = self.app.loop.create_task(self.update_reply_message())
 
         self.bot.add_handler(
             MessageHandler(
@@ -390,8 +400,184 @@ class DownloadBot:
             )
         )
 
+    async def stop(self):
+        """Stop the management Bot role and its background work."""
 
-_bot = DownloadBot()
+        self.update_config()
+        self.is_running = False
+        if self.reply_task:
+            self.reply_task.cancel()
+            self.reply_task = None
+        self.stop_task("all")
+        if self.bot:
+            await self.bot.stop()
+            self.bot = None
+
+
+def resource_bot_db_path() -> Path:
+    """Return the independent resource Bot state path."""
+
+    override = os.environ.get("TMD_RESOURCE_BOT_DB_PATH")
+    if override:
+        return Path(override)
+    return Path.cwd() / "resource_bot.sqlite3"
+
+
+class BotManager:
+    """Own both Bot roles and the resource delivery worker."""
+
+    def __init__(
+        self,
+        admin_role=None,
+        *,
+        store_factory=ResourceBotStore,
+        resource_role_factory=ResourceBotRole,
+        delivery_factory=ResourceDeliveryService,
+        db_path_resolver=resource_bot_db_path,
+    ):
+        self.admin_role = admin_role or DownloadBot()
+        self.store_factory = store_factory
+        self.resource_role_factory = resource_role_factory
+        self.delivery_factory = delivery_factory
+        self.db_path_resolver = db_path_resolver
+        self.resource_store = None
+        self.resource_role = None
+        self.delivery_service = None
+        self.resource_admin_commands = None
+        self.started = False
+
+    async def start(
+        self,
+        app: Application,
+        client: pyrogram.Client,
+        add_download_task: Callable,
+        download_chat_task: Callable,
+    ) -> None:
+        """Start both roles through the existing single application entry."""
+
+        if self.started:
+            return
+        if app.resource_bot_token and not app.bot_token:
+            raise ValueError("resource_bot_token requires bot_token")
+        admin_started = False
+        resource_started = False
+        try:
+            await self.admin_role.start(
+                app,
+                client,
+                add_download_task,
+                download_chat_task,
+            )
+            admin_started = True
+            if app.resource_bot_token:
+                self.resource_store = self.store_factory(
+                    self.db_path_resolver()
+                )
+                self.resource_store.initialize()
+                channel_service = getattr(
+                    app, "channel_library_service", None
+                )
+                channel_store = (
+                    getattr(channel_service, "store", None)
+                    if channel_service is not None
+                    else None
+                )
+                self.resource_role = self.resource_role_factory(
+                    app,
+                    client,
+                    self.resource_store,
+                    channel_store,
+                )
+                await self.resource_role.start()
+                resource_started = True
+                self.delivery_service = self.delivery_factory(
+                    app,
+                    client,
+                    self.resource_role.bot,
+                    self.resource_store,
+                    channel_store,
+                    temp_root=Path(app.temp_save_path)
+                    / "resource-deliveries",
+                )
+                self.resource_role.delivery_service = self.delivery_service
+                await self.delivery_service.start()
+                self.resource_admin_commands = ResourceAdminCommands(
+                    self.resource_store
+                )
+                self.resource_admin_commands.register(
+                    self.admin_role.bot,
+                    self.admin_role.allowed_user_ids,
+                )
+                await self.admin_role.bot.set_bot_commands(
+                    build_admin_bot_commands()
+                    + build_resource_admin_bot_commands()
+                )
+            self.started = True
+        except Exception:
+            if self.delivery_service is not None:
+                try:
+                    await self.delivery_service.stop()
+                except Exception as error:
+                    logger.warning(
+                        "Resource delivery rollback failed: {}", error
+                    )
+            if self.resource_role is not None and (
+                resource_started or self.resource_role.bot is not None
+            ):
+                try:
+                    await self.resource_role.stop()
+                except Exception as error:
+                    logger.warning("Resource Bot rollback failed: {}", error)
+            if admin_started:
+                try:
+                    await self.admin_role.stop()
+                except Exception as error:
+                    logger.warning(
+                        "Management Bot rollback failed: {}", error
+                    )
+            self._reset_resource_state()
+            self.started = False
+            raise
+
+    async def stop(self) -> None:
+        """Stop delivery, resource Bot, then management Bot exactly once."""
+
+        if not self.started:
+            return
+        errors = []
+        if self.resource_role is not None:
+            self.resource_role.delivery_service = None
+        if self.delivery_service is not None:
+            try:
+                await self.delivery_service.stop()
+            except Exception as error:
+                errors.append(error)
+                logger.warning("Resource delivery stop failed: {}", error)
+        if self.resource_role is not None:
+            try:
+                await self.resource_role.stop()
+            except Exception as error:
+                errors.append(error)
+                logger.warning("Resource Bot stop failed: {}", error)
+        try:
+            await self.admin_role.stop()
+        except Exception as error:
+            errors.append(error)
+            logger.warning("Management Bot stop failed: {}", error)
+        self._reset_resource_state()
+        self.started = False
+        if errors:
+            raise RuntimeError("one or more Bot components failed to stop")
+
+    def _reset_resource_state(self) -> None:
+        self.resource_store = None
+        self.resource_role = None
+        self.delivery_service = None
+        self.resource_admin_commands = None
+
+
+_bot_manager = BotManager()
+_bot = _bot_manager.admin_role
 
 
 async def start_download_bot(
@@ -401,18 +587,14 @@ async def start_download_bot(
     download_chat_task: Callable,
 ):
     """Start download bot"""
-    await _bot.start(app, client, add_download_task, download_chat_task)
+    await _bot_manager.start(
+        app, client, add_download_task, download_chat_task
+    )
 
 
 async def stop_download_bot():
     """Stop download bot"""
-    _bot.update_config()
-    _bot.is_running = False
-    if _bot.reply_task:
-        _bot.reply_task.cancel()
-    _bot.stop_task("all")
-    if _bot.bot:
-        await _bot.bot.stop()
+    await _bot_manager.stop()
 
 
 async def send_help_str(client: pyrogram.Client, chat_id):
