@@ -2546,3 +2546,36 @@ Changed files:
 
 Rollback:
 - Revert the final verification commit to remove only the audit hardening and its tests/log entry, or revert the feature commits in reverse order for a complete local rollback. Production data/configuration rollback is not applicable because no production operation was performed.
+
+## 2026-07-29 - Task: Deploy dual-role resource Bot to RackNerd
+
+### What was done
+
+- Fast-forwarded local `master` to the locally verified resource Bot implementation, pushed it to GitHub, and fast-forwarded the RackNerd production checkout from `b89ea3b` to `cc64bfd`.
+- Stopped `tg-downloader.service` and created a restricted production backup of `config.yaml`, sessions, the pre-deploy commit, and both existing SQLite databases before changing code or configuration.
+- Read the new resource Bot Token from the ignored local `.env.new` without displaying it, added only `resource_bot_token` to production `config.yaml`, and tightened the live configuration to mode `0600`.
+- Initialized schema-v1 `resource_bot.sqlite3`, started the unified management/resource Bot lifecycle, and tightened the new resource Bot session files to mode `0600`.
+- Verified both Telegram Bot identities and command menus, including removal of public `/forward` and preservation of the resource/management command split.
+
+### Testing
+
+- Production backup: `/root/telegram_media_downloader/backups/release-20260729-193337-resource-bot` (`177M`, directory mode `0700`); backed-up `channel_library.sqlite3` and `web_tasks.sqlite3` integrity -> `ok`; `config.yaml` and commit marker mode -> `0600`.
+- Production code -> `cc64bfd`; `check_imports.py`, changed-module compilation, and `.venv/bin/pip check` passed before restart.
+- Semantic configuration comparison against the backup reported only `resource_bot_token` as changed; management and resource Bot Tokens are both configured and distinct without printing either value.
+- Live databases: `channel_library.sqlite3` schema `0`, `web_tasks.sqlite3` schema `1`, `resource_bot.sqlite3` schema `1`; all three `PRAGMA integrity_check` results -> `ok`.
+- `resource_bot.sqlite3`, WAL, SHM, production `config.yaml`, and the resource Bot session/session-journal files are mode `0600`.
+- Telegram Bot API identity checks -> management `@unraidnc_bot`, resource `@wang18transbot`.
+- Management Bot commands -> `help,get_info,download,prescan,listen_forward,add_filter,set_language,stop,retry_failed,create_resource_key,revoke_resource_user`; resource Bot commands -> `start,activate,status,bind,channel,unbind,search,help`.
+- `tg-downloader.service` -> `active/running`, `NRestarts=0`, `ExecMainStatus=0`, approximately `102MB` memory; four existing download workers started.
+- Post-start journal -> `21` lines and `0` traceback/exception/critical/failed/error-like lines.
+- Production-local Web `/` -> `302 /login`, `/login` -> `200`; public `https://tgdn.wyichuan.cc/` -> `302 /login`, public `/login` -> `200`.
+- Live activation-key redemption, destination-channel binding, single-media publication, and album publication remain manual Telegram acceptance actions for the owner because they require an owner-controlled user and channel.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the production backup, code/configuration deployment, database initialization, service health, Bot identities/commands, Web checks, and remaining manual Telegram acceptance.
+
+Rollback:
+- Stop `tg-downloader.service`, preserve the current configuration/sessions/three SQLite databases, restore `config.yaml` from `/root/telegram_media_downloader/backups/release-20260729-193337-resource-bot/config.yaml` (or remove only `resource_bot_token`), revert the resource Bot commits on `master`, fast-forward production, and restart the service.
+- Preserve `resource_bot.sqlite3` during ordinary code rollback; the pre-feature code does not use it. Restore database backups only for confirmed corruption or an incompatible schema problem, with the service stopped and the current files retained first.
