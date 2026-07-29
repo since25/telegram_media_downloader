@@ -67,6 +67,7 @@ def insert_package(
     boundary_status="stable",
     media_count=1,
     known_total_size=100,
+    package_kind="channel",
 ):
     title = title or f"Package {start_message_id}"
     with store.connect() as connection:
@@ -78,14 +79,15 @@ def insert_package(
         package_id = connection.execute(
             """
             INSERT INTO channel_packages (
-                library_id, start_message_id, end_message_id, title,
+                library_id, package_kind, start_message_id, end_message_id, title,
                 published_at, boundary_status, media_count,
                 known_total_size, unknown_size_count,
                 current_download_status, index_revision, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'never', ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'never', ?, ?, ?)
             """,
             (
                 library_id,
+                package_kind,
                 start_message_id,
                 start_message_id,
                 title,
@@ -108,19 +110,22 @@ def insert_package(
     return int(package_id)
 
 
-def insert_package_item(store, library_id, package_id, message_id, ordinal=0):
+def insert_package_item(
+    store, library_id, package_id, message_id, ordinal=0, media_type="video"
+):
     with store.connect() as connection:
         connection.execute(
             """
             INSERT INTO channel_media_messages (
                 library_id, message_id, message_date, media_type, caption,
                 file_name, file_size, raw_fingerprint, first_seen_at, updated_at
-            ) VALUES (?, ?, ?, 'video', ?, ?, ?, ?, 1, 1)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)
             """,
             (
                 library_id,
                 message_id,
                 "2026-07-16T00:00:00+00:00",
+                media_type,
                 f"Caption {message_id}",
                 f"video-{message_id}.mp4",
                 message_id * 10,
@@ -132,13 +137,14 @@ def insert_package_item(store, library_id, package_id, message_id, ordinal=0):
             INSERT INTO channel_package_items (
                 library_id, package_id, message_id, ordinal, media_type,
                 caption_for_naming, original_caption, inherited_caption
-            ) VALUES (?, ?, ?, ?, 'video', ?, ?, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 library_id,
                 package_id,
                 message_id,
                 ordinal,
+                media_type,
                 f"Name {message_id}",
                 f"Caption {message_id}",
             ),
@@ -592,7 +598,14 @@ def test_library_detail_includes_download_and_monitor_keyword_statistics(web_env
         env.store, library["id"], 10, title="Course Python Basics"
     )
     rust_id = insert_package(env.store, library["id"], 20, title="Course Rust Advanced")
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_packages SET package_kind = 'comment' WHERE id = ?",
+            (rust_id,),
+        )
     insert_package(env.store, library["id"], 30, title="Course Python Draft")
+    insert_package_item(env.store, library["id"], python_id, 10, media_type="video")
+    insert_package_item(env.store, library["id"], rust_id, 20, media_type="document")
     env.store.save_keyword_monitor_group(
         "Programming",
         required_keywords=["Course"],
@@ -616,6 +629,20 @@ def test_library_detail_includes_download_and_monitor_keyword_statistics(web_env
     assert body["counts"]["available_package_count"] == 3
     assert body["counts"]["downloaded_package_count"] == 1
     assert body["counts"]["pending_download_package_count"] == 2
+    assert body["resource_distribution"] == {
+        "package_kinds": [
+            {"package_kind": "channel", "package_count": 2},
+            {"package_kind": "comment", "package_count": 1},
+        ],
+        "media_types": [
+            {"media_type": "document", "media_count": 1},
+            {"media_type": "video", "media_count": 1},
+        ],
+        "published_at": {
+            "first": "2026-07-16T00:00:00+00:00",
+            "last": "2026-07-16T00:00:00+00:00",
+        },
+    }
     assert body["keyword_distribution"] == [
         {
             "group_id": 1,
@@ -629,6 +656,7 @@ def test_library_detail_includes_download_and_monitor_keyword_statistics(web_env
     ]
     assert rust_id > python_id
     assert "keyword_distribution" not in listing["items"][0]
+    assert "resource_distribution" not in listing["items"][0]
 
 
 def test_library_list_strictly_validates_keyset_page_inputs(web_env):
@@ -1683,6 +1711,10 @@ def test_channel_library_tab_has_one_complete_spa_dom_contract():
         "channel_stat_last_full",
         "channel_stat_last_incremental",
         "channel_keyword_distribution",
+        "channel_resource_distribution",
+        "channel_package_preview",
+        "channel_package_preview_rows",
+        "channel_package_view_all",
         "channel_library_delete",
     }
 
@@ -1700,6 +1732,9 @@ def test_channel_library_tab_has_one_complete_spa_dom_contract():
         assert len(re.findall(rf'id="{re.escape(element_id)}"', html)) == 1
     assert 'id="channel_library_packages"' not in html
     assert 'id="channel_library_filters"' not in html
+    assert "library_ids:String(libraryId)" in html
+    assert "data-channel-preview-expand" in html
+    assert "data-channel-preview-open-package" in html
 
 
 def test_aggregate_package_and_keyword_monitor_tabs_have_complete_dom_contracts():

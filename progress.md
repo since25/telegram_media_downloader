@@ -1933,3 +1933,33 @@ Changed files:
 Rollback:
 - Preferred code rollback: `git revert 00ee82e`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both live SQLite databases; schema v8 is additive and can remain unused by older code.
 - Release backup: `/root/telegram_media_downloader/backups/release-20260729-021758-comment-scanning`. Stop the service before restoring either database or configuration, and retain the current live files before replacement.
+
+## 2026-07-29 - Task: Add channel-scoped resource insight and package preview
+
+### What was done
+
+- Added stable package-source and media-type distributions plus the indexed publication range to the selected channel overview, cached by channel index revision and omitted from the all-channel polling response.
+- Added a read-only preview of the 20 most recently indexed stable packages to the channel workspace, with source type, title, publication time, media count, size, and download status.
+- Added on-demand expansion of the first 10 media items for package content inspection. Package titles and the view-all action reuse the aggregate Resources page with the current channel filter applied; selection and download controls remain centralized there.
+- Updated operator documentation to describe the channel-summary/package-management boundary and preview refresh behavior.
+
+### Testing
+
+- `.venv/bin/python -m pytest -q` -> `540 passed, 1 skipped`.
+- Channel Web regression suite -> `106 passed`.
+- Inline Web JavaScript parsed successfully with `node --check`.
+- Changed Python modules compiled successfully and `.venv/bin/python check_imports.py` passed.
+- `git diff --check` -> passed.
+- Browser screenshot verification was not run because the workspace has no Playwright, Puppeteer, or equivalent browser runtime; no new browser dependency was installed and no Telegram-connected local service was started.
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`, `module/web.py`: revision-cached channel resource distributions and lightweight list/detail response separation.
+- `module/templates/index.html`, `module/static/css/index.css`: resource composition, recent package preview, media expansion, responsive layout, and scoped navigation to Resources.
+- `tests/module/test_channel_library_web.py`: distribution API and channel workspace DOM contracts.
+- `README_CN.md`, `docs/web-control-console.md`: documented the channel preview and aggregate resource-management boundary.
+- `progress.md`: recorded implementation and verification evidence.
+
+Rollback:
+- Revert the commit containing this task. No schema or persisted-data migration is required; restarting the service restores the prior channel overview.

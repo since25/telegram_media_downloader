@@ -32,10 +32,17 @@ The link identifies the conversation; the initial scan snapshots the latest visi
 message ID and indexes the complete visible ID range. Each library has a scan mode:
 `messages`, `comments`, or `both`. Existing rows migrate to `messages`. Submitting another
 link for the same Telegram `chat_id` and mode opens the existing library; changing the
-mode queues a full revisit from message ID 1. Package
-search and download controls live only in Resources; the selected channel workspace
-shows stable/available, downloaded, pending, media, known-size, and failure counts plus
-the stable-package distribution for enabled keyword monitor groups and match terms.
+mode queues a full revisit from message ID 1. Package search, selection, and download
+controls live only in Resources. The selected channel workspace shows stable/available,
+downloaded, pending, media, known-size, and failure counts; stable-package source and
+media-type distributions; the indexed publication range; and enabled monitor keyword
+distribution. It also loads a read-only preview of the 20 most recently indexed stable
+packages. Expanding a preview row fetches at most the first 10 media items. Opening a
+package or choosing View All switches to Resources with the current channel filter
+applied; package titles, filters, selections, and downloads continue to use the aggregate
+Resources implementation. Resource distributions are cached by channel index revision,
+and the preview is refetched only when the selected channel or its revision changes, not
+on every three-second scan-progress poll.
 
 The initial full scan requests 50 consecutive message IDs per batch and waits a randomized 4-6 seconds between successful batches. Work is charged by the snapshotted ID range, not by visible-message count; deleted or unavailable gaps do not reduce the number of batches. A 15,000-ID range is exactly 300 batches and 299 inter-batch delays, so delay alone is theoretically 19 minutes 56 seconds to 29 minutes 54 seconds (about 20-30 minutes). This is not a completion promise: Telegram API latency, FloodWait, transient retries, automatic download priority, and user pause all extend elapsed time. Incremental and repair scans also use 50-ID batches with 1-2 second delays. Batch sizes, delays, and retry timing are validated server settings loaded from `config.yaml`; changing them requires a restart.
 
@@ -118,7 +125,7 @@ Channel and scan routes:
 
 - `GET /api/channel-libraries?cursor=&page_size=50`: keyset page with latest scan/count summary.
 - `POST /api/channel-libraries`: `{"link": "https://t.me/..."}`; returns `202` when created and `200` for the existing library.
-- `GET /api/channel-libraries/<library_id>`: library, opaque `library_version`, latest scan, package/download/size counts, enabled monitor keyword distribution, and safe failure summaries.
+- `GET /api/channel-libraries/<library_id>`: library, opaque `library_version`, latest scan, package/download/size counts, stable package-source/media-type/publication-range distribution, enabled monitor keyword distribution, and safe failure summaries.
 - `DELETE /api/channel-libraries/<library_id>`: `{"confirm_library_id": <id>, "library_version": "<version>"}`; atomically rejects version changes, active scans, and queued/downloading child attempts even if a parent batch summary is terminal.
 - `POST /api/channel-libraries/<library_id>/scans`: `{"mode": "incremental"}`, `{"mode": "repair", "failure_ids": [<id>]}`, or `{"mode": "retry", "failed_job_id": <id>}`; returns `202`.
 - `POST /api/channel-scans/<job_id>/pause`, `/resume`, or `/stop`: persists control at the next safe scan boundary.

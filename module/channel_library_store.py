@@ -274,6 +274,7 @@ class ChannelLibraryStore:
         self._keyword_distribution_cache: dict[
             int, tuple[tuple[int, int, float], list[dict]]
         ] = {}
+        self._resource_distribution_cache: dict[int, tuple[int, dict]] = {}
 
     def connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5.0)
@@ -1282,7 +1283,11 @@ class ChannelLibraryStore:
         return f"{library['updated_at']!r}:{int(library['index_revision'])}"
 
     def get_library_overview(
-        self, library_id: int, *, include_keyword_distribution: bool = True
+        self,
+        library_id: int,
+        *,
+        include_keyword_distribution: bool = True,
+        include_resource_distribution: bool = True,
     ) -> Optional[dict]:
         """Return one library with its latest scan, counts, and failure summaries."""
 
@@ -1362,6 +1367,13 @@ class ChannelLibraryStore:
                 if include_keyword_distribution
                 else None
             )
+            resource_distribution = (
+                self._cached_resource_distribution(
+                    connection, library_id, int(library["index_revision"])
+                )
+                if include_resource_distribution
+                else None
+            )
             failures = connection.execute(
                 """
                 SELECT * FROM channel_scan_failures
@@ -1380,7 +1392,67 @@ class ChannelLibraryStore:
         }
         if keyword_distribution is not None:
             result["keyword_distribution"] = keyword_distribution
+        if resource_distribution is not None:
+            result["resource_distribution"] = resource_distribution
         return result
+
+    def _cached_resource_distribution(
+        self,
+        connection: sqlite3.Connection,
+        library_id: int,
+        index_revision: int,
+    ) -> dict:
+        cached = self._resource_distribution_cache.get(int(library_id))
+        if cached is not None and cached[0] == int(index_revision):
+            return cached[1]
+        distribution = self._resource_distribution_from_connection(
+            connection, library_id
+        )
+        self._resource_distribution_cache[int(library_id)] = (
+            int(index_revision),
+            distribution,
+        )
+        return distribution
+
+    @staticmethod
+    def _resource_distribution_from_connection(
+        connection: sqlite3.Connection, library_id: int
+    ) -> dict:
+        package_kinds = connection.execute(
+            """
+            SELECT package_kind, COUNT(*) AS package_count
+            FROM channel_packages
+            WHERE library_id = ? AND boundary_status = 'stable'
+            GROUP BY package_kind
+            ORDER BY package_kind
+            """,
+            (library_id,),
+        ).fetchall()
+        media_types = connection.execute(
+            """
+            SELECT i.media_type, COUNT(*) AS media_count
+            FROM channel_package_items AS i
+            JOIN channel_packages AS p
+              ON p.library_id = i.library_id AND p.id = i.package_id
+            WHERE p.library_id = ? AND p.boundary_status = 'stable'
+            GROUP BY i.media_type
+            ORDER BY i.media_type
+            """,
+            (library_id,),
+        ).fetchall()
+        published_at = connection.execute(
+            """
+            SELECT MIN(published_at) AS first, MAX(published_at) AS last
+            FROM channel_packages
+            WHERE library_id = ? AND boundary_status = 'stable'
+            """,
+            (library_id,),
+        ).fetchone()
+        return {
+            "package_kinds": [dict(row) for row in package_kinds],
+            "media_types": [dict(row) for row in media_types],
+            "published_at": dict(published_at),
+        }
 
     def _cached_keyword_distribution(
         self,
@@ -1550,6 +1622,7 @@ class ChannelLibraryStore:
                 "DELETE FROM channel_libraries WHERE id = ?", (library_id,)
             )
         self._keyword_distribution_cache.pop(int(library_id), None)
+        self._resource_distribution_cache.pop(int(library_id), None)
         return library_dict
 
     @staticmethod

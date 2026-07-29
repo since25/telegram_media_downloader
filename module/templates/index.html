@@ -352,6 +352,28 @@
                     </div>
                   </div>
                 </div>
+                <div class="channel-resource-section">
+                  <header class="channel-section-heading">
+                    <strong>资源构成</strong>
+                    <span class="nums" id="channel_resource_time_range">—</span>
+                  </header>
+                  <div class="channel-resource-distribution" id="channel_resource_distribution"></div>
+                </div>
+                <section class="channel-package-preview" id="channel_package_preview">
+                  <header class="channel-section-heading">
+                    <div>
+                      <strong>最近收录资源包</strong>
+                      <span class="nums" id="channel_package_preview_count">0 个包</span>
+                    </div>
+                    <button type="button" class="btn btn-secondary" id="channel_package_view_all">查看全部资源包</button>
+                  </header>
+                  <div class="table-scroll channel-package-preview-scroll">
+                    <table class="table channel-package-preview-table">
+                      <thead><tr><th></th><th>来源</th><th>资源包名称</th><th>发布时间</th><th>媒体</th><th>大小</th><th>下载</th></tr></thead>
+                      <tbody id="channel_package_preview_rows"></tbody>
+                    </table>
+                  </div>
+                </section>
                 <div class="channel-keyword-section">
                   <header class="channel-section-heading">
                     <strong>监控关键词分布</strong>
@@ -612,8 +634,10 @@
       prescanRows:{}, prescanSelected:new Set(), sys:null, timers:{}, channel:{
         csrfToken:null, csrfPromise:null, libraries:[], selectedLibraryId:null,
         libraryNextCursor:null, libraryPagesLoaded:0, generation:0,
-        detail:null, polling:false, cronSettings:null,
-      }, aggregate:{items:[],nextCursor:null,expandedItems:{},selection:null,loading:false},
+        detail:null, polling:false, cronSettings:null, previewKey:null,
+        previewLoadingKey:null, previewItems:[], previewExpandedItems:{}, previewError:null,
+      }, aggregate:{items:[],nextCursor:null,expandedItems:{},selection:null,loading:false,
+        pendingLibraryId:null,pendingPackageId:null},
       keywordMonitor:{groups:[],selectedGroupId:null,history:[],historyNextCursor:null,
         draftDirty:false,draft:null} };
     let taskFilter = 'all';
@@ -898,6 +922,9 @@
     };
     const CHANNEL_SCAN_KIND = {full:'全量', incremental:'增量', repair:'补扫'};
     const CHANNEL_ACTIVE_SCAN = new Set(['queued','running','paused_user','auto_paused_download','waiting_rate_limit']);
+    const CHANNEL_MEDIA_TYPE = {
+      audio:'音频', photo:'图片', video:'视频', document:'文档', voice:'语音', video_note:'视频笔记',
+    };
 
     function channelStatusTag(status, mapping=CHANNEL_STATUS){
       const spec = mapping[status] || {label:String(status||'未知'), cls:'tag-neutral'};
@@ -1106,6 +1133,94 @@
         <div class="channel-keyword-list">${rows}</div>
       </section>`;
     }
+    function renderChannelDistributionGroup(title, rows, labelKey, countKey, labels){
+      if (!rows.length) return `<section class="channel-resource-group"><header>${escapeHtml(title)}</header><div class="channel-resource-empty">暂无数据</div></section>`;
+      const total = Math.max(1,rows.reduce((sum,item)=>sum+(Number(item[countKey])||0),0));
+      return `<section class="channel-resource-group"><header>${escapeHtml(title)}</header><div class="channel-resource-list">${rows.map(item=>{
+        const count = Number(item[countKey])||0;
+        const label = labels[item[labelKey]] || item[labelKey] || '未知';
+        const width = Math.max(3,Math.round(count/total*100));
+        return `<div class="channel-resource-row"><span>${escapeHtml(label)}</span><span class="channel-resource-track"><i style="width:${width}%"></i></span><b class="nums">${count}</b></div>`;
+      }).join('')}</div></section>`;
+    }
+    function renderChannelResourceDistribution(detail){
+      const distribution = detail.resource_distribution || {};
+      const packageKinds = distribution.package_kinds || [];
+      const mediaTypes = distribution.media_types || [];
+      $('#channel_resource_distribution').innerHTML =
+        renderChannelDistributionGroup('资源来源',packageKinds,'package_kind','package_count',{channel:'频道消息',comment:'评论区'})+
+        renderChannelDistributionGroup('媒体类型',mediaTypes,'media_type','media_count',CHANNEL_MEDIA_TYPE);
+      const published = distribution.published_at || {};
+      $('#channel_resource_time_range').textContent = published.first || published.last
+        ? `${formatChannelTime(published.first)} 至 ${formatChannelTime(published.last)}`
+        : '暂无发布时间';
+    }
+    function renderChannelPreviewItemRows(packageId){
+      const page = state.channel.previewExpandedItems[packageId];
+      if (!page) return '';
+      const rows = page.items.length ? page.items.map(item=>`<tr>
+        <td class="nums">${Number(item.source_message_id||item.message_id)}</td>
+        <td>${escapeHtml(CHANNEL_MEDIA_TYPE[item.media_type]||item.media_type||'—')}</td>
+        <td>${escapeHtml(item.file_name||'—')}</td><td class="nums">${formatChannelBytes(item.file_size,true)}</td>
+        <td>${escapeHtml(item.caption||'')}</td></tr>`).join('')
+        : '<tr><td colspan="5" class="text-muted">此包暂无媒体明细</td></tr>';
+      return `<tr class="channel-package-preview-detail"><td colspan="7"><table class="channel-library-item-list"><tbody>${rows}</tbody></table>
+        <div class="channel-package-preview-detail-footer"><span class="text-muted">${page.nextCursor?'仅显示前 10 条':'已显示全部媒体'}</span><button type="button" class="btn btn-ghost" data-channel-preview-open-package="${Number(packageId)}">在资源包页查看</button></div></td></tr>`;
+    }
+    function renderChannelPackagePreview(){
+      const rows = $('#channel_package_preview_rows');
+      $('#channel_package_preview_count').textContent = `${state.channel.previewItems.length} 个包`;
+      if (state.channel.previewLoadingKey){
+        rows.innerHTML = '<tr><td colspan="7" class="text-muted" style="padding:28px;text-align:center">正在加载资源包</td></tr>';
+        return;
+      }
+      if (state.channel.previewError){
+        rows.innerHTML = `<tr><td colspan="7" class="text-muted" style="padding:28px;text-align:center">${escapeHtml(state.channel.previewError)}</td></tr>`;
+        return;
+      }
+      if (!state.channel.previewItems.length){
+        rows.innerHTML = '<tr><td colspan="7" class="text-muted" style="padding:28px;text-align:center">当前频道暂无稳定资源包</td></tr>';
+        return;
+      }
+      rows.innerHTML = state.channel.previewItems.map(pkg=>{
+        const id = Number(pkg.id), expanded = Boolean(state.channel.previewExpandedItems[id]);
+        return `<tr data-channel-preview-package="${id}">
+          <td><button type="button" class="channel-library-expand" data-channel-preview-expand="${id}" aria-expanded="${expanded?'true':'false'}" title="展开媒体明细">${icon('chevron',14)}</button></td>
+          <td>${pkg.package_kind==='comment'?'评论区':'频道消息'}</td>
+          <td><button type="button" class="channel-package-preview-title" data-channel-preview-open-package="${id}" title="${escapeHtml(pkg.title||'')}">${escapeHtml(pkg.title||'未命名包')}</button></td>
+          <td>${formatChannelTime(pkg.published_at)}</td><td class="nums">${Number(pkg.media_count)||0}</td>
+          <td class="nums">${formatChannelBytes(pkg.known_total_size,Boolean(pkg.size_is_exact))}</td>
+          <td>${channelStatusTag(pkg.current_download_status,CHANNEL_DOWNLOAD_STATUS)}</td>
+        </tr>${renderChannelPreviewItemRows(id)}`;
+      }).join('');
+    }
+    async function loadChannelPackagePreview(detail){
+      const libraryId = Number(detail.library.id);
+      const previewKey = `${libraryId}:${Number(detail.library.index_revision)||0}`;
+      if (state.channel.previewKey === previewKey || state.channel.previewLoadingKey === previewKey) return;
+      const generation = state.channel.generation;
+      state.channel.previewLoadingKey = previewKey;
+      state.channel.previewError = null;
+      renderChannelPackagePreview();
+      try {
+        const params = new URLSearchParams({page_size:'50',library_ids:String(libraryId)});
+        const data = await channelRequest(`/api/packages?${params}`);
+        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
+        state.channel.previewItems = (data.items||[])
+          .filter(item=>item.boundary_status==='stable')
+          .slice(0,20);
+        state.channel.previewExpandedItems = {};
+        state.channel.previewKey = previewKey;
+      } catch (error){
+        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
+        state.channel.previewError = error.message;
+      } finally {
+        if (generation === state.channel.generation && libraryId === state.channel.selectedLibraryId){
+          state.channel.previewLoadingKey = null;
+          renderChannelPackagePreview();
+        }
+      }
+    }
     function renderChannelDetail(){
       const detail = state.channel.detail;
       if (!detail) return;
@@ -1135,6 +1250,7 @@
         : '<div class="channel-keyword-empty">当前频道暂无匹配的启用监控关键词</div>';
       renderChannelScanControls(detail);
       $('#channel_library_delete').disabled = Boolean(scan && CHANNEL_ACTIVE_SCAN.has(scan.status));
+      renderChannelResourceDistribution(detail);
     }
     async function loadChannelDetail(){
       if (!state.channel.selectedLibraryId) return;
@@ -1149,13 +1265,20 @@
       if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
       state.channel.detail = detail;
       renderChannelDetail();
+      await loadChannelPackagePreview(detail);
     }
 
     async function selectChannelLibrary(libraryId){
       state.channel.generation += 1;
       state.channel.selectedLibraryId = Number(libraryId);
       state.channel.detail = null;
+      state.channel.previewKey = null;
+      state.channel.previewLoadingKey = null;
+      state.channel.previewItems = [];
+      state.channel.previewExpandedItems = {};
+      state.channel.previewError = null;
       renderChannelLibraries();
+      renderChannelPackagePreview();
       showChannelNotice('');
       try {
         await loadChannelDetail();
@@ -1236,6 +1359,37 @@
       }
       finally { button.disabled = false; }
     });
+    async function toggleChannelPreviewItems(packageId){
+      if (state.channel.previewExpandedItems[packageId]){
+        delete state.channel.previewExpandedItems[packageId];
+        renderChannelPackagePreview();
+        return;
+      }
+      const libraryId = state.channel.selectedLibraryId;
+      const generation = state.channel.generation;
+      try {
+        const data = await channelRequest(`/api/packages/${packageId}/items?page_size=10`);
+        if (generation !== state.channel.generation || libraryId !== state.channel.selectedLibraryId) return;
+        state.channel.previewExpandedItems[packageId] = {
+          items:data.items||[], nextCursor:data.next_cursor||null,
+        };
+        renderChannelPackagePreview();
+      } catch (error){ showChannelNotice(error.message,'error'); }
+    }
+    function openAggregateForChannel(packageId=null){
+      if (!state.channel.selectedLibraryId) return;
+      $('#aggregate_package_filters').reset();
+      state.aggregate.pendingLibraryId = state.channel.selectedLibraryId;
+      state.aggregate.pendingPackageId = packageId;
+      $('#app_tab_packages').click();
+    }
+    $('#channel_package_preview_rows').addEventListener('click',e=>{
+      const expand = e.target.closest('[data-channel-preview-expand]');
+      if (expand){ toggleChannelPreviewItems(Number(expand.dataset.channelPreviewExpand)); return; }
+      const open = e.target.closest('[data-channel-preview-open-package]');
+      if (open) openAggregateForChannel(Number(open.dataset.channelPreviewOpenPackage));
+    });
+    $('#channel_package_view_all').addEventListener('click',()=>openAggregateForChannel());
     $('#channel_library_delete').addEventListener('click', async () => {
       const detail = state.channel.detail;
       if (!detail) return;
@@ -1270,7 +1424,10 @@
       notice.textContent = message;
     }
     async function loadAggregateLibraries(){
-      const selected = new Set([...$('#aggregate_filter_libraries').selectedOptions].map(option=>Number(option.value)));
+      const pendingLibraryId = Number(state.aggregate.pendingLibraryId)||null;
+      const selected = pendingLibraryId
+        ? new Set([pendingLibraryId])
+        : new Set([...$('#aggregate_filter_libraries').selectedOptions].map(option=>Number(option.value)));
       let items = [], cursor = null;
       do {
         const params = new URLSearchParams({page_size:'200'});
@@ -1282,6 +1439,7 @@
       $('#aggregate_filter_libraries').innerHTML = items.map(library =>
         `<option value="${Number(library.id)}" ${selected.has(Number(library.id))?'selected':''}>${escapeHtml(library.title||'未命名频道')}</option>`
       ).join('');
+      state.aggregate.pendingLibraryId = null;
       return items;
     }
     function readAggregateFilters(){
@@ -1402,6 +1560,12 @@
         await ensureChannelCsrf();
         await loadAggregateLibraries();
         await Promise.all([loadAggregatePackages(),loadAggregateSelection()]);
+        const pendingPackageId = Number(state.aggregate.pendingPackageId)||null;
+        state.aggregate.pendingPackageId = null;
+        if (pendingPackageId && state.aggregate.items.some(item=>Number(item.id)===pendingPackageId)){
+          await toggleAggregateItems(pendingPackageId);
+          document.querySelector(`[data-aggregate-package="${pendingPackageId}"]`)?.scrollIntoView({block:'center'});
+        }
       } catch (error){ showAggregateNotice(error.message,'error'); }
     }
     $('#aggregate_package_filters').addEventListener('submit',e=>{ e.preventDefault(); loadAggregatePackages(); });

@@ -720,7 +720,9 @@ def channel_libraries():
     items = []
     for library in page.items:
         overview = service.store.get_library_overview(
-            int(library["id"]), include_keyword_distribution=False
+            int(library["id"]),
+            include_keyword_distribution=False,
+            include_resource_distribution=False,
         )
         if overview is None:
             continue
