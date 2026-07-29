@@ -2294,3 +2294,28 @@ Changed files:
 Rollback:
 - Preferred code rollback: revert `96df898`, push `master`, fast-forward production, and restart `tg-downloader.service`; the additive columns can remain in place for the previous code.
 - Exact pre-deploy data rollback, only if required and with the service stopped, is available from `/root/telegram_media_downloader/backups/release-20260729-093149-phase3`. Restoring that snapshot would discard task-state changes written after this deployment, so preserve the current databases before any restore.
+
+## 2026-07-29 - Task: Design dual-role resource delivery Bot
+
+### What was done
+
+- Defined one unified Bot lifecycle that keeps the existing management Bot and adds a separate activated-user resource Bot role without creating a second application entrypoint.
+- Selected main-account download plus resource-Bot upload as the primary delivery path, with one persistent serial worker and explicit partial-upload behavior.
+- Defined one-time activation keys, one-channel-per-user binding, channel-admin permission verification, stable-package search, idempotent delivery jobs, and a separate resource Bot SQLite database.
+- Scoped removal of the public `/forward` entry while preserving `/listen_forward` and `/forward_to_comments`.
+- Defined the local secret-handling, configuration-example, testing, rollback, and final server-handoff boundaries.
+
+### Testing
+
+- Baseline full suite before implementation: `.venv/bin/pytest -q` -> `560 passed, 1 skipped`.
+- Confirmed the installed Pyrogram patch exposes `ChatMemberUpdatedHandler`.
+- Reviewed the design for placeholders, internal contradictions, scope expansion, secret exposure, database ownership, restart handling, and production handoff boundaries.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-07-29-dual-role-resource-bot-design.md`: Added the approved dual-role Bot architecture and delivery contract for user review.
+- `progress.md`: Recorded the design decisions and pre-implementation test baseline.
+
+Rollback:
+- Revert the design commit; no runtime code, configuration, database, Telegram account, or production service state was changed.
