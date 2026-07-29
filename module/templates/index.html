@@ -120,39 +120,51 @@
         </div>
 
         <!-- task table -->
-        <div class="card blueprint" style="padding:0;gap:0">
+        <section class="card blueprint task-panel" aria-labelledby="task_panel_title">
           <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--color-divider)">
-            <div style="display:flex;align-items:baseline;gap:9px">
-              <span style="font-family:var(--font-heading);font-weight:600;font-size:16px">下载任务</span>
+          <div class="task-panel-header">
+            <div class="task-panel-heading">
+              <span class="task-panel-title" id="task_panel_title">下载任务</span>
               <span class="tag tag-neutral" id="task_count">0</span>
             </div>
-            <div style="display:flex;gap:6px">
-              <button type="button" class="btn btn-secondary" data-filter="all" style="padding:5px 11px;font-size:12px">全部</button>
-              <button type="button" class="btn btn-ghost" data-filter="active" style="padding:5px 8px;font-size:12px">进行中</button>
-              <button type="button" class="btn btn-ghost" data-filter="done" style="padding:5px 8px;font-size:12px">已完成</button>
+            <div class="task-filter-group" role="group" aria-label="任务状态筛选">
+              <button type="button" class="btn btn-secondary" data-filter="all" aria-pressed="true">全部</button>
+              <button type="button" class="btn btn-ghost" data-filter="active" aria-pressed="false">进行中</button>
+              <button type="button" class="btn btn-ghost" data-filter="done" aria-pressed="false">已完成</button>
             </div>
           </div>
           <div class="table-scroll">
-            <table class="table" style="font-size:13px">
+            <table class="table task-table">
+              <colgroup>
+                <col class="task-column-main">
+                <col class="task-column-status">
+                <col class="task-column-progress">
+                <col class="task-column-result">
+                <col class="task-column-actions">
+              </colgroup>
               <thead><tr>
-                <th style="padding-left:16px">任务 ID</th><th>来源</th><th>类型</th><th>状态</th><th>标题</th><th>进度</th><th>成 / 败 / 跳</th><th style="padding-right:16px;text-align:right">操作</th>
+                <th>任务</th><th>状态</th><th>进度</th><th>结果</th><th class="task-actions-heading">操作</th>
               </tr></thead>
               <tbody id="task_rows"></tbody>
             </table>
           </div>
-        </div>
+        </section>
 
         <!-- task detail: type-aware (T6) — ordinary file table / prescan package list / prescan downloading -->
-        <div class="card blueprint" id="task_detail" style="padding:0;gap:0" hidden>
+        <div class="card blueprint task-detail-panel" id="task_detail" aria-labelledby="detail_title" hidden>
           <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
-          <div style="display:flex;align-items:center;gap:9px;padding:12px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap">
-            <span class="card-kicker" style="color:var(--color-neutral-600)">任务详情</span>
-            <span id="detail_title" style="font-family:var(--font-heading);font-weight:600;font-size:15px;display:flex;align-items:center;gap:8px"></span>
-            <span id="detail_meta" class="text-muted" style="font-size:12px;margin-left:2px"></span>
+          <div class="task-detail-header">
+            <div class="task-detail-heading">
+              <div class="task-detail-title-row">
+                <span id="detail_title"></span>
+                <span id="detail_status"></span>
+              </div>
+              <div class="task-detail-meta" id="detail_meta"></div>
+            </div>
+            <div class="task-detail-actions" id="detail_actions"></div>
           </div>
-          <div id="detail_current_file" style="padding:10px 16px;border-bottom:1px solid var(--color-divider);font-size:13px" hidden></div>
-          <div id="prescan_controls" style="align-items:center;gap:10px;padding:11px 16px;border-bottom:1px solid var(--color-divider);flex-wrap:wrap" hidden></div>
+          <div class="task-current-file" id="detail_current_file" hidden></div>
+          <div class="task-detail-toolbar" id="prescan_controls" hidden></div>
           <div id="detail_body"></div>
         </div>
 
@@ -631,7 +643,7 @@
       return s.length > 6 ? '…' + s.slice(-6) : s;
     }
     const state = { selectedTaskId:null, selectedTaskType:null, lastTasksById:{},
-      prescanRows:{}, prescanSelected:new Set(), sys:null, timers:{}, channel:{
+      prescanRows:{}, prescanSelected:new Set(), detailGeneration:0, sys:null, timers:{}, channel:{
         csrfToken:null, csrfPromise:null, libraries:[], selectedLibraryId:null,
         libraryNextCursor:null, libraryPagesLoaded:0, generation:0,
         detail:null, polling:false, cronSettings:null, previewKey:null,
@@ -675,35 +687,27 @@
 
     // operation buttons — 严格对应后端
     function taskActions(task) {
-      const s = task.status;
+      const s = task.status, id = escapeHtml(task.task_id);
       if (task.needs_confirmation || s === 'waiting_confirmation')
-        return `<button class="btn btn-primary" data-act="confirm" data-id="${task.task_id}">开始</button>`
-             + `<button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}">取消</button>`;
+        return `<button class="btn btn-primary" data-act="confirm" data-id="${id}">开始</button>`
+             + `<button class="btn btn-secondary" data-act="cancel" data-id="${id}">取消</button>`;
       if (s === 'completed' || s === 'completed_with_errors' || s === 'cancelled' || s === 'failed')
-        return `<button class="btn btn-ghost" data-act="clear" data-id="${task.task_id}">清除</button>`;
+        return `<button class="btn btn-ghost" data-act="clear" data-id="${id}">清除</button>`;
       // scanning / downloading / uploading / queued / created — all cancellable
-      return `<button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}">取消</button>`;
+      return `<button class="btn btn-secondary" data-act="cancel" data-id="${id}">取消</button>`;
     }
 
     // terminal statuses (used for the 已完成 filter and the 进行中 filter's complement)
     const TERMINAL = ['completed', 'completed_with_errors', 'cancelled', 'failed'];
 
-    function currentFileCell(t) {
-      const cf = t.current_file;
-      if (!cf || !cf.filename) return '—';
-      if (t.status === 'uploading') return `↑ ${escapeHtml(cf.filename)} · ${cf.upload_progress}%`;
-      if (t.status === 'downloading') return `${escapeHtml(cf.filename)} · ${cf.download_progress}%`;
-      return escapeHtml(cf.filename);
-    }
-
     function progressCell(t) {
       if (t.status === 'uploading') {
-        return `<div class="track" style="width:120px"><i style="width:100%"></i></div>`
-             + `<span class="nums text-muted" style="font-size:11px">下载 ${t.success_count}/${t.total_count} · 上传 ${t.upload_success_count||0}/${t.total_count}</span>`;
+        return `<div class="track"><i style="width:100%"></i></div>`
+             + `<span class="nums text-muted">下载 ${t.success_count}/${t.total_count} · 上传 ${t.upload_success_count||0}/${t.total_count}</span>`;
       }
       const prog = t.total_count ? Math.round((t.success_count + t.skipped_count) / t.total_count * 100) : 0;
-      return `<div class="track" style="width:120px"><i style="width:${prog}%"></i></div>`
-           + `<span class="nums text-muted" style="font-size:11px">${t.success_count}/${t.total_count}</span>`;
+      return `<div class="track"><i style="width:${prog}%"></i></div>`
+           + `<span class="nums text-muted">${t.success_count}/${t.total_count}</span>`;
     }
 
     function renderTaskTable(tasks) {
@@ -712,15 +716,32 @@
                       : tasks;
       const tbody = $('#task_rows');
       $('#task_count').textContent = filtered.length;
+      if (!filtered.length) {
+        const message = taskFilter === 'active' ? '当前没有进行中的任务'
+                      : taskFilter === 'done' ? '当前没有已完成的任务'
+                      : '暂无下载任务';
+        tbody.innerHTML = `<tr class="task-empty-row"><td colspan="5">${message}</td></tr>`;
+        return;
+      }
       tbody.innerHTML = filtered.map(t => {
-        const fail = t.failed_count > 0 ? `<b>${t.failed_count}</b>` : '0';
-        const sel = t.task_id === state.selectedTaskId ? ' style="background:color-mix(in srgb,var(--color-accent) 8%,transparent)"' : '';
-        return `<tr data-id="${t.task_id}" data-type="${t.task_type}"${sel}>
-          <td class="nums" style="padding-left:16px" title="${escapeHtml(t.task_id)}">${escapeHtml(shortId(t.task_id))}</td><td class="text-muted">${t.source||''}</td><td>${t.task_type||''}</td>
-          <td>${statusTag(t.status)}</td><td>${escapeHtml(t.title||'')}</td>
-          <td><div style="display:flex;flex-direction:column;gap:3px;min-width:118px">${progressCell(t)}</div></td>
-          <td class="nums" style="font-size:12px"><b style="color:var(--color-accent-700)">${t.success_count}</b> · ${fail} · <span style="color:var(--color-neutral-500)">${t.skipped_count}</span></td>
-          <td style="padding-right:16px;text-align:right"><div style="display:inline-flex;gap:6px">${taskActions(t)}</div></td></tr>`;
+        const selected = t.task_id === state.selectedTaskId;
+        const title = t.title || '未命名任务';
+        const failed = Number(t.failed_count) || 0;
+        return `<tr data-id="${escapeHtml(t.task_id)}" data-type="${escapeHtml(t.task_type||'')}" aria-selected="${selected}" tabindex="0">
+          <td><div class="task-primary" title="${escapeHtml(title)}">${escapeHtml(title)}</div>
+            <div class="task-secondary">
+              <span>${escapeHtml(t.source||'—')}</span><span class="task-secondary-separator" aria-hidden="true">·</span>
+              <span>${escapeHtml(t.task_type||'—')}</span><span class="task-secondary-separator" aria-hidden="true">·</span>
+              <span class="nums" title="${escapeHtml(t.task_id)}">${escapeHtml(shortId(t.task_id))}</span>
+            </div></td>
+          <td>${statusTag(t.status)}</td>
+          <td><div class="task-progress">${progressCell(t)}</div></td>
+          <td><div class="task-result-grid nums">
+            <span><b>${Number(t.success_count)||0}</b><em>成功</em></span>
+            <span class="${failed ? 'has-failure' : ''}"><b>${failed}</b><em>失败</em></span>
+            <span><b>${Number(t.skipped_count)||0}</b><em>跳过</em></span>
+          </div></td>
+          <td class="task-actions"><div>${taskActions(t)}</div></td></tr>`;
       }).join('');
     }
 
@@ -758,60 +779,115 @@
       if (state.selectedTaskId && !state.lastTasksById[state.selectedTaskId]){
         // selected task is gone (e.g. cancel discarded it) — don't keep showing stale detail
         state.selectedTaskId = null;
+        state.detailGeneration += 1;
         $('#task_detail').hidden = true;
       }
       if (state.selectedTaskId && state.lastTasksById[state.selectedTaskId]) renderDetail(state.lastTasksById[state.selectedTaskId]); // T6
       const sys = await getJSON('/api/system'); renderSystem(sys);
     }
     // ── task detail (T6): dispatches on task_type/status into one of three renderers ──
-    function renderDetail(task){
-      const box = $('#task_detail'); box.hidden = false;
-      $('#detail_title').innerHTML = escapeHtml(task.title||'任务') + ' ' + statusTag(task.status);
-      const cfBox = $('#detail_current_file');
-      if ((task.status === 'downloading' || task.status === 'uploading') && task.current_file && task.current_file.filename){
-        cfBox.hidden = false;
-        cfBox.innerHTML = `<span class="text-muted">当前文件</span> <b>${currentFileCell(task)}</b>`;
-      } else {
-        cfBox.hidden = true;
-        cfBox.innerHTML = '';
+    function isCurrentDetail(task, generation){
+      return !(generation !== state.detailGeneration || state.selectedTaskId !== task.task_id);
+    }
+    function setDetailMeta(task, countText=''){
+      const parts = [
+        `<span>${escapeHtml(task.source||'来源未知')}</span>`,
+        `<span>${escapeHtml(task.task_type||'类型未知')}</span>`,
+        `<span class="nums" title="${escapeHtml(task.task_id)}">${escapeHtml(task.task_id)}</span>`,
+      ];
+      if (countText) parts.push(`<span>${escapeHtml(countText)}</span>`);
+      $('#detail_meta').innerHTML = parts.join('<span aria-hidden="true">·</span>');
+    }
+    function renderDetailError(task, generation, message='无法加载任务明细'){
+      if (!isCurrentDetail(task, generation)) return;
+      $('#detail_body').innerHTML = `<div class="task-detail-empty">${escapeHtml(message)}</div>`;
+    }
+    function renderCurrentFile(task){
+      const box = $('#detail_current_file'), file = task.current_file;
+      if (!['downloading','uploading'].includes(task.status) || !file || !file.filename){
+        box.hidden = true;
+        box.innerHTML = '';
+        return;
       }
+      const uploading = task.status === 'uploading';
+      const progress = Number(uploading ? file.upload_progress : file.download_progress) || 0;
+      const speed = uploading ? file.upload_speed : file.download_speed;
+      box.hidden = false;
+      box.innerHTML = `<span class="task-current-file-label">当前文件</span>
+        <span class="task-current-file-name" title="${escapeHtml(file.filename)}">${escapeHtml(file.filename)}</span>
+        <span class="task-current-file-meta nums">${uploading?'上传中':'下载中'} · ${progress}%${speed?` · ${escapeHtml(speed)}`:''}</span>`;
+    }
+    function detailTaskActions(task){
+      if (task.task_type === 'prescan' && (task.needs_confirmation || task.status === 'waiting_confirmation'))
+        return `<button class="btn btn-secondary" data-act="cancel" data-id="${escapeHtml(task.task_id)}">取消</button>`;
+      return taskActions(task);
+    }
+    function renderDetail(task){
+      const generation = ++state.detailGeneration;
+      const box = $('#task_detail'), title = task.title || '任务';
+      box.hidden = false;
+      $('#detail_title').textContent = title;
+      $('#detail_title').title = title;
+      $('#detail_status').innerHTML = statusTag(task.status);
+      $('#detail_actions').innerHTML = detailTaskActions(task);
+      setDetailMeta(task);
+      renderCurrentFile(task);
       if (task.task_type === 'prescan'){
-        if (task.status === 'waiting_confirmation') renderPrescanPackages(task);
-        else renderPrescanDownloading(task);
+        if (task.status === 'waiting_confirmation') renderPrescanPackages(task, generation);
+        else renderPrescanDownloading(task, generation);
       } else {
         const ctrl = $('#prescan_controls'); ctrl.hidden = true; ctrl.style.display = '';
-        getJSON(`/api/tasks/${task.task_id}`).then(full => renderFileTable(full.files||[]));
+        getJSON(`/api/tasks/${task.task_id}`)
+          .then(full => {
+            if (!isCurrentDetail(task, generation)) return;
+            if (full.error) throw new Error(full.error);
+            renderFileTable(task, full.files||[]);
+          })
+          .catch(() => renderDetailError(task, generation));
       }
     }
     function fileStatusLabel(s){ return ({queued:'待下载',downloading:'下载中',downloaded:'已下载',
       uploading:'上传中',uploaded:'已上传',upload_failed:'上传失败',skipped:'跳过',failed:'失败'})[s]||s; }
 
     // ordinary task → flat file table
-    function renderFileTable(files){
-      $('#detail_meta').textContent = `${files.length} 个文件`;
-      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
+    function renderFileTable(task, files){
+      setDetailMeta(task, `${files.length} 个文件`);
+      if (!files.length){
+        $('#detail_body').innerHTML = '<div class="task-detail-empty">暂无文件明细</div>';
+        return;
+      }
+      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table task-detail-table">
         <thead><tr><th style="padding-left:16px">消息 ID</th><th>状态</th><th>文件名</th><th>大小</th><th>进度</th><th style="padding-right:16px">备注</th></tr></thead>
-        <tbody>${files.map(f=>`<tr><td class="nums" style="padding-left:16px">${f.message_id}</td><td>${fileStatusLabel(f.status)}</td>
-          <td>${escapeHtml(f.filename||'')}</td><td class="nums">${f.total_size}</td>
-          <td><div class="track" style="width:90px"><i style="width:${f.download_progress}%"></i></div></td>
+        <tbody>${files.map(f=>`<tr><td class="nums" style="padding-left:16px">${escapeHtml(f.message_id)}</td><td>${escapeHtml(fileStatusLabel(f.status))}</td>
+          <td class="task-file-name" title="${escapeHtml(f.filename||'')}">${escapeHtml(f.filename||'—')}</td><td class="nums">${escapeHtml(f.total_size||'—')}</td>
+          <td><div class="track task-file-progress"><i style="width:${Number(f.download_progress)||0}%"></i></div></td>
           <td class="text-muted" style="font-size:12px;padding-right:16px">${escapeHtml(f.error||f.download_speed||'')}</td></tr>`).join('')}</tbody></table></div>`;
     }
 
     // prescan + waiting_confirmation → package list with selection controls + expandable files
-    async function renderPrescanPackages(task){
-      const data = await getJSON(`/api/prescans/${task.task_id}/packages?page=1&page_size=200`);
-      state.prescanRows[task.task_id] = data.items;
-      $('#detail_meta').textContent = `${data.total} 个包同属此任务 · 点击包名展开其文件`;
+    async function renderPrescanPackages(task, generation){
+      let data;
+      try { data = await getJSON(`/api/prescans/${task.task_id}/packages?page=1&page_size=200`); }
+      catch (_) { return renderDetailError(task, generation); }
+      if (!isCurrentDetail(task, generation)) return;
+      if (!data || data.error) return renderDetailError(task, generation);
+      const items = data.items || [], total = Number(data.total)||items.length;
+      state.prescanRows[task.task_id] = items;
+      setDetailMeta(task, `${total} 个包`);
       const ctrl = $('#prescan_controls'); ctrl.hidden = false; ctrl.style.display = 'flex';
-      const selCount = data.items.filter(p=>p.selected).length;
-      const selMedia = data.items.filter(p=>p.selected).reduce((a,p)=>a+p.media_count,0);
+      const selCount = items.filter(p=>p.selected).length;
+      const selMedia = items.filter(p=>p.selected).reduce((a,p)=>a+p.media_count,0);
       ctrl.innerHTML = `<button class="btn btn-secondary" data-pact="all">全选</button>
         <button class="btn btn-ghost" data-pact="none">清空</button>
-        <span class="text-muted nums" style="font-size:12px">已选 ${selCount} / ${data.total} 包 · ${selMedia} 媒体</span>
+        <span class="text-muted nums">已选 ${selCount} / ${total} 包 · ${selMedia} 媒体</span>
         <button class="btn btn-primary blueprint" data-pact="confirm" style="margin-left:auto"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>下载所选</button>`;
-      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
+      if (!items.length){
+        $('#detail_body').innerHTML = '<div class="task-detail-empty">扫描中，等待生成资源包</div>';
+        return;
+      }
+      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table task-detail-table">
         <thead><tr><th style="padding-left:16px"></th><th>包</th><th>选择</th><th>消息区间</th><th>媒体</th><th>已知大小</th><th>标题</th><th style="padding-right:16px;text-align:right">操作</th></tr></thead>
-        <tbody>${data.items.map(p=>`<tr data-pkg="${p.package_id}">
+        <tbody>${items.map(p=>`<tr data-pkg="${p.package_id}">
           <td style="padding-left:16px"><button class="btn btn-ghost" data-expand="${p.package_id}" style="padding:2px">${icon('chevron',12)}</button></td>
           <td class="nums">#${p.package_id}</td>
           <td>${p.selected?'<span class="tag tag-accent">已选</span>':'—'}</td>
@@ -820,11 +896,16 @@
           <td style="padding-right:16px;text-align:right"><button class="btn ${p.selected?'btn-secondary':'btn-primary blueprint'}" data-toggle="${p.package_id}" data-sel="${p.selected?0:1}">${p.selected?'':'<i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>'}${p.selected?'排除':'加入'}</button></td>
         </tr>`).join('')}</tbody></table></div>`;
     }
-    // controls (全选/清空/下载所选) + per-row toggle + expand — delegated on the detail card
+    // controls (全选/清空/下载所选) + task action + per-row toggle + expand
     $('#task_detail').addEventListener('click', async e => {
       const id = state.selectedTaskId;
-      const cancelBtn = e.target.closest('[data-act="cancel"]');
-      if (cancelBtn){ await postJSON(`/api/tasks/${cancelBtn.dataset.id}/cancel`); return pollTasks(); }
+      const actionBtn = e.target.closest('button[data-act]');
+      if (actionBtn){
+        const taskId = actionBtn.dataset.id, act = actionBtn.dataset.act;
+        const url = act==='confirm'?`/api/tasks/${taskId}/confirm`:act==='cancel'?`/api/tasks/${taskId}/cancel`:`/api/tasks/${taskId}/clear`;
+        await postJSON(url);
+        return pollTasks();
+      }
       const c = e.target.closest('[data-pact]');
       if (c){ const a=c.dataset.pact;
         if (a==='all') await postJSON(`/api/prescans/${id}/packages/select-all`, {selected:true});
@@ -842,49 +923,54 @@
     // package therefore shows the task's whole file list rather than files scoped to that
     // package — there is no backend mapping to filter by. Revisit if/when the backend adds one.
     async function togglePackageFiles(taskId, pkgId){
-      const row = $(`#task_detail tr[data-pkg="${pkgId}"]`);
-      const next = row.nextElementSibling;
-      if (next && next.dataset.filesFor===pkgId){ next.remove(); return; }
+      const existing = $(`#task_detail tr[data-files-for="${pkgId}"]`);
+      if (existing){ existing.remove(); return; }
+      const generation = state.detailGeneration;
       const full = await getJSON(`/api/tasks/${taskId}`);
+      if (generation !== state.detailGeneration || state.selectedTaskId !== taskId) return;
+      const row = $(`#task_detail tr[data-pkg="${pkgId}"]`);
+      if (!row) return;
       const files = full.files||[];
       const tr = document.createElement('tr'); tr.dataset.filesFor = pkgId;
       tr.innerHTML = `<td></td><td colspan="7" style="padding-left:24px"><table class="table" style="font-size:12px">
-        ${files.map(f=>`<tr><td class="nums">${f.message_id}</td><td>${escapeHtml(f.filename||'')}</td><td class="nums">${f.total_size}</td><td>${fileStatusLabel(f.status)}</td></tr>`).join('')}</table></td>`;
+        ${files.map(f=>`<tr><td class="nums">${escapeHtml(f.message_id)}</td><td>${escapeHtml(f.filename||'')}</td><td class="nums">${escapeHtml(f.total_size||'—')}</td><td>${escapeHtml(fileStatusLabel(f.status))}</td></tr>`).join('')}</table></td>`;
       row.after(tr);
     }
 
     // prescan + downloading (confirmed) → per-package progress, only selected packages
-    async function renderPrescanDownloading(task){
-      const ctrl0 = $('#prescan_controls'); ctrl0.hidden = true; ctrl0.style.display = '';
-      const data = await getJSON(`/api/prescans/${task.task_id}/packages?page=1&page_size=200`);
-      // GET .../packages 404s ({"error":"prescan not found"}) whenever the prescan isn't currently
-      // retained — most commonly while status is still `scanning` (packages don't exist until the
-      // scan finishes), or after a pre-confirmation cancel/fail. Guard against data.items being
-      // undefined instead of crashing on every poll.
+    async function renderPrescanDownloading(task, generation){
+      const ctrl = $('#prescan_controls');
+      let data;
+      try { data = await getJSON(`/api/prescans/${task.task_id}/packages?page=1&page_size=200`); }
+      catch (_) { return renderDetailError(task, generation); }
+      if (!isCurrentDetail(task, generation)) return;
       const items = (data && data.items) || [];
       const prog = task.total_count ? Math.round((task.success_count+task.skipped_count)/task.total_count*100) : 0;
+      ctrl.hidden = false; ctrl.style.display = 'flex';
+      ctrl.innerHTML = `<div class="task-overall-progress"><div class="track"><i style="width:${prog}%"></i></div>
+        <span class="nums text-muted">整体 ${task.success_count} / ${task.total_count} 媒体</span></div>`;
       if ((data && data.error) || !items.length){
-        $('#detail_meta').innerHTML = `<div class="track" style="width:260px;display:inline-block;vertical-align:middle"><i style="width:${prog}%"></i></div>
-          <span class="nums text-muted" style="font-size:11.5px;margin-left:8px">整体 ${task.success_count} / ${task.total_count} 媒体</span>
-          <button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}" style="margin-left:10px">暂停</button>`;
+        setDetailMeta(task, `整体 ${task.success_count} / ${task.total_count} 媒体`);
         const scanning = task.status === 'scanning' || task.status === 'created';
-        const msg = scanning ? '扫描中…（等待生成包）' : '暂无包';
-        $('#detail_body').innerHTML = `<div class="text-muted" style="padding:24px;text-align:center;font-size:13px">${escapeHtml(msg)}</div>`;
+        const msg = scanning ? '扫描中，等待生成资源包' : '暂无资源包明细';
+        $('#detail_body').innerHTML = `<div class="task-detail-empty">${escapeHtml(msg)}</div>`;
         return;
       }
       const selected = items.filter(p=>p.selected);  // 仅选中的包参与下载
-      $('#detail_meta').innerHTML = `<div class="track" style="width:260px;display:inline-block;vertical-align:middle"><i style="width:${prog}%"></i></div>
-        <span class="nums text-muted" style="font-size:11.5px;margin-left:8px">整体 ${task.success_count} / ${task.total_count} 媒体</span>
-        <button class="btn btn-secondary" data-act="cancel" data-id="${task.task_id}" style="margin-left:10px">暂停</button>`;
+      setDetailMeta(task, `${selected.length} 个包`);
+      if (!selected.length){
+        $('#detail_body').innerHTML = '<div class="task-detail-empty">暂无已选择的资源包</div>';
+        return;
+      }
       // NOTE (known limitation): the backend exposes no per-package progress (FileSnapshot has no
       // package_id), so every row's track reuses the task-level `prog` as an approximation across
       // all selected packages rather than each package's own completion.
-      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table" style="font-size:13px">
+      $('#detail_body').innerHTML = `<div class="table-scroll"><table class="table task-detail-table">
         <thead><tr><th style="padding-left:16px"></th><th>包</th><th>状态</th><th>进度</th><th>媒体</th><th>大小</th><th style="padding-right:16px">标题</th></tr></thead>
         <tbody>${selected.map(p=>`<tr data-pkg="${p.package_id}">
           <td style="padding-left:16px"><button class="btn btn-ghost" data-expand="${p.package_id}" style="padding:2px">${icon('chevron',12)}</button></td>
           <td class="nums">#${p.package_id}</td><td>${statusTag(task.status)}</td>
-          <td><div class="track" style="width:100px"><i style="width:${prog}%"></i></div></td>
+          <td><div class="track task-file-progress"><i style="width:${prog}%"></i></div></td>
           <td class="nums">${p.media_count}</td><td class="nums">${p.known_total_size}</td><td style="padding-right:16px">${escapeHtml(p.title)}</td></tr>`).join('')}</tbody></table></div>`;
     }
 
@@ -1906,9 +1992,11 @@
     // task filter buttons
     document.querySelectorAll('button[data-filter]').forEach(btn => btn.addEventListener('click', () => {
       taskFilter = btn.dataset.filter;
-      document.querySelectorAll('button[data-filter]').forEach(b => {
-        b.classList.toggle('btn-secondary', b===btn);
-        b.classList.toggle('btn-ghost', b!==btn);
+      document.querySelectorAll('button[data-filter]').forEach(btn => {
+        const selected = btn.dataset.filter === taskFilter;
+        btn.classList.toggle('btn-secondary', selected);
+        btn.classList.toggle('btn-ghost', !selected);
+        btn.setAttribute('aria-pressed', String(btn.dataset.filter === taskFilter));
       });
       renderTaskTable(Object.values(state.lastTasksById));
     }));
@@ -1922,7 +2010,15 @@
       const tr = e.target.closest('tr[data-id]');
       if (tr) selectTask(tr.dataset.id, tr.dataset.type);
     });
+    $('#task_rows').addEventListener('keydown', e => {
+      if (!['Enter',' '].includes(e.key) || e.target.closest('button')) return;
+      const tr = e.target.closest('tr[data-id]');
+      if (!tr) return;
+      e.preventDefault();
+      selectTask(tr.dataset.id, tr.dataset.type);
+    });
     function selectTask(id, type){ state.selectedTaskId=id; state.selectedTaskType=type;
+      renderTaskTable(Object.values(state.lastTasksById));
       const t = state.lastTasksById[id]; if (t) renderDetail(t); pollTasks(); }
 
     // state chip + logout
