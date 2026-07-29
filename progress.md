@@ -1963,3 +1963,29 @@ Changed files:
 
 Rollback:
 - Revert the commit containing this task. No schema or persisted-data migration is required; restarting the service restores the prior channel overview.
+
+## 2026-07-29 - Task: Deploy channel resource insight and package preview
+
+### What was done
+
+- Committed and pushed `ffaa0d2` to GitHub `master`, then fast-forwarded the RackNerd production checkout from `70898f5` to `ffaa0d2`.
+- Restarted `tg-downloader.service` after production compile and dependency checks; this release made no schema, configuration, or persisted-data migration.
+- Confirmed the live channel detail can calculate the new cached package-source, media-type, and publication-range distribution without triggering a channel scan.
+
+### Testing
+
+- Pre-push full suite: `.venv/bin/python -m pytest -q` -> `540 passed, 1 skipped`; channel Web regression suite -> `106 passed`.
+- Inline JavaScript syntax, changed Python module compile, compatibility imports, and `git diff --check` all passed before deployment.
+- Production compile check passed and `.venv/bin/pip check` reported no broken requirements.
+- `tg-downloader.service` -> `active` on `ffaa0d2`; four download workers started and the post-restart journal contained no traceback, exception, critical, error, or failed lines.
+- Live schema versions remained `[3, 6, 7, 8]`; 9 channel libraries and 24,938 resource packages were preserved; `channel_library.sqlite3` integrity -> `ok`.
+- A live read-only channel overview returned `package_kinds`, `media_types`, and `published_at`; deployed template/CSS markers for the resource distribution and package preview were present.
+- Local production `/` redirected to login, `/login` and the updated CSS returned `200`; public `/` redirected to login and public `/login` returned `200`.
+
+### Notes
+
+Changed files:
+- `progress.md`: recorded the feature push, production restart, data-preservation checks, live distribution read, and Web smoke tests.
+
+Rollback:
+- Preferred rollback: `git revert ffaa0d2`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases; no database restore is required because this release did not change their schema or persisted contents.
