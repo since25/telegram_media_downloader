@@ -2371,3 +2371,28 @@ Changed files:
 
 Rollback:
 - Revert this task commit to restore the original command entry and configuration surface; no database or production configuration was changed.
+
+## 2026-07-29 - Task: Add resource Bot access and delivery state store
+
+### What was done
+
+- Added an independent schema-v1 SQLite store for one-time activation keys, activated users, one-channel bindings, and persistent resource-delivery jobs.
+- Stored only activation-key SHA-256 digests and short display prefixes; key redemption and user activation are atomic.
+- Added active-user enforcement, one-user/one-channel ownership, permission-loss persistence, unbinding, revocation, queued-job cancellation, idempotent job creation, serial queue claiming, bounded progress updates, terminal states, and restart interruption recovery.
+- Applied WAL, foreign keys, busy timeout, newer-schema rejection, integrity coverage, and private `0600` database permissions.
+
+### Testing
+
+- RED verification: `.venv/bin/pytest -q tests/module/test_resource_bot_store.py` failed during collection because `module.resource_bot_store` did not exist.
+- GREEN verification: `.venv/bin/pytest -q tests/module/test_resource_bot_store.py` -> `13 passed`.
+- Tests covered fresh schema version/integrity, newer-schema rejection, hashed one-time keys, invalid keys, reactivation, binding ownership, permission loss, idempotent jobs, progress, restart recovery, and revocation.
+
+### Notes
+
+Changed files:
+- `module/resource_bot_store.py`: Added the resource Bot state database and transactional API.
+- `tests/module/test_resource_bot_store.py`: Added schema, activation, binding, queue, progress, recovery, and revocation tests.
+- `progress.md`: Recorded implementation and verification evidence.
+
+Rollback:
+- Revert this task commit. The new `resource_bot.sqlite3` is independent and can be preserved unused or backed up and removed while the service is stopped.
