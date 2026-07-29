@@ -316,6 +316,48 @@ class TaskStateStoreTestCase(unittest.TestCase):
         self.assertEqual(page["items"][0]["message_id"], "51")
         self.assertEqual(len(oversized["items"]), 100)
 
+    def test_task_payload_exposes_processed_download_and_upload_stage_counts(self):
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+        store = TaskStateStore()
+        task = store.create_task(
+            "stage-counts",
+            status=TaskStatus.UPLOADING,
+            total_count=5,
+        )
+        store.upsert_file(task.task_id, 1, status=FileStatus.UPLOADED)
+        store.upsert_file(task.task_id, 2, status=FileStatus.UPLOAD_FAILED)
+        store.upsert_file(task.task_id, 3, status=FileStatus.UPLOADING)
+        store.upsert_file(task.task_id, 4, status=FileStatus.FAILED)
+        store.upsert_file(task.task_id, 5, status=FileStatus.SKIPPED)
+
+        payload = store.get_task(task.task_id).to_dict()
+
+        self.assertEqual(payload["processed_count"], 4)
+        self.assertEqual(payload["download_completed_count"], 4)
+        self.assertEqual(payload["upload_attempt_count"], 3)
+        self.assertEqual(payload["upload_completed_count"], 2)
+
+    def test_task_payload_preserves_aggregate_progress_without_file_rows(self):
+        from module.task_state import TaskStateStore
+
+        store = TaskStateStore()
+        task = store.create_task(
+            "aggregate-counts",
+            total_count=8,
+            success_count=3,
+            failed_count=1,
+            skipped_count=2,
+            upload_success_count=2,
+        )
+
+        payload = task.to_dict()
+
+        self.assertEqual(payload["processed_count"], 6)
+        self.assertEqual(payload["download_completed_count"], 6)
+        self.assertEqual(payload["upload_attempt_count"], 2)
+        self.assertEqual(payload["upload_completed_count"], 2)
+
     def test_dashboard_limits_task_rows(self):
         from module.task_state import TaskStateStore, TaskStatus
 

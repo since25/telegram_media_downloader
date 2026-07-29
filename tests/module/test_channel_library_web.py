@@ -1179,6 +1179,129 @@ def test_aggregate_single_package_download_preserves_existing_selection(web_env)
     assert [item["package_id"] for item in batch["packages"]] == [target_package]
 
 
+def test_channel_task_packages_api_returns_exact_package_progress(web_env):
+    env = web_env
+    library, job = create_library(env, chat_id=-1001, title="Alpha")
+    package_id = insert_package(
+        env.store, library["id"], 20, title="Download Directly", media_count=2
+    )
+    insert_package_item(env.store, library["id"], package_id, 20, ordinal=1)
+    insert_package_item(env.store, library["id"], package_id, 21, ordinal=2)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
+            (job["id"],),
+        )
+    batch, _created = env.service.create_download_batch_result(
+        library["id"],
+        "package-progress",
+        package_ids=[package_id],
+    )
+    env.task_store.upsert_file(
+        batch["task_id"], 20, status="downloaded", filename="20.mp4"
+    )
+    env.task_store.upsert_file(batch["task_id"], 21, status="failed", filename="21.mp4")
+
+    response = env.client.get(
+        f"/api/tasks/{batch['task_id']}/packages?page=1&page_size=50"
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["total"] == 1
+    assert payload["items"] == [
+        {
+            "failed_count": 1,
+            "known_total_size": 100,
+            "media_count": 2,
+            "package_id": package_id,
+            "processed_count": 2,
+            "skipped_count": 0,
+            "status": "queued",
+            "success_count": 1,
+            "title": "Download Directly",
+        }
+    ]
+
+
+def test_channel_task_packages_api_pages_before_loading_item_keys(web_env):
+    env = web_env
+    library, job = create_library(env, chat_id=-1001, title="Alpha")
+    first_package = insert_package(
+        env.store, library["id"], 20, title="First Package", media_count=1
+    )
+    second_package = insert_package(
+        env.store, library["id"], 30, title="Second Package", media_count=1
+    )
+    insert_package_item(env.store, library["id"], first_package, 20, ordinal=1)
+    insert_package_item(env.store, library["id"], second_package, 30, ordinal=1)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?",
+            (job["id"],),
+        )
+    batch, _created = env.service.create_download_batch_result(
+        library["id"],
+        "package-page",
+        package_ids=[first_package, second_package],
+    )
+    original = env.store.list_download_batch_package_item_keys
+    requested_package_ids = []
+
+    def capture_item_keys(batch_id, package_ids):
+        requested_package_ids.append(list(package_ids))
+        return original(batch_id, package_ids)
+
+    env.store.list_download_batch_package_item_keys = capture_item_keys
+
+    response = env.client.get(
+        f"/api/tasks/{batch['task_id']}/packages?page=2&page_size=1"
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["total"] == 2
+    assert [item["title"] for item in payload["items"]] == ["Second Package"]
+    assert requested_package_ids == [[second_package]]
+
+
+def test_cancel_channel_task_delegates_to_persisted_batch_service(web_env):
+    env = web_env
+    task_id = "channel-batch-cancel-me"
+    env.task_store.create_task(
+        task_id,
+        source="web",
+        task_type="channel_library",
+        status="queued",
+    )
+    calls = []
+    env.service.store.get_download_batch_header_by_task_id = lambda value: (
+        {"id": 9, "task_id": value} if value == task_id else None
+    )
+    env.service.cancel_download_batch_threadsafe = lambda value: (
+        calls.append(value) or ImmediateFuture(value=True)
+    )
+
+    response = env.client.post(f"/api/tasks/{task_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "ok": True,
+        "status": "cancelled",
+        "task_id": task_id,
+    }
+    assert calls == [task_id]
+    assert env.task_store.get_task(task_id).status == "cancelled"
+
+
 def test_keyword_monitor_group_api_triggers_existing_index_and_returns_history(web_env):
     env = web_env
     library, job = create_library(env, title="Courses")

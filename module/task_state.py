@@ -204,6 +204,53 @@ class TaskSnapshot:
         self, hide_file_name: bool = False, include_files: bool = False
     ) -> dict:
         self.refresh_counts_from_files()
+        if self.files:
+            processed_count = sum(
+                1
+                for item in self.files.values()
+                if item.status
+                in {
+                    FileStatus.DOWNLOADED,
+                    FileStatus.UPLOADED,
+                    FileStatus.UPLOAD_FAILED,
+                    FileStatus.SKIPPED,
+                    FileStatus.FAILED,
+                }
+            )
+            download_completed_count = sum(
+                1
+                for item in self.files.values()
+                if item.status
+                in {
+                    FileStatus.DOWNLOADED,
+                    FileStatus.UPLOADING,
+                    FileStatus.UPLOADED,
+                    FileStatus.UPLOAD_FAILED,
+                    FileStatus.SKIPPED,
+                }
+            )
+            upload_attempt_count = sum(
+                1
+                for item in self.files.values()
+                if item.status
+                in {
+                    FileStatus.UPLOADING,
+                    FileStatus.UPLOADED,
+                    FileStatus.UPLOAD_FAILED,
+                }
+            )
+            upload_completed_count = sum(
+                1
+                for item in self.files.values()
+                if item.status in {FileStatus.UPLOADED, FileStatus.UPLOAD_FAILED}
+            )
+        else:
+            processed_count = (
+                self.success_count + self.failed_count + self.skipped_count
+            )
+            download_completed_count = processed_count
+            upload_attempt_count = self.upload_success_count
+            upload_completed_count = self.upload_success_count
         current_file = self.current_file
         if not current_file and self.files:
             current_file = sorted(
@@ -223,6 +270,10 @@ class TaskSnapshot:
             "failed_count": self.failed_count,
             "skipped_count": self.skipped_count,
             "upload_success_count": self.upload_success_count,
+            "processed_count": processed_count,
+            "download_completed_count": download_completed_count,
+            "upload_attempt_count": upload_attempt_count,
+            "upload_completed_count": upload_completed_count,
             "current_file": (
                 current_file.to_dict(hide_file_name) if current_file else None
             ),

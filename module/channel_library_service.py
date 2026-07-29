@@ -378,6 +378,47 @@ class ChannelLibraryService:
     async def _schedule_download_batch_command(self, batch_id: int) -> bool:
         return self._schedule_download_batch_owned(batch_id)
 
+    def cancel_download_batch_threadsafe(
+        self, task_id: str
+    ) -> concurrent.futures.Future[bool]:
+        """Cancel one persisted channel batch through its owner loop."""
+
+        return self._submit_owner_command(
+            lambda: self._cancel_download_batch_command(str(task_id))
+        )
+
+    async def _cancel_download_batch_command(self, task_id: str) -> bool:
+        batch = self.store.get_download_batch_header_by_task_id(task_id)
+        if batch is None:
+            return False
+        batch_id = int(batch["id"])
+        from module.download_stat import get_active_task_nodes
+
+        node = get_active_task_nodes().get(task_id)
+        if node is not None:
+            node.stop_transmission()
+            self.task_store.update_task(
+                task_id, status=TaskStatus.CANCELLED, error="cancelled"
+            )
+            return True
+
+        upload_retry = self._upload_retry_tasks.get(task_id)
+        if upload_retry is not None and not upload_retry.done():
+            upload_retry.cancel()
+            await asyncio.gather(upload_retry, return_exceptions=True)
+            self.task_store.update_task(
+                task_id, status=TaskStatus.CANCELLED, error="cancelled"
+            )
+            return True
+
+        download_task = self._download_batch_tasks.get(batch_id)
+        if download_task is not None and not download_task.done():
+            download_task.cancel()
+            await asyncio.gather(download_task, return_exceptions=True)
+        else:
+            self._cancel_unfinished_download_batch(batch_id)
+        return True
+
     def schedule_upload_retry_threadsafe(
         self, task_id: str
     ) -> concurrent.futures.Future[bool]:
@@ -626,13 +667,23 @@ class ChannelLibraryService:
         if library is None:
             raise KeyError(f"Channel library {batch['library_id']} does not exist")
         total_count = sum(len(package["items"]) for package in batch["packages"])
+        existing_task = self.task_store.get_task(batch["task_id"])
+        if existing_task is not None:
+            task_title = existing_task.title
+        elif len(batch["packages"]) == 1:
+            task_title = (
+                str(batch["packages"][0].get("title") or "").strip()
+                or batch["channel_title"]
+            )
+        else:
+            task_title = f"{batch['channel_title']} / {len(batch['packages'])} packages"
         try:
             self.task_store.ensure_task(
                 batch["task_id"],
                 source="web",
                 task_type="channel_library",
                 chat_id=int(batch.get("source_chat_id") or library["chat_id"]),
-                title=f"{batch['channel_title']} / {len(batch['packages'])} packages",
+                title=task_title,
                 status=TaskStatus.QUEUED,
                 total_count=total_count,
             )

@@ -3124,11 +3124,23 @@ class ChannelLibraryStore:
     def get_download_batch_by_task_id(self, task_id: str) -> Optional[dict]:
         """Return one persisted download batch by its deterministic Web task ID."""
 
+        header = self.get_download_batch_header_by_task_id(task_id)
+        return (
+            self.get_download_batch(int(header["id"])) if header is not None else None
+        )
+
+    def get_download_batch_header_by_task_id(self, task_id: str) -> Optional[dict]:
+        """Return one lightweight persisted batch row by deterministic task ID."""
+
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT id FROM channel_download_batches WHERE task_id = ?", (task_id,)
+                """
+                SELECT id, task_id, library_id, status
+                FROM channel_download_batches WHERE task_id = ?
+                """,
+                (task_id,),
             ).fetchone()
-        return self.get_download_batch(int(row["id"])) if row is not None else None
+        return dict(row) if row is not None else None
 
     def list_download_batch_package_summaries(self, batch_id: int) -> list[dict]:
         """Return batch package rows in order, without their item snapshots."""
@@ -3142,6 +3154,39 @@ class ChannelLibraryStore:
                 (batch_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def paginate_download_batch_package_summaries(
+        self, batch_id: int, page: int, page_size: int
+    ) -> dict:
+        """Return one bounded offset page of package summaries."""
+
+        safe_page = max(int(page), 1)
+        safe_page_size = max(int(page_size), 1)
+        offset = (safe_page - 1) * safe_page_size
+        with self.connect() as connection:
+            total = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) FROM channel_download_batch_packages
+                    WHERE batch_id = ?
+                    """,
+                    (int(batch_id),),
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                """
+                SELECT * FROM channel_download_batch_packages
+                WHERE batch_id = ? ORDER BY ordinal, package_id
+                LIMIT ? OFFSET ?
+                """,
+                (int(batch_id), safe_page_size, offset),
+            ).fetchall()
+        return {
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "total": total,
+            "items": [dict(row) for row in rows],
+        }
 
     def get_download_batch_package_items(
         self, batch_id: int, package_id: int
@@ -3158,6 +3203,30 @@ class ChannelLibraryStore:
                 (batch_id, package_id),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_download_batch_package_item_keys(
+        self, batch_id: int, package_ids: Sequence[int]
+    ) -> dict[int, list[str]]:
+        """Return task-file keys for a bounded page of batch packages."""
+
+        normalized_ids = tuple(dict.fromkeys(int(value) for value in package_ids))
+        result = {package_id: [] for package_id in normalized_ids}
+        if not normalized_ids:
+            return result
+        placeholders = ",".join("?" for _ in normalized_ids)
+        with self.connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT package_id, COALESCE(source_message_id, message_id) AS task_key
+                FROM channel_download_batch_items
+                WHERE batch_id = ? AND package_id IN ({placeholders})
+                ORDER BY package_id, ordinal, message_id
+                """,
+                (int(batch_id), *normalized_ids),
+            ).fetchall()
+        for row in rows:
+            result[int(row["package_id"])].append(str(row["task_key"]))
+        return result
 
     def get_download_batch_by_idempotency_key(
         self, library_id: int, idempotency_key: str

@@ -23,6 +23,14 @@ prescan tasks share the same task identity, status, current-file, and action hea
 retaining their existing file/package APIs and controls. The selected row is keyboard
 focusable and can be opened with Enter or Space.
 
+Single-package channel-library tasks use the resource-package title instead of the
+generic `1 packages` label. Their detail panel shows the persisted package title,
+package status, processed/media progress, result counts, and known size. Ordinary task
+details load the first 50 file rows from the paginated file endpoint; channel-library
+details load the first 50 package rows from the package-progress endpoint. Background
+polling keeps the last successful detail render visible, prevents overlapping task/detail
+requests, and no longer replaces the panel with a loading state every second.
+
 Prescan mode scans a bounded message window, writes package summaries to the Web state, and waits for the user to include packages before `Start`. Selected packages are downloaded serially through the existing prescan download path. The scan window is configurable per submission via `max_messages` (default 2000, capped at 10000).
 
 Confirming a prescan keeps its package list in Web state instead of discarding it, so `GET /api/prescans/<task_id>/packages` keeps returning `200` (with each package's `selected` flag as of confirmation time) while the download is in progress, which is what backs the prescan download detail view. Cancelling a prescan, or clearing/clear-completing its task once it reaches a terminal state, drops the retained package list so it does not linger in memory.
@@ -202,10 +210,13 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 - `GET /get_upload_list`: rows for files currently uploading (chat, id, filename, total_size, upload_progress, upload_speed).
 - `GET /api/tasks/<task_id>`: one task with file rows.
 - `GET /api/tasks/<task_id>/files?page=1&page_size=50`: paginated file rows.
+- `GET /api/tasks/<task_id>/packages?page=1&page_size=50`: paginated package
+  progress for a persisted channel-library task.
 - `POST /api/tasks`: submit JSON `{"link": "https://t.me/..."}`.
 - `POST /api/tasks` with `{"mode": "prescan", "max_messages": 2000}`: start a bounded Web prescan (max_messages optional, clamped to 10000).
 - `POST /api/tasks/<task_id>/confirm`: confirm a preview and queue the download.
-- `POST /api/tasks/<task_id>/cancel`: cancel a preview before download.
+- `POST /api/tasks/<task_id>/cancel`: cancel a preview or a persisted
+  channel-library batch. Persisted channel tasks remain visible as cancelled history.
 - `GET /api/prescans/<task_id>/packages?page=1&page_size=50`: paginated prescan packages.
 - `POST /api/prescans/<task_id>/packages/<package_id>/select`: include or exclude a package.
 - `POST /api/prescans/<task_id>/packages/select-all`: include or exclude all packages at once with `{"selected": true|false}`.

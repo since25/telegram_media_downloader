@@ -1624,6 +1624,72 @@ def task_files(task_id: str):
     )
 
 
+@_flask_app.route("/api/tasks/<task_id>/packages")
+@login_required
+def task_packages(task_id: str):
+    """Return paginated package progress for one persisted channel task."""
+
+    page = _as_positive_int(request.args.get("page"), 1, minimum=1, maximum=100000)
+    page_size = _as_positive_int(
+        request.args.get("page_size"), 50, minimum=1, maximum=200
+    )
+    service = getattr(_active_app(), "channel_library_service", None)
+    if service is None:
+        return jsonify({"error": "channel task service is unavailable"}), 503
+    batch = service.store.get_download_batch_header_by_task_id(task_id)
+    task = service.task_store.get_task(task_id)
+    if batch is None or task is None:
+        return jsonify({"error": "channel task not found"}), 404
+    package_page = service.store.paginate_download_batch_package_summaries(
+        int(batch["id"]), page, page_size
+    )
+    page_summaries = package_page["items"]
+    item_keys = service.store.list_download_batch_package_item_keys(
+        int(batch["id"]),
+        [int(summary["package_id"]) for summary in page_summaries],
+    )
+    items = []
+    for summary in page_summaries:
+        package_id = int(summary["package_id"])
+        package_item_keys = item_keys.get(package_id, [])
+        files = [task.files.get(message_id) for message_id in package_item_keys]
+        success_count = sum(
+            item is not None
+            and item.status in {FileStatus.DOWNLOADED, FileStatus.UPLOADED}
+            for item in files
+        )
+        failed_count = sum(
+            item is not None
+            and item.status in {FileStatus.FAILED, FileStatus.UPLOAD_FAILED}
+            for item in files
+        )
+        skipped_count = sum(
+            item is not None and item.status == FileStatus.SKIPPED for item in files
+        )
+        items.append(
+            {
+                "package_id": package_id,
+                "title": summary["title"],
+                "status": summary["status"],
+                "media_count": len(package_item_keys),
+                "known_total_size": int(summary["known_total_size"]),
+                "processed_count": success_count + failed_count + skipped_count,
+                "success_count": success_count,
+                "failed_count": failed_count,
+                "skipped_count": skipped_count,
+            }
+        )
+    return jsonify(
+        {
+            "task_id": task_id,
+            "page": package_page["page"],
+            "page_size": package_page["page_size"],
+            "total": package_page["total"],
+            "items": items,
+        }
+    )
+
+
 def _next_web_task_id() -> str:
     """Return a process-local Web task id."""
 
@@ -2298,13 +2364,37 @@ def confirm_task(task_id: str):
 def cancel_task(task_id: str):
     """Cancel a Web task.
 
-    Actively running tasks (downloading/uploading/scanning) are stopped and
-    kept visible with a cancelled status. Everything else — waiting for
-    confirmation, queued, just created, or orphaned by a service restart
-    (the in-memory preview/prescan dicts are wiped on restart, so a task
-    from before a restart has no node) — is discarded entirely so it does
-    not get stuck unclearable.
+    Persisted channel batches and actively running tasks are stopped and kept
+    visible with a cancelled status. Non-persisted waiting, queued, created,
+    or restart-orphaned Web tasks are discarded so they do not remain stuck.
     """
+
+    service = (
+        getattr(_current_app, "channel_library_service", None)
+        if _current_app is not None
+        else None
+    )
+    if (
+        service is not None
+        and service.store.get_download_batch_header_by_task_id(task_id) is not None
+    ):
+        try:
+            cancelled = service.cancel_download_batch_threadsafe(task_id).result(
+                timeout=1
+            )
+        except concurrent.futures.TimeoutError:
+            return jsonify({"ok": False, "error": "cancellation timed out"}), 503
+        except RuntimeError:
+            return jsonify({"ok": False, "error": "service unavailable"}), 503
+        if not cancelled:
+            return jsonify({"ok": False, "error": "task cannot be cancelled"}), 409
+        service.task_store.update_task(
+            task_id,
+            status=TaskStatus.CANCELLED,
+            needs_confirmation=False,
+            error="cancelled",
+        )
+        return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
 
     preview = _pending_web_task_previews.pop(task_id, None)
     prescan = _pending_web_prescans.pop(task_id, None)

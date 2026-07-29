@@ -2158,3 +2158,44 @@ Changed files:
 
 Rollback:
 - Revert `ab47028`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases, backups, sessions, and runtime files; this release made no schema, configuration, dependency, or persisted-selection migration.
+
+## 2026-07-29 - Task: Stabilize task progress and channel-package details
+
+### What was done
+
+- Replaced the generic single-package channel task title with the persisted resource-package title while preserving existing idempotent task identities.
+- Added paginated channel-package task details with real package names, package status, processed/media progress, result counts, and known size.
+- Switched ordinary task details to the existing paginated file endpoint and reduced channel detail refreshes to one bounded item-key query per page.
+- Prevented overlapping dashboard/detail polls, preserved the last successful detail render during refresh or transient request failure, and removed the duplicate poll triggered by selecting a task.
+- Added explicit processed, download-stage, and upload-stage counters so failed and skipped files no longer leave progress visually incomplete.
+- Routed persisted channel-batch cancellation through the channel service so queued, scheduled, active, and upload-retry work can be cancelled while retaining cancelled task history.
+- Added in-place task-action feedback while cancel, confirm, or clear requests are being submitted.
+
+### Testing
+
+- Focused TDD and regression set: `.venv/bin/pytest -q tests/module/test_task_state.py tests/test_channel_library_download.py tests/module/test_channel_library_web.py tests/module/test_task_page_ui.py tests/module/test_web.py` -> `193 passed`.
+- Cancellation compatibility regression: `.venv/bin/pytest -q tests/test_web_cancel_task.py tests/test_web_prescan_retention.py tests/module/test_channel_library_web.py::test_cancel_channel_task_delegates_to_persisted_batch_service tests/module/test_channel_library_web.py::test_channel_task_packages_api_returns_exact_package_progress` -> `13 passed`.
+- Full suite: `.venv/bin/pytest -q` -> `552 passed, 1 skipped`.
+- `.venv/bin/python check_imports.py` -> compatibility imports passed.
+- Inline JavaScript parsed successfully with Node `vm.Script`; changed Python modules compiled; `git diff --check` passed.
+- Focused mypy did not produce a project type result because the existing environment lacks `pytz`/`croniter` stubs and the installed MarkupSafe stub reports an incompatible positional-only syntax error.
+- Black check was reviewed but not claimed as repository-wide passing because the touched files contain pre-existing formatting drift outside this task; no unrelated bulk formatting was applied.
+
+### Notes
+
+Changed files:
+- `module/task_state.py`: Added stable task-stage progress counters.
+- `module/channel_library_store.py`: Added lightweight task-to-batch lookup and bounded package item-key loading.
+- `module/channel_library_service.py`: Added persisted batch cancellation and single-package task titles.
+- `module/web.py`: Added package detail pagination and channel-aware cancellation.
+- `module/templates/index.html`: Added stable polling, paginated detail dispatch, package detail rendering, and action feedback.
+- `module/static/css/index.css`: Styled package-level task detail rows.
+- `tests/module/test_task_state.py`: Covered stage counters and aggregate-only progress.
+- `tests/test_channel_library_download.py`: Covered package titles and queued cancellation.
+- `tests/module/test_channel_library_web.py`: Covered package progress and Web cancellation delegation.
+- `tests/module/test_task_page_ui.py`: Covered polling, pagination, package-title, and request-deduplication contracts.
+- `docs/web-control-console.md`: Documented the task detail, polling, package progress, and cancellation behavior.
+- `progress.md`: Recorded implementation and verification evidence.
+
+Rollback:
+- Revert the implementation commit, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases and runtime files; this change adds no schema, configuration, dependency, or data migration.

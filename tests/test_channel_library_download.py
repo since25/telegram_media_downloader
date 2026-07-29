@@ -111,6 +111,41 @@ def test_create_download_batch_clears_selection(tmp_path):
         loop.close()
 
 
+def test_single_package_download_task_uses_package_title(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch, created = service.create_download_batch_result(
+            library["id"],
+            "single-title",
+            package_ids=[10],
+        )
+
+        assert created is True
+        assert service.task_store.get_task(batch["task_id"]).title == "Original A"
+    finally:
+        loop.close()
+
+
+def test_cancel_queued_channel_batch_keeps_cancelled_task_history(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "cancel-queued")
+
+        cancelled = loop.run_until_complete(
+            service._cancel_download_batch_command(batch["task_id"])
+        )
+
+        assert cancelled is True
+        stored = service.store.get_download_batch(batch["id"])
+        assert stored["status"] == "cancelled"
+        assert all(package["status"] == "cancelled" for package in stored["packages"])
+        task = service.task_store.get_task(batch["task_id"])
+        assert task is not None
+        assert task.status == TaskStatus.CANCELLED
+    finally:
+        loop.close()
+
+
 def test_upload_retry_reuses_retained_file_without_redownloading(tmp_path):
     service, library, loop = make_download_service(tmp_path)
     try:

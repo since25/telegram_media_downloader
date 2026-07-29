@@ -50,6 +50,17 @@ def test_task_detail_has_unified_header_and_guards_async_identity():
     assert "state.selectedTaskId !== task.task_id" in html
     assert "正在加载任务明细" in html
     assert "无法加载任务明细" in html
+    assert "taskPolling:false" in html
+    assert "detailRequestTaskId:null" in html
+    assert "if (state.taskPolling) return" in html
+    assert "showLoading:false" in html
+    assert "task.task_type === 'channel_library'" in html
+    assert "`/api/tasks/${task.task_id}/packages?page=1&page_size=50`" in html
+    assert "`/api/tasks/${task.task_id}/files?page=1&page_size=50`" in html
+    assert "const processed = Number(t.processed_count)" in html
+    assert "task-package-title" in html
+    assert "escapeHtml(p.title||'未命名资源包')" in html
+    assert "renderDetail(t); pollTasks();" not in html
 
 
 def test_task_panel_styles_are_scoped_and_responsive():
