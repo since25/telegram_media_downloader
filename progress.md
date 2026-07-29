@@ -1989,3 +1989,25 @@ Changed files:
 
 Rollback:
 - Preferred rollback: `git revert ffaa0d2`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases; no database restore is required because this release did not change their schema or persisted contents.
+
+## 2026-07-29 - Task: Design denser download-task and task-detail panels
+
+### What was done
+
+- Defined a desktop-first information hierarchy that consolidates the download task table from eight columns to five without changing task behavior or API contracts.
+- Standardized the task-detail header, current-file row, detail states, empty states, selection semantics, and stale asynchronous response handling.
+- Limited the implementation scope to the existing task page template, local styles, directly related tests, and operator documentation.
+
+### Testing
+
+- Reviewed the design for placeholders, contradictory requirements, ambiguous scope, unsupported backend assumptions, and rollback completeness.
+- No runtime or browser verification was performed because this task produced a design specification only.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-07-29-task-panels-density-design.md`: Recorded the approved panel structure, interaction rules, scope, and verification criteria.
+- `progress.md`: Recorded the design task and its validation boundary.
+
+Rollback:
+- Revert the design-only commit; no runtime, configuration, API, or persisted-data rollback is required.
