@@ -46,6 +46,8 @@ TERMINAL_TASK_STATUSES = {
     TaskStatus.CANCELLED,
     TaskStatus.FAILED,
 }
+TASK_STATE_SCHEMA_VERSION = 1
+RESTART_INTERRUPTED_ERROR = "restart_interrupted"
 
 
 class TaskIdentityConflictError(ValueError):
@@ -64,6 +66,10 @@ SKIPPED_FILE_STATUSES = {FileStatus.SKIPPED}
 
 def _now() -> float:
     return time.time()
+
+
+def _sql_placeholders(values) -> str:
+    return ",".join("?" for _ in values)
 
 
 def mask_display_name(name: str, hide: bool) -> str:
@@ -320,7 +326,12 @@ class TaskSnapshot:
 class TaskStateStore:
     """Process-local store for task snapshots."""
 
-    def __init__(self, recent_limit: int = 200, storage_path: Optional[Path] = None):
+    def __init__(
+        self,
+        recent_limit: int = 200,
+        storage_path: Optional[Path] = None,
+        recover_interrupted: bool = False,
+    ):
         self.recent_limit = recent_limit
         self._lock = threading.RLock()
         self._active: dict[str, TaskSnapshot] = {}
@@ -328,6 +339,9 @@ class TaskStateStore:
         self.storage_path = Path(storage_path) if storage_path else None
         if self.storage_path:
             self._init_storage()
+            if recover_interrupted:
+                self._recover_interrupted_storage()
+            self._prune_completed_storage()
             self._load_storage()
 
     def clear(self) -> None:
@@ -494,20 +508,23 @@ class TaskStateStore:
 
     def clear_completed(self) -> int:
         with self._lock:
-            count = len(self._completed)
-            completed_keys = list(self._completed)
+            completed_keys = set(self._completed)
             self._completed.clear()
-            if self.storage_path and completed_keys:
+            if self.storage_path:
                 with self._connect() as connection:
-                    connection.executemany(
-                        "DELETE FROM task_files WHERE task_id = ?",
-                        [(task_id,) for task_id in completed_keys],
-                    )
-                    connection.executemany(
-                        "DELETE FROM tasks WHERE task_id = ?",
-                        [(task_id,) for task_id in completed_keys],
-                    )
-            return count
+                    stored_keys = {
+                        row["task_id"]
+                        for row in connection.execute(
+                            f"""
+                            SELECT task_id FROM tasks
+                            WHERE status IN ({_sql_placeholders(TERMINAL_TASK_STATUSES)})
+                            """,
+                            tuple(TERMINAL_TASK_STATUSES),
+                        )
+                    }
+                    completed_keys.update(stored_keys)
+                    self._delete_task_storage(connection, completed_keys)
+            return len(completed_keys)
 
     def tasks(self) -> list[TaskSnapshot]:
         with self._lock:
@@ -572,13 +589,18 @@ class TaskStateStore:
     def _move_completed(self, task_key: str, task: TaskSnapshot) -> None:
         self._active.pop(task_key, None)
         self._completed[task_key] = task
+        evicted_keys = []
         while len(self._completed) > self.recent_limit:
             oldest_key = sorted(
                 self._completed,
                 key=lambda key: self._completed[key].updated_at,
             )[0]
             self._completed.pop(oldest_key, None)
+            evicted_keys.append(oldest_key)
         self._persist_task(task)
+        if self.storage_path and evicted_keys:
+            with self._connect() as connection:
+                self._delete_task_storage(connection, evicted_keys)
 
     @staticmethod
     def _apply_updates(task: TaskSnapshot, **updates) -> None:
@@ -597,6 +619,14 @@ class TaskStateStore:
     def _init_storage(self) -> None:
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            schema_version = int(
+                connection.execute("PRAGMA user_version").fetchone()[0]
+            )
+            if schema_version > TASK_STATE_SCHEMA_VERSION:
+                raise RuntimeError(
+                    "newer task database schema is not supported: "
+                    f"{schema_version} > {TASK_STATE_SCHEMA_VERSION}"
+                )
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute(
                 """
@@ -639,13 +669,107 @@ class TaskStateStore:
                     save_path TEXT,
                     error TEXT,
                     updated_at REAL,
+                    uploaded_size INTEGER DEFAULT 0,
+                    upload_speed INTEGER DEFAULT 0,
                     PRIMARY KEY (task_id, message_id)
                 )
                 """
             )
+            file_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(task_files)")
+            }
+            if "uploaded_size" not in file_columns:
+                connection.execute(
+                    "ALTER TABLE task_files ADD COLUMN uploaded_size INTEGER DEFAULT 0"
+                )
+            if "upload_speed" not in file_columns:
+                connection.execute(
+                    "ALTER TABLE task_files ADD COLUMN upload_speed INTEGER DEFAULT 0"
+                )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tasks_updated_at ON tasks(updated_at)"
             )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_task_files_task_updated_at
+                ON task_files(task_id, updated_at)
+                """
+            )
+            connection.execute(f"PRAGMA user_version = {TASK_STATE_SCHEMA_VERSION}")
+
+    def _recover_interrupted_storage(self) -> None:
+        """Close non-resumable active tasks left by a prior process."""
+
+        with self._connect() as connection:
+            now = _now()
+            terminal_placeholders = _sql_placeholders(TERMINAL_TASK_STATUSES)
+            connection.execute(
+                f"""
+                UPDATE task_files
+                SET status = ?, error = ?, updated_at = ?
+                WHERE status IN (?, ?, ?)
+                  AND task_id IN (
+                      SELECT task_id FROM tasks
+                      WHERE status NOT IN ({terminal_placeholders})
+                        AND COALESCE(task_type, '') != 'channel_library'
+                  )
+                """,
+                (
+                    FileStatus.FAILED,
+                    RESTART_INTERRUPTED_ERROR,
+                    now,
+                    FileStatus.QUEUED,
+                    FileStatus.DOWNLOADING,
+                    FileStatus.UPLOADING,
+                    *tuple(TERMINAL_TASK_STATUSES),
+                ),
+            )
+            connection.execute(
+                f"""
+                UPDATE tasks
+                SET status = ?, error = ?, needs_confirmation = 0, updated_at = ?
+                WHERE status NOT IN ({terminal_placeholders})
+                  AND COALESCE(task_type, '') != 'channel_library'
+                """,
+                (
+                    TaskStatus.FAILED,
+                    RESTART_INTERRUPTED_ERROR,
+                    now,
+                    *tuple(TERMINAL_TASK_STATUSES),
+                ),
+            )
+
+    def _prune_completed_storage(self) -> None:
+        """Keep persistent terminal history within the configured recent limit."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT task_id FROM tasks
+                WHERE status IN ({_sql_placeholders(TERMINAL_TASK_STATUSES)})
+                ORDER BY updated_at DESC, task_id DESC
+                """,
+                tuple(TERMINAL_TASK_STATUSES),
+            ).fetchall()
+            stale_keys = [
+                row["task_id"] for row in rows[max(int(self.recent_limit), 0) :]
+            ]
+            self._delete_task_storage(connection, stale_keys)
+
+    @staticmethod
+    def _delete_task_storage(connection, task_ids) -> None:
+        normalized_ids = tuple(dict.fromkeys(str(task_id) for task_id in task_ids))
+        if not normalized_ids:
+            return
+        connection.executemany(
+            "DELETE FROM task_files WHERE task_id = ?",
+            [(task_id,) for task_id in normalized_ids],
+        )
+        connection.executemany(
+            "DELETE FROM tasks WHERE task_id = ?",
+            [(task_id,) for task_id in normalized_ids],
+        )
 
     def _load_storage(self) -> None:
         with self._connect() as connection:
@@ -665,6 +789,8 @@ class TaskStateStore:
                 save_path=row["save_path"] or "",
                 error=row["error"] or "",
                 updated_at=float(row["updated_at"] or _now()),
+                uploaded_size=int(row["uploaded_size"] or 0),
+                upload_speed=int(row["upload_speed"] or 0),
             )
 
         for row in task_rows:
@@ -778,8 +904,9 @@ class TaskStateStore:
                 """
                 INSERT INTO task_files (
                     task_id, message_id, status, filename, total_size,
-                    downloaded_size, download_speed, save_path, error, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    downloaded_size, download_speed, save_path, error, updated_at,
+                    uploaded_size, upload_speed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id, message_id) DO UPDATE SET
                     status=excluded.status,
                     filename=excluded.filename,
@@ -788,7 +915,9 @@ class TaskStateStore:
                     download_speed=excluded.download_speed,
                     save_path=excluded.save_path,
                     error=excluded.error,
-                    updated_at=excluded.updated_at
+                    updated_at=excluded.updated_at,
+                    uploaded_size=excluded.uploaded_size,
+                    upload_speed=excluded.upload_speed
                 """,
                 (
                     task_id,
@@ -801,6 +930,8 @@ class TaskStateStore:
                     file_snapshot.save_path,
                     file_snapshot.error,
                     file_snapshot.updated_at,
+                    file_snapshot.uploaded_size,
+                    file_snapshot.upload_speed,
                 ),
             )
 
@@ -812,7 +943,9 @@ def _default_storage_path() -> Optional[Path]:
     return Path(os.path.abspath(".")) / "web_tasks.sqlite3"
 
 
-_TASK_STORE = TaskStateStore(storage_path=_default_storage_path())
+_TASK_STORE = TaskStateStore(
+    storage_path=_default_storage_path(), recover_interrupted=True
+)
 
 
 def _sort_message_key(message_id: str):

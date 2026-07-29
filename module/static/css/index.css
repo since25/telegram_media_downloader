@@ -404,6 +404,7 @@ textarea.input { min-height: 90px; resize: vertical; }
   white-space: nowrap;
 }
 .task-detail-meta > span { overflow: hidden; text-overflow: ellipsis; }
+.task-detail-meta .task-detail-error { color: var(--color-accent-800); }
 .task-detail-actions { display: flex; align-items: center; flex: none; gap: 6px; }
 .task-current-file {
   display: grid; grid-template-columns: 72px minmax(0, 1fr) auto; align-items: center;

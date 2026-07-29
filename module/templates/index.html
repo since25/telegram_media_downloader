@@ -809,6 +809,15 @@
     function isCurrentDetail(task, generation){
       return !(generation !== state.detailGeneration || state.selectedTaskId !== task.task_id);
     }
+    function taskErrorLabel(error){
+      return ({
+        restart_interrupted:'服务重启，任务未自动恢复',
+        upload_failed:'上传失败',
+        upload_source_missing:'上传源文件不存在',
+        download_failed:'下载失败',
+        cancelled:'任务已取消',
+      })[error] || error;
+    }
     function setDetailMeta(task, countText=''){
       const parts = [
         `<span>${escapeHtml(task.source||'来源未知')}</span>`,
@@ -816,6 +825,8 @@
         `<span class="nums" title="${escapeHtml(task.task_id)}">${escapeHtml(task.task_id)}</span>`,
       ];
       if (countText) parts.push(`<span>${escapeHtml(countText)}</span>`);
+      if (task.error)
+        parts.push(`<span class="task-detail-error">${escapeHtml(taskErrorLabel(task.error))}</span>`);
       $('#detail_meta').innerHTML = parts.join('<span aria-hidden="true">·</span>');
     }
     function renderDetailError(task, generation, message='无法加载任务明细'){

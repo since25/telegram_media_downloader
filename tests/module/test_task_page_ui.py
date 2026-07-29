@@ -60,6 +60,8 @@ def test_task_detail_has_unified_header_and_guards_async_identity():
     assert "const processed = Number(t.processed_count)" in html
     assert "task-package-title" in html
     assert "escapeHtml(p.title||'未命名资源包')" in html
+    assert "restart_interrupted:'服务重启，任务未自动恢复'" in html
+    assert 'class="task-detail-error"' in html
     assert "renderDetail(t); pollTasks();" not in html
 
 

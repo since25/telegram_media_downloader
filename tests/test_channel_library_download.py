@@ -146,6 +146,83 @@ def test_cancel_queued_channel_batch_keeps_cancelled_task_history(tmp_path):
         loop.close()
 
 
+def test_restart_reconciliation_requeues_resumable_channel_batch(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "resume-uploading")
+        service.task_store.update_task(
+            batch["task_id"], status=TaskStatus.UPLOADING, error="stale"
+        )
+
+        reconciled = service.reconcile_channel_task_restarts()
+
+        assert reconciled == [batch["task_id"]]
+        task = service.task_store.get_task(batch["task_id"])
+        assert task.status == TaskStatus.QUEUED
+        assert task.error == ""
+    finally:
+        loop.close()
+
+
+def test_restart_reconciliation_closes_terminal_upload_retry_task(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "finish-uploading")
+        for package in batch["packages"]:
+            service.store.finish_download_batch_package(
+                batch["id"],
+                package["package_id"],
+                "upload_failed",
+                last_error="upload_failed",
+            )
+            for item in package["items"]:
+                service.task_store.upsert_file(
+                    batch["task_id"],
+                    item["message_id"],
+                    status=FileStatus.UPLOAD_FAILED,
+                    save_path=f"/tmp/{item['message_id']}.mp4",
+                )
+        service.task_store.update_task(
+            batch["task_id"], status=TaskStatus.UPLOADING, error="stale"
+        )
+
+        reconciled = service.reconcile_channel_task_restarts()
+
+        assert reconciled == [batch["task_id"]]
+        task = service.task_store.get_task(batch["task_id"])
+        assert task.status == TaskStatus.COMPLETED_WITH_ERRORS
+        assert task.error == ""
+    finally:
+        loop.close()
+
+
+def test_restart_reconciliation_does_not_call_failed_batch_completed(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "failed-terminal")
+        for package in batch["packages"]:
+            service.store.finish_download_batch_package(
+                batch["id"],
+                package["package_id"],
+                "failed",
+                last_error="download_failed",
+            )
+        service.task_store.upsert_file(
+            batch["task_id"], 101, status=FileStatus.DOWNLOADED
+        )
+        service.task_store.update_task(
+            batch["task_id"], status=TaskStatus.UPLOADING, error="stale"
+        )
+
+        service.reconcile_channel_task_restarts()
+
+        task = service.task_store.get_task(batch["task_id"])
+        assert task.status == TaskStatus.FAILED
+        assert task.error == "restart_interrupted"
+    finally:
+        loop.close()
+
+
 def test_upload_retry_reuses_retained_file_without_redownloading(tmp_path):
     service, library, loop = make_download_service(tmp_path)
     try:

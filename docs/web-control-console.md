@@ -31,6 +31,20 @@ details load the first 50 package rows from the package-progress endpoint. Backg
 polling keeps the last successful detail render visible, prevents overlapping task/detail
 requests, and no longer replaces the panel with a loading state every second.
 
+`web_tasks.sqlite3` uses additive schema version 1. Existing version-0 databases gain
+persisted upload byte/speed fields on startup without rebuilding either table; a database
+created by newer code is rejected instead of silently downgrading its schema marker.
+Terminal task history and its file rows are pruned together to the configured recent-task
+limit, so restart no longer reloads an unbounded completed history.
+
+On restart, non-channel tasks that have no durable command to resume are closed as failed
+with `restart_interrupted`; queued/downloading/uploading file rows are closed at the same
+time, and the detail panel explains that the service restarted. Channel-library tasks are
+preserved until the channel service compares them with their durable batch: resumable
+batches return to queued state, cancelled batches remain cancelled, completed batches
+close normally, and interrupted upload retries with retained `upload_failed` files return
+to `completed_with_errors` so the upload-only retry remains available.
+
 Prescan mode scans a bounded message window, writes package summaries to the Web state, and waits for the user to include packages before `Start`. Selected packages are downloaded serially through the existing prescan download path. The scan window is configurable per submission via `max_messages` (default 2000, capped at 10000).
 
 Confirming a prescan keeps its package list in Web state instead of discarding it, so `GET /api/prescans/<task_id>/packages` keeps returning `200` (with each package's `selected` flag as of confirmation time) while the download is in progress, which is what backs the prescan download detail view. Cancelling a prescan, or clearing/clear-completing its task once it reaches a terminal state, drops the retained package list so it does not linger in memory.
@@ -193,7 +207,10 @@ For code rollback, revert the relevant commit and restart the service. Preserve 
 
 ## Resource Boundaries
 
-The Web console persists task and file snapshots to `web_tasks.sqlite3` using SQLite WAL mode. The channel library persists its index in the separate `channel_library.sqlite3` described above. Runtime Telegram sessions, auth files, and downloaded media are not stored in these databases.
+The Web console persists task and file snapshots to schema-v1 `web_tasks.sqlite3` using
+SQLite WAL mode. The channel library persists its index in the separate
+`channel_library.sqlite3` described above. Runtime Telegram sessions, auth files, and
+downloaded media are not stored in these databases.
 
 To keep small 1 vCPU / 1 GiB servers responsive:
 

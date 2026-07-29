@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+import sqlite3
 from pathlib import Path
 
 from module.app import DownloadStatus, TaskNode
@@ -203,6 +204,161 @@ class TaskStateStoreTestCase(unittest.TestCase):
             self.assertEqual(snapshot.status, TaskStatus.WAITING_CONFIRMATION)
             self.assertEqual(snapshot.task_type, "package")
             self.assertEqual(len(snapshot.files), 2)
+
+    def test_sqlite_migration_persists_upload_progress_and_sets_schema_version(self):
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            with sqlite3.connect(db_path) as connection:
+                connection.executescript(
+                    """
+                    CREATE TABLE tasks (
+                        task_id TEXT PRIMARY KEY, source TEXT, task_type TEXT,
+                        chat_id INTEGER, title TEXT, status TEXT,
+                        created_at REAL, updated_at REAL, total_count INTEGER,
+                        success_count INTEGER, failed_count INTEGER,
+                        skipped_count INTEGER, upload_success_count INTEGER,
+                        workflow_type TEXT, workflow_status TEXT,
+                        workflow_scan_count INTEGER, workflow_media_count INTEGER,
+                        workflow_selected_count INTEGER, workflow_summary TEXT,
+                        workflow_error TEXT, error TEXT, needs_confirmation INTEGER
+                    );
+                    CREATE TABLE task_files (
+                        task_id TEXT, message_id TEXT, status TEXT, filename TEXT,
+                        total_size INTEGER, downloaded_size INTEGER,
+                        download_speed INTEGER, save_path TEXT, error TEXT,
+                        updated_at REAL, PRIMARY KEY (task_id, message_id)
+                    );
+                    INSERT INTO tasks (
+                        task_id, status, created_at, updated_at, needs_confirmation
+                    ) VALUES ('legacy-completed', 'completed', 1, 1, 0);
+                    INSERT INTO task_files (
+                        task_id, message_id, status, filename, total_size,
+                        downloaded_size, download_speed, save_path, error, updated_at
+                    ) VALUES (
+                        'legacy-completed', '9', 'downloaded', 'legacy.mp4',
+                        100, 100, 0, '/tmp/legacy.mp4', '', 1
+                    );
+                    """
+                )
+
+            store = TaskStateStore(storage_path=db_path)
+            task = store.create_task("upload-persist", status=TaskStatus.UPLOADING)
+            store.upsert_file(
+                task.task_id,
+                1,
+                status=FileStatus.UPLOADING,
+                total_size=100,
+                uploaded_size=75,
+                upload_speed=12,
+            )
+
+            reloaded = TaskStateStore(storage_path=db_path)
+            file_snapshot = reloaded.get_task(task.task_id).files["1"]
+            with sqlite3.connect(db_path) as connection:
+                columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(task_files)")
+                }
+                schema_version = connection.execute("PRAGMA user_version").fetchone()[0]
+
+            self.assertEqual(schema_version, 1)
+            self.assertIn("uploaded_size", columns)
+            self.assertIn("upload_speed", columns)
+            self.assertEqual(file_snapshot.uploaded_size, 75)
+            self.assertEqual(file_snapshot.upload_speed, 12)
+            self.assertEqual(
+                reloaded.get_task("legacy-completed").files["9"].filename,
+                "legacy.mp4",
+            )
+
+    def test_persistent_recent_limit_prunes_old_tasks_and_files(self):
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            store = TaskStateStore(recent_limit=2, storage_path=db_path)
+            for index in range(3):
+                task = store.create_task(
+                    f"completed-{index}", status=TaskStatus.QUEUED
+                )
+                store.upsert_file(
+                    task.task_id, index, status=FileStatus.DOWNLOADED
+                )
+                store.complete_task(task.task_id)
+
+            reloaded = TaskStateStore(recent_limit=2, storage_path=db_path)
+            with sqlite3.connect(db_path) as connection:
+                task_ids = {
+                    row[0] for row in connection.execute("SELECT task_id FROM tasks")
+                }
+                file_task_ids = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT DISTINCT task_id FROM task_files"
+                    )
+                }
+
+            self.assertEqual(len(reloaded.tasks()), 2)
+            self.assertEqual(task_ids, {"completed-1", "completed-2"})
+            self.assertEqual(file_task_ids, task_ids)
+
+    def test_restart_recovery_fails_non_resumable_active_task(self):
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            store = TaskStateStore(storage_path=db_path)
+            task = store.create_task(
+                "interrupted-package",
+                source="web",
+                task_type="package",
+                status=TaskStatus.DOWNLOADING,
+            )
+            store.upsert_file(
+                task.task_id, 1, status=FileStatus.DOWNLOADING, error=""
+            )
+
+            recovered = TaskStateStore(
+                storage_path=db_path, recover_interrupted=True
+            ).get_task("interrupted-package")
+
+            self.assertEqual(recovered.status, TaskStatus.FAILED)
+            self.assertEqual(recovered.error, "restart_interrupted")
+            self.assertEqual(recovered.files["1"].status, FileStatus.FAILED)
+            self.assertEqual(recovered.files["1"].error, "restart_interrupted")
+
+    def test_restart_recovery_preserves_channel_task_for_batch_reconciliation(self):
+        from module.task_state import TaskStateStore, TaskStatus
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            store = TaskStateStore(storage_path=db_path)
+            store.create_task(
+                "channel-resumable",
+                source="web",
+                task_type="channel_library",
+                status=TaskStatus.DOWNLOADING,
+            )
+
+            recovered = TaskStateStore(
+                storage_path=db_path, recover_interrupted=True
+            ).get_task("channel-resumable")
+
+            self.assertEqual(recovered.status, TaskStatus.DOWNLOADING)
+            self.assertEqual(recovered.error, "")
+
+    def test_sqlite_store_rejects_newer_schema_version(self):
+        from module.task_state import TaskStateStore
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            TaskStateStore(storage_path=db_path)
+            with sqlite3.connect(db_path) as connection:
+                connection.execute("PRAGMA user_version = 2")
+
+            with self.assertRaisesRegex(RuntimeError, "newer task database schema"):
+                TaskStateStore(storage_path=db_path)
 
     def test_ensure_task_is_idempotent_and_does_not_regress_existing_state(self):
         from module.task_state import TaskStateStore, TaskStatus

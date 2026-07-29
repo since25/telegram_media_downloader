@@ -3135,7 +3135,7 @@ class ChannelLibraryStore:
         with self.connect() as connection:
             row = connection.execute(
                 """
-                SELECT id, task_id, library_id, status
+                SELECT id, task_id, library_id, status, last_error
                 FROM channel_download_batches WHERE task_id = ?
                 """,
                 (task_id,),

@@ -2227,3 +2227,38 @@ Changed files:
 
 Rollback:
 - Revert `7805353`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases, backups, sessions, and runtime files; this release made no schema, configuration, dependency, or persisted-data migration.
+
+## 2026-07-29 - Task: Harden persistent task restart recovery
+
+### What was done
+
+- Added additive schema-v1 migration for persisted upload byte and speed progress, with explicit rejection of databases created by newer unsupported code.
+- Bounded persisted terminal task history and removed its file rows together with evicted tasks.
+- Marked non-resumable ordinary tasks and their active file rows as interrupted after a service restart.
+- Reconciled persisted channel tasks with durable download batches so resumable batches requeue, cancelled and completed batches retain their terminal meaning, and retained upload failures remain eligible for upload-only retry.
+- Added a clear task-detail explanation when a task was interrupted by a service restart.
+- Reviewed startup ordering, migration transaction boundaries, history cleanup, and channel restart reconciliation; no blocking correctness issue remained after using the shared restart error constant.
+
+### Testing
+
+- Focused task, channel-download, channel-Web, task-page, Web, cancellation, and prescan regressions: `TMD_TASK_DB_PATH=<temporary>/web_tasks.sqlite3 .venv/bin/python -m pytest -q tests/module/test_task_state.py tests/test_channel_library_download.py tests/module/test_channel_library_web.py tests/module/test_task_page_ui.py tests/module/test_web.py tests/test_web_cancel_task.py tests/test_web_prescan_retention.py` -> `213 passed`.
+- Full suite with an isolated task database: `TMD_TASK_DB_PATH=<temporary>/web_tasks.sqlite3 .venv/bin/python -m pytest -q` -> `560 passed, 1 skipped`.
+- Migrated a copy of the current workspace task database -> schema version `1`, upload-progress columns present, `PRAGMA integrity_check` -> `ok`.
+- `.venv/bin/python check_imports.py` passed; changed Python modules compiled; inline JavaScript parsed successfully with Node; `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/task_state.py`: Added schema migration, persisted upload progress, restart recovery, and bounded persistent history.
+- `module/channel_library_service.py`: Added durable channel-task restart reconciliation.
+- `module/channel_library_store.py`: Included persisted batch error state in lightweight task lookup.
+- `module/templates/index.html`: Added the restart-interruption detail message.
+- `module/static/css/index.css`: Styled task-detail error text.
+- `tests/module/test_task_state.py`: Covered migration, persistence, history pruning, restart recovery, and newer-schema rejection.
+- `tests/test_channel_library_download.py`: Covered resumable, upload-retry, and failed channel-task reconciliation.
+- `tests/module/test_task_page_ui.py`: Covered the restart-interruption UI contract.
+- `docs/web-control-console.md`: Documented schema v1, history bounds, and restart behavior.
+- `progress.md`: Recorded implementation, audit, and verification evidence.
+
+Rollback:
+- Revert the phase-three implementation commit before deployment. If schema v1 has already been deployed, preserve the SQLite database: the two added columns and schema marker are additive, while production rollback should use the verified pre-deploy database backup if the older code must see schema version 0.

@@ -33,6 +33,7 @@ from module.comment_workflow import (
 from module.telegram_activity import get_telegram_activity_gate
 from module.task_state import (
     FileStatus,
+    RESTART_INTERRUPTED_ERROR,
     TaskIdentityConflictError,
     TaskStatus,
     get_task_store,
@@ -142,6 +143,7 @@ class ChannelLibraryService:
             self.store.initialize()
             self.store.recover_interrupted_jobs()
             self.dispatch_pending_batches()
+            self.reconcile_channel_task_restarts()
             self.reconcile_download_batches()
             self._wake_event = asyncio.Event()
             self._cron_wake_event = asyncio.Event()
@@ -757,6 +759,59 @@ class ChannelLibraryService:
             refreshed = self.store.get_download_batch(int(batch["id"]))
             if refreshed is not None:
                 reconciled.append(refreshed)
+        return reconciled
+
+    def reconcile_channel_task_restarts(self) -> list[str]:
+        """Normalize persisted channel tasks against their durable batch state."""
+
+        reconciled = []
+        for task in self.task_store.tasks():
+            if task.task_type != "channel_library" or task.status in {
+                TaskStatus.COMPLETED,
+                TaskStatus.COMPLETED_WITH_ERRORS,
+                TaskStatus.CANCELLED,
+                TaskStatus.FAILED,
+            }:
+                continue
+            batch = self.store.get_download_batch_header_by_task_id(task.task_id)
+            if batch is None:
+                self.task_store.update_task(
+                    task.task_id,
+                    status=TaskStatus.FAILED,
+                    error=RESTART_INTERRUPTED_ERROR,
+                    needs_confirmation=False,
+                )
+            elif batch["status"] in {"queued", "downloading"}:
+                self.task_store.update_task(
+                    task.task_id,
+                    status=TaskStatus.QUEUED,
+                    error="",
+                    needs_confirmation=False,
+                )
+            elif batch["status"] == "cancelled":
+                self.task_store.update_task(
+                    task.task_id,
+                    status=TaskStatus.CANCELLED,
+                    error="cancelled",
+                    needs_confirmation=False,
+                )
+            elif batch["status"] == "completed":
+                self.task_store.update_task(task.task_id, error="")
+                self.task_store.complete_task(task.task_id)
+            elif any(
+                item.status in {FileStatus.FAILED, FileStatus.UPLOAD_FAILED}
+                for item in task.files.values()
+            ):
+                self.task_store.update_task(task.task_id, error="")
+                self.task_store.complete_task(task.task_id)
+            else:
+                self.task_store.update_task(
+                    task.task_id,
+                    status=TaskStatus.FAILED,
+                    error=batch.get("last_error") or RESTART_INTERRUPTED_ERROR,
+                    needs_confirmation=False,
+                )
+            reconciled.append(task.task_id)
         return reconciled
 
     async def run_download_batch(self, batch_id: int) -> list[Any]:
