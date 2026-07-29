@@ -48,6 +48,7 @@ def test_task_detail_has_unified_header_and_guards_async_identity():
     assert "detailGeneration:0" in html
     assert "generation !== state.detailGeneration" in html
     assert "state.selectedTaskId !== task.task_id" in html
+    assert "正在加载任务明细" in html
     assert "无法加载任务明细" in html
 
 

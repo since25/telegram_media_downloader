@@ -824,8 +824,12 @@
     }
     function renderDetail(task){
       const generation = ++state.detailGeneration;
-      const box = $('#task_detail'), title = task.title || '任务';
+      const box = $('#task_detail'), ctrl = $('#prescan_controls'), title = task.title || '任务';
       box.hidden = false;
+      ctrl.hidden = true;
+      ctrl.style.display = '';
+      ctrl.innerHTML = '';
+      $('#detail_body').innerHTML = '<div class="task-detail-empty">正在加载任务明细</div>';
       $('#detail_title').textContent = title;
       $('#detail_title').title = title;
       $('#detail_status').innerHTML = statusTag(task.status);
@@ -836,7 +840,6 @@
         if (task.status === 'waiting_confirmation') renderPrescanPackages(task, generation);
         else renderPrescanDownloading(task, generation);
       } else {
-        const ctrl = $('#prescan_controls'); ctrl.hidden = true; ctrl.style.display = '';
         getJSON(`/api/tasks/${task.task_id}`)
           .then(full => {
             if (!isCurrentDetail(task, generation)) return;
