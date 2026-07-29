@@ -2199,3 +2199,31 @@ Changed files:
 
 Rollback:
 - Revert the implementation commit, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases and runtime files; this change adds no schema, configuration, dependency, or data migration.
+
+## 2026-07-29 - Task: Deploy stable channel task details to RackNerd
+
+### What was done
+
+- Committed and pushed the reviewed task-progress, package-detail, polling, pagination, and channel-batch cancellation release to GitHub `master`.
+- Confirmed the production checkout had no tracked local changes, then fast-forwarded it from `3f674ad` to `7805353`.
+- Ran production compile, dependency, and deployed-template contract checks before restarting `tg-downloader.service`.
+- Restarted the service and verified the task-detail CSS through both the production-local and public Web entrypoints.
+
+### Testing
+
+- GitHub push -> `3f674ad..7805353`; local, remote, and production `master` matched at `7805353`.
+- Production `.venv/bin/python -m py_compile module/task_state.py module/channel_library_store.py module/channel_library_service.py module/web.py` passed.
+- Production `.venv/bin/pip check` -> no broken requirements.
+- Production template contract check found `taskPolling:false`, the paginated package endpoint, and `task-package-title`.
+- `tg-downloader.service` -> `active`; four download workers started and the post-restart journal contained no traceback, exception, critical, or real error lines.
+- `web_tasks.sqlite3` and `channel_library.sqlite3` integrity checks -> `ok`.
+- Production-local `/` -> `302 /login`, `/login` -> `200`, and updated CSS marker -> present.
+- Public `https://tgdn.wyichuan.cc/` -> `302 /login`, `/login` -> `200`, and updated CSS marker -> present.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the push, production fast-forward, restart, database integrity, log review, and Web smoke checks.
+
+Rollback:
+- Revert `7805353`, push `master`, fast-forward production, and restart `tg-downloader.service`. Preserve both SQLite databases, backups, sessions, and runtime files; this release made no schema, configuration, dependency, or persisted-data migration.
