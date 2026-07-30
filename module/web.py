@@ -364,6 +364,17 @@ def _channel_service():
     return service
 
 
+def _resource_store():
+    store = getattr(_active_app(), "resource_bot_store", None)
+    if store is None:
+        raise _ChannelApiError(
+            503,
+            "service_unavailable",
+            "Resource delivery service is unavailable",
+        )
+    return store
+
+
 def _invalid_request(message: str = "Request parameters are invalid") -> None:
     raise _ChannelApiError(400, "invalid_request", message)
 
@@ -644,6 +655,134 @@ def csrf_token():
     _require_query_fields()
     _require_no_body()
     return jsonify({"csrf_token": _csrf_token()})
+
+
+def _resource_delivery_payload(job: dict, package: Optional[dict]) -> dict:
+    package_data = package or {}
+    return {
+        "public_id": job["public_id"],
+        "telegram_user_id": int(job["telegram_user_id"]),
+        "package_id": int(job["package_id"]),
+        "package_title": package_data.get("title")
+        or f"资源包 #{job['package_id']}",
+        "source_title": package_data.get("channel_title")
+        or package_data.get("source_chat_title"),
+        "target_chat_id": int(job["target_chat_id"]),
+        "target_title": job.get("binding_title"),
+        "target_username": job.get("binding_username"),
+        "status": job["status"],
+        "queue_position": job.get("queue_position"),
+        "total_items": int(job["total_items"]),
+        "downloaded_items": int(job["downloaded_items"]),
+        "uploaded_items": int(job["uploaded_items"]),
+        "download_speed": int(job.get("download_speed") or 0),
+        "upload_speed": int(job.get("upload_speed") or 0),
+        "error_code": job.get("error_code"),
+        "error_summary": job.get("error_summary"),
+        "created_at": job.get("created_at"),
+        "started_at": job.get("started_at"),
+        "updated_at": job.get("updated_at"),
+        "finished_at": job.get("finished_at"),
+    }
+
+
+@_flask_app.route("/api/resource-deliveries")
+@login_required
+@_channel_api
+def resource_deliveries():
+    """Return one newest-first page of resource Bot delivery jobs."""
+
+    _require_query_fields(frozenset({"page", "page_size"}))
+    _require_no_body()
+    page = _query_int("page", 1, minimum=1, maximum=100000)
+    page_size = _query_int("page_size", 100, minimum=1, maximum=200)
+    jobs, total = _resource_store().list_delivery_jobs(
+        limit=int(page_size), offset=(int(page) - 1) * int(page_size)
+    )
+    channel_service = getattr(_active_app(), "channel_library_service", None)
+    channel_store = (
+        getattr(channel_service, "store", None)
+        if channel_service is not None
+        else None
+    )
+    package_cache = {}
+    items = []
+    for job in jobs:
+        package_id = int(job["package_id"])
+        if package_id not in package_cache:
+            package_cache[package_id] = (
+                channel_store.get_package(package_id)
+                if channel_store is not None
+                else None
+            )
+        items.append(
+            _resource_delivery_payload(job, package_cache[package_id])
+        )
+    return jsonify(
+        {
+            "items": items,
+            "page": int(page),
+            "page_size": int(page_size),
+            "total": total,
+            "summary": _resource_store().delivery_job_summary(),
+        }
+    )
+
+
+@_flask_app.route(
+    "/api/resource-deliveries/<public_id>/cancel", methods=["POST"]
+)
+@login_required
+@_channel_api
+@_require_csrf
+def cancel_resource_delivery(public_id: str):
+    """Cancel one queued resource delivery without touching active uploads."""
+
+    _require_empty_command_input()
+    try:
+        job = _resource_store().cancel_queued_delivery_job(public_id)
+    except ValueError:
+        raise _ChannelApiError(
+            409,
+            "state_conflict",
+            "Only queued resource deliveries can be cancelled",
+        )
+    return jsonify({"job": _resource_delivery_payload(job, None)})
+
+
+@_flask_app.route(
+    "/api/resource-deliveries/<public_id>/clear", methods=["POST"]
+)
+@login_required
+@_channel_api
+@_require_csrf
+def clear_resource_delivery(public_id: str):
+    """Clear one terminal resource delivery from Web history."""
+
+    _require_empty_command_input()
+    try:
+        cleared = _resource_store().clear_terminal_delivery_job(public_id)
+    except ValueError:
+        raise _ChannelApiError(
+            409,
+            "state_conflict",
+            "Only terminal resource deliveries can be cleared",
+        )
+    return jsonify({"cleared": cleared, "public_id": public_id})
+
+
+@_flask_app.route(
+    "/api/resource-deliveries/clear-terminal", methods=["POST"]
+)
+@login_required
+@_channel_api
+@_require_csrf
+def clear_terminal_resource_deliveries():
+    """Clear all completed, failed, and cancelled delivery history."""
+
+    _require_empty_command_input()
+    cleared = _resource_store().clear_terminal_delivery_jobs()
+    return jsonify({"cleared": cleared})
 
 
 @_flask_app.route("/api/channel-library-settings/incremental-scan", methods=["GET"])

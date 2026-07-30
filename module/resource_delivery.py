@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import mimetypes
 import os
 import shutil
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import pyrogram
 from loguru import logger
@@ -26,6 +28,58 @@ DEFAULT_EXTENSIONS = {
     "voice": ".ogg",
     "video_note": ".mp4",
 }
+
+
+class TransferSpeedTracker:
+    """Report byte-per-second samples at a bounded persistence cadence."""
+
+    def __init__(
+        self,
+        reporter: Callable[[int], None],
+        *,
+        clock=time.monotonic,
+        interval: float = 1.0,
+    ) -> None:
+        self.reporter = reporter
+        self.clock = clock
+        self.interval = max(float(interval), 0.1)
+        self.last_time: Optional[float] = None
+        self.last_current = 0
+
+    def observe(self, current: int, total: int) -> None:
+        current_bytes = max(int(current), 0)
+        total_bytes = max(int(total), 0)
+        now = float(self.clock())
+        if self.last_time is None:
+            self.last_time = now
+        elapsed = now - self.last_time
+        terminal = total_bytes > 0 and current_bytes >= total_bytes
+        if current_bytes == self.last_current and terminal:
+            return
+        if elapsed < self.interval and not terminal:
+            return
+        if elapsed <= 0:
+            return
+        transferred = max(current_bytes - self.last_current, 0)
+        self.reporter(max(int(transferred / elapsed), 0))
+        self.last_time = now
+        self.last_current = current_bytes
+
+
+class _TrackedUploadFile(io.BufferedReader):
+    """Binary file wrapper that observes album upload reads without splitting it."""
+
+    def __init__(self, path: Path, tracker: TransferSpeedTracker) -> None:
+        super().__init__(io.FileIO(path, "rb"))
+        self._tracker = tracker
+        self._transferred = 0
+        self._total = int(path.stat().st_size)
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = super().read(size)
+        self._transferred += len(chunk)
+        self._tracker.observe(self._transferred, self._total)
+        return chunk
 
 
 class DeliveryError(RuntimeError):
@@ -128,6 +182,7 @@ class ResourceDeliveryService:
         temp_root: Path,
         activity_gate=None,
         sleep=asyncio.sleep,
+        clock=time.monotonic,
     ) -> None:
         self.app = app
         self.main_client = main_client
@@ -137,6 +192,7 @@ class ResourceDeliveryService:
         self.temp_root = Path(temp_root)
         self.activity_gate = activity_gate or get_telegram_activity_gate()
         self.sleep = sleep
+        self.clock = clock
         self.worker_task: Optional[asyncio.Task] = None
         self._wake_event: Optional[asyncio.Event] = None
         self._stopping = False
@@ -246,6 +302,8 @@ class ResourceDeliveryService:
                 status="uploading",
                 downloaded_items=len(downloaded),
                 uploaded_items=0,
+                download_speed=0,
+                upload_speed=0,
             )
             uploaded_count = await self._upload_all(job, downloaded)
             result = self.resource_store.finish_delivery_job(job_id, "completed")
@@ -389,8 +447,11 @@ class ResourceDeliveryService:
                 message = await self._get_source_message(item)
                 local_path = job_dir / item.file_name
                 try:
+                    tracker = self._speed_tracker(
+                        int(job["id"]), "download_speed"
+                    )
                     downloaded_path = await self._download_message(
-                        message, local_path
+                        message, local_path, tracker
                     )
                 except DeliveryError:
                     raise
@@ -412,7 +473,9 @@ class ResourceDeliveryService:
                     )
                 )
                 self.resource_store.update_job_progress(
-                    int(job["id"]), downloaded_items=len(downloaded)
+                    int(job["id"]),
+                    downloaded_items=len(downloaded),
+                    download_speed=0,
                 )
         return downloaded
 
@@ -433,11 +496,21 @@ class ResourceDeliveryService:
             except pyrogram.errors.FloodWait as error:
                 await self.sleep(error.value)
 
-    async def _download_message(self, message, local_path: Path) -> Path:
+    async def _download_message(
+        self,
+        message,
+        local_path: Path,
+        tracker: TransferSpeedTracker,
+    ) -> Path:
+        async def progress(current, total):
+            tracker.observe(current, total)
+
         while True:
             try:
                 result = await self.main_client.download_media(
-                    message, file_name=str(local_path)
+                    message,
+                    file_name=str(local_path),
+                    progress=progress,
                 )
                 if not result:
                     raise DeliveryError(
@@ -454,12 +527,16 @@ class ResourceDeliveryService:
         for group in build_delivery_groups(items):
             self._require_local_authorization(job)
             try:
-                await self._upload_group(int(job["target_chat_id"]), group)
+                await self._upload_group(
+                    int(job["target_chat_id"]), group, int(job["id"])
+                )
             except pyrogram.errors.FloodWait as error:
                 await self.sleep(error.value)
                 self._require_local_authorization(job)
                 try:
-                    await self._upload_group(int(job["target_chat_id"]), group)
+                    await self._upload_group(
+                        int(job["target_chat_id"]), group, int(job["id"])
+                    )
                 except Exception as retry_error:
                     code = "partial_upload" if uploaded else "upload_failed"
                     raise DeliveryError(
@@ -474,58 +551,91 @@ class ResourceDeliveryService:
                 ) from error
             uploaded += len(group)
             self.resource_store.update_job_progress(
-                int(job["id"]), status="uploading", uploaded_items=uploaded
+                int(job["id"]),
+                status="uploading",
+                uploaded_items=uploaded,
+                upload_speed=0,
             )
         return uploaded
 
     async def _upload_group(
-        self, target_chat_id: int, group: list[PreparedDeliveryItem]
+        self,
+        target_chat_id: int,
+        group: list[PreparedDeliveryItem],
+        job_id: int,
     ) -> None:
         if len(group) > 1:
-            media = [self._input_media(item) for item in group]
-            await self.resource_client.send_media_group(target_chat_id, media)
+            streams = []
+            try:
+                media = []
+                for item in group:
+                    tracker = self._speed_tracker(job_id, "upload_speed")
+                    stream = _TrackedUploadFile(item.local_path, tracker)
+                    streams.append(stream)
+                    media.append(self._input_media(item, stream))
+                await self.resource_client.send_media_group(target_chat_id, media)
+            finally:
+                for stream in streams:
+                    stream.close()
             return
         item = group[0]
         path = str(item.local_path)
+        tracker = self._speed_tracker(job_id, "upload_speed")
+
+        async def progress(current, total):
+            tracker.observe(current, total)
+
         if item.media_type == "photo":
             await self.resource_client.send_photo(
-                target_chat_id, path, caption=item.caption
+                target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "video":
             await self.resource_client.send_video(
-                target_chat_id, path, caption=item.caption
+                target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "audio":
             await self.resource_client.send_audio(
-                target_chat_id, path, caption=item.caption
+                target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "document":
             await self.resource_client.send_document(
-                target_chat_id, path, caption=item.caption
+                target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "voice":
             await self.resource_client.send_voice(
-                target_chat_id, path, caption=item.caption
+                target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "video_note":
-            await self.resource_client.send_video_note(target_chat_id, path)
+            await self.resource_client.send_video_note(
+                target_chat_id, path, progress=progress
+            )
         else:
             raise DeliveryError(
                 "upload_failed",
                 f"Unsupported resource media type: {item.media_type}",
             )
 
+    def _speed_tracker(
+        self, job_id: int, speed_field: str
+    ) -> TransferSpeedTracker:
+        def report(speed: int) -> None:
+            self.resource_store.update_job_progress(
+                job_id, **{speed_field: speed}
+            )
+
+        return TransferSpeedTracker(report, clock=self.clock)
+
     @staticmethod
-    def _input_media(item: PreparedDeliveryItem):
-        path = str(item.local_path)
+    def _input_media(item: PreparedDeliveryItem, media=None):
+        source = media if media is not None else str(item.local_path)
         if item.media_type == "photo":
-            return types.InputMediaPhoto(path, caption=item.caption)
+            return types.InputMediaPhoto(source, caption=item.caption)
         if item.media_type == "video":
-            return types.InputMediaVideo(path, caption=item.caption)
+            return types.InputMediaVideo(source, caption=item.caption)
         if item.media_type == "audio":
-            return types.InputMediaAudio(path, caption=item.caption)
+            return types.InputMediaAudio(source, caption=item.caption)
         if item.media_type == "document":
-            return types.InputMediaDocument(path, caption=item.caption)
+            return types.InputMediaDocument(source, caption=item.caption)
         raise DeliveryError(
             "upload_failed",
             f"Unsupported media-group type: {item.media_type}",

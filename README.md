@@ -91,7 +91,9 @@ The main Telegram account reads and downloads source media; the resource Bot upl
 temporary files to the bound channel. The resource Bot therefore does not need access to
 private source channels. Delivery is globally serial and preserves compatible Telegram
 media groups. A partial upload is reported without automatic retry to avoid duplicate
-channel posts. State is stored separately in `resource_bot.sqlite3`. See
+channel posts. State is stored separately in `resource_bot.sqlite3`. The Web console has
+an independent Publishing tab for queue position, download/upload item counts, live
+speeds, results, queued-job cancellation, and terminal-history cleanup. See
 [`docs/resource-bot-server-handoff.md`](docs/resource-bot-server-handoff.md) for the
 production handoff.
 

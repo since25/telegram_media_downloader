@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 
-RESOURCE_BOT_SCHEMA_VERSION = 1
+RESOURCE_BOT_SCHEMA_VERSION = 2
 ACTIVATION_STATUSES = frozenset({"available", "redeemed", "revoked"})
 USER_STATUSES = frozenset({"active", "revoked"})
 BINDING_STATUSES = frozenset({"active", "permission_lost", "unbound"})
@@ -48,7 +48,7 @@ class ResourceBotStore:
         return connection
 
     def initialize(self) -> None:
-        """Create schema-v1 storage and reject unsupported future schemas."""
+        """Create or migrate storage and reject unsupported future schemas."""
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
@@ -120,6 +120,8 @@ class ResourceBotStore:
                     total_items INTEGER NOT NULL,
                     downloaded_items INTEGER NOT NULL DEFAULT 0,
                     uploaded_items INTEGER NOT NULL DEFAULT 0,
+                    download_speed INTEGER NOT NULL DEFAULT 0,
+                    upload_speed INTEGER NOT NULL DEFAULT 0,
                     error_code TEXT,
                     error_summary TEXT,
                     created_at REAL NOT NULL,
@@ -142,6 +144,26 @@ class ResourceBotStore:
                     );
                 """
             )
+            job_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(resource_delivery_jobs)"
+                ).fetchall()
+            }
+            if "download_speed" not in job_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE resource_delivery_jobs
+                    ADD COLUMN download_speed INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+            if "upload_speed" not in job_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE resource_delivery_jobs
+                    ADD COLUMN upload_speed INTEGER NOT NULL DEFAULT 0
+                    """
+                )
             connection.execute(
                 f"PRAGMA user_version = {RESOURCE_BOT_SCHEMA_VERSION}"
             )
@@ -467,8 +489,9 @@ class ResourceBotStore:
                     public_id, idempotency_key, telegram_user_id,
                     package_id, package_revision, target_chat_id, status,
                     total_items, downloaded_items, uploaded_items,
+                    download_speed, upload_speed,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, 0, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, 0, 0, 0, ?, ?)
                 """,
                 (
                     public_id,
@@ -522,6 +545,90 @@ class ResourceBotStore:
             ).fetchone()
         return _row_dict(row)
 
+    def list_delivery_jobs(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> tuple[list[dict], int]:
+        """Return newest delivery jobs with target metadata and queue position."""
+
+        bounded_limit = min(max(int(limit), 1), 200)
+        bounded_offset = max(int(offset), 0)
+        with self.connect() as connection:
+            total = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM resource_delivery_jobs"
+                ).fetchone()[0]
+            )
+            rows = connection.execute(
+                """
+                SELECT
+                    jobs.*,
+                    bindings.title AS binding_title,
+                    bindings.username AS binding_username,
+                    CASE
+                        WHEN jobs.status = 'queued' THEN (
+                            SELECT COUNT(*) + 1
+                            FROM resource_delivery_jobs AS queued
+                            WHERE queued.status = 'queued'
+                              AND (
+                                  queued.created_at < jobs.created_at
+                                  OR (
+                                      queued.created_at = jobs.created_at
+                                      AND queued.id < jobs.id
+                                  )
+                              )
+                        )
+                        ELSE NULL
+                    END AS queue_position
+                FROM resource_delivery_jobs AS jobs
+                LEFT JOIN resource_channel_bindings AS bindings
+                  ON bindings.chat_id = jobs.target_chat_id
+                ORDER BY jobs.created_at DESC, jobs.id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (bounded_limit, bounded_offset),
+            ).fetchall()
+        return [dict(row) for row in rows], total
+
+    def delivery_job_summary(self) -> dict:
+        """Return status counts and active transfer speeds for the Web page."""
+
+        summary = {
+            "queued": 0,
+            "active": 0,
+            "completed": 0,
+            "failed": 0,
+            "cancelled": 0,
+            "download_speed": 0,
+            "upload_speed": 0,
+        }
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM resource_delivery_jobs
+                GROUP BY status
+                """
+            ).fetchall()
+            speeds = connection.execute(
+                """
+                SELECT
+                    COALESCE(SUM(download_speed), 0) AS download_speed,
+                    COALESCE(SUM(upload_speed), 0) AS upload_speed
+                FROM resource_delivery_jobs
+                WHERE status IN ('downloading', 'uploading')
+                """
+            ).fetchone()
+        for row in rows:
+            status = str(row["status"])
+            count = int(row["count"])
+            if status in ACTIVE_JOB_STATUSES:
+                summary["active"] += count
+            elif status in summary:
+                summary[status] = count
+        summary["download_speed"] = int(speeds["download_speed"])
+        summary["upload_speed"] = int(speeds["upload_speed"])
+        return summary
+
     def claim_next_delivery_job(self, now: float = None) -> Optional[dict]:
         """Atomically move the oldest queued job into downloading."""
 
@@ -542,7 +649,8 @@ class ResourceBotStore:
                 """
                 UPDATE resource_delivery_jobs
                 SET status = 'downloading', started_at = COALESCE(started_at, ?),
-                    updated_at = ?, error_code = NULL, error_summary = NULL
+                    updated_at = ?, error_code = NULL, error_summary = NULL,
+                    download_speed = 0, upload_speed = 0
                 WHERE id = ? AND status = 'queued'
                 """,
                 (started_at, started_at, job_id),
@@ -564,6 +672,8 @@ class ResourceBotStore:
         status: Optional[str] = None,
         downloaded_items: Optional[int] = None,
         uploaded_items: Optional[int] = None,
+        download_speed: Optional[int] = None,
+        upload_speed: Optional[int] = None,
         now: float = None,
     ) -> dict:
         """Update bounded non-terminal progress for one active job."""
@@ -582,6 +692,12 @@ class ResourceBotStore:
         if uploaded_items is not None:
             assignments.append("uploaded_items = ?")
             parameters.append(max(int(uploaded_items), 0))
+        if download_speed is not None:
+            assignments.append("download_speed = ?")
+            parameters.append(max(int(download_speed), 0))
+        if upload_speed is not None:
+            assignments.append("upload_speed = ?")
+            parameters.append(max(int(upload_speed), 0))
         parameters.append(int(job_id))
         with self.connect() as connection:
             updated = connection.execute(
@@ -620,6 +736,7 @@ class ResourceBotStore:
                 """
                 UPDATE resource_delivery_jobs
                 SET status = ?, error_code = ?, error_summary = ?,
+                    download_speed = 0, upload_speed = 0,
                     updated_at = ?, finished_at = ?
                 WHERE id = ? AND status NOT IN ('completed', 'failed', 'cancelled')
                 """,
@@ -660,6 +777,7 @@ class ResourceBotStore:
                 UPDATE resource_delivery_jobs
                 SET status = 'failed', error_code = 'restart_interrupted',
                     error_summary = 'Resource delivery was interrupted by restart',
+                    download_speed = 0, upload_speed = 0,
                     updated_at = ?, finished_at = ?
                 WHERE status IN ('downloading', 'uploading')
                 """,
@@ -676,3 +794,76 @@ class ResourceBotStore:
                 """
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def cancel_queued_delivery_job(
+        self, public_id: str, now: float = None
+    ) -> dict:
+        """Cancel one queued job without interrupting active or partial uploads."""
+
+        cancelled_at = _now() if now is None else float(now)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """
+                SELECT id, status FROM resource_delivery_jobs
+                WHERE public_id = ?
+                """,
+                (str(public_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(public_id)
+            if row["status"] != "queued":
+                raise ValueError("delivery_job_not_queued")
+            connection.execute(
+                """
+                UPDATE resource_delivery_jobs
+                SET status = 'cancelled',
+                    error_code = 'cancelled_by_admin',
+                    error_summary = 'Resource delivery was cancelled before start',
+                    download_speed = 0, upload_speed = 0,
+                    updated_at = ?, finished_at = ?
+                WHERE id = ? AND status = 'queued'
+                """,
+                (cancelled_at, cancelled_at, int(row["id"])),
+            )
+            cancelled = connection.execute(
+                """
+                SELECT * FROM resource_delivery_jobs WHERE id = ?
+                """,
+                (int(row["id"]),),
+            ).fetchone()
+        return dict(cancelled)
+
+    def clear_terminal_delivery_job(self, public_id: str) -> bool:
+        """Delete one terminal delivery job from Web history."""
+
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT status FROM resource_delivery_jobs WHERE public_id = ?
+                """,
+                (str(public_id),),
+            ).fetchone()
+            if row is None:
+                raise KeyError(public_id)
+            if row["status"] not in TERMINAL_JOB_STATUSES:
+                raise ValueError("delivery_job_not_terminal")
+            deleted = connection.execute(
+                """
+                DELETE FROM resource_delivery_jobs WHERE public_id = ?
+                """,
+                (str(public_id),),
+            )
+        return deleted.rowcount == 1
+
+    def clear_terminal_delivery_jobs(self) -> int:
+        """Delete all terminal delivery jobs while preserving active and queued work."""
+
+        with self.connect() as connection:
+            deleted = connection.execute(
+                """
+                DELETE FROM resource_delivery_jobs
+                WHERE status IN ('completed', 'failed', 'cancelled')
+                """
+            )
+        return deleted.rowcount

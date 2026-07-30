@@ -444,6 +444,7 @@ class BotManager:
         self.resource_role = None
         self.delivery_service = None
         self.resource_admin_commands = None
+        self.app = None
         self.started = False
 
     async def start(
@@ -459,6 +460,7 @@ class BotManager:
             return
         if app.resource_bot_token and not app.bot_token:
             raise ValueError("resource_bot_token requires bot_token")
+        self.app = app
         admin_start_attempted = False
         resource_started = False
         try:
@@ -474,6 +476,7 @@ class BotManager:
                     self.db_path_resolver()
                 )
                 self.resource_store.initialize()
+                app.resource_bot_store = self.resource_store
                 channel_service = getattr(
                     app, "channel_library_service", None
                 )
@@ -570,10 +573,13 @@ class BotManager:
             raise RuntimeError("one or more Bot components failed to stop")
 
     def _reset_resource_state(self) -> None:
+        if self.app is not None:
+            self.app.resource_bot_store = None
         self.resource_store = None
         self.resource_role = None
         self.delivery_service = None
         self.resource_admin_commands = None
+        self.app = None
 
 
 _bot_manager = BotManager()

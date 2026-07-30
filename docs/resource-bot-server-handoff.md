@@ -125,7 +125,7 @@ PY
 stat -c '%A %n' resource_bot.sqlite3 2>/dev/null || stat -f '%Sp %N' resource_bot.sqlite3
 ```
 
-Expected values are schema `1`, integrity `ok`, and owner-only file permissions.
+Expected values are schema `2`, integrity `ok`, and owner-only file permissions.
 
 ## Start and service checks
 

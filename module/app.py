@@ -429,6 +429,7 @@ class Application:
         self.cloud_drive_config = CloudDriveConfig()
         self.channel_library_config = ChannelLibraryConfig()
         self.channel_library_service = None
+        self.resource_bot_store = None
         self.hide_file_name = False
         self.caption_name_dict: dict = {}
         self.caption_entities_dict: dict = {}

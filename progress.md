@@ -2606,3 +2606,39 @@ Changed files:
 
 Rollback:
 - Revert the activation-command dispatch fix and restart `tg-downloader.service`; no schema, configuration, activation key, or other persisted production data is changed by this patch.
+
+## 2026-07-30 - Task: Add independent resource publishing management page
+
+### What was done
+
+- Added an independent Web “发布” tab for resource Bot delivery jobs without mixing them into the existing download Tasks page.
+- Added newest-first delivery listing, queue position, package/source/target context, project-level download and upload item counts, current download/upload speeds, timestamps, and safe result summaries.
+- Added safe management actions: queued jobs can be cancelled, terminal rows can be cleared individually, and all terminal history can be cleared; active work and partial uploads are not retried or interrupted from Web.
+- Migrated `resource_bot.sqlite3` additively from schema 1 to schema 2 with download/upload speed fields and exposed the live store through the existing application lifecycle.
+- Added throttled transfer-speed persistence for normal downloads/uploads and retained Telegram media groups while measuring album upload reads.
+- Documented the Publishing page, Web API, schema migration, progress semantics, and rollback boundary.
+
+### Testing
+
+- RED verification initially failed because `TransferSpeedTracker` and the independent Publishing DOM/API contracts did not exist.
+- Focused resource/store/delivery/Bot/Web/UI tests -> `42 passed`.
+- Web, task-page, resource Bot, and Bot-manager regressions -> `58 passed`.
+- Complete suite with isolated task/resource databases -> `621 passed, 1 skipped`.
+- Changed modules compiled with `.venv/bin/python -m compileall -q`.
+- Inline JavaScript parsed successfully with Node (`inline scripts parse: 1`).
+- `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/resource_bot_store.py`: Added schema-v2 migration, speed state, delivery listing/summary, queued cancellation, and terminal-history cleanup.
+- `module/resource_delivery.py`: Added throttled download/upload speed tracking while preserving media-group delivery.
+- `module/app.py` and `module/bot.py`: Exposed and cleared the live resource store through the application lifecycle.
+- `module/web.py`: Added authenticated, CSRF-protected resource delivery Web APIs.
+- `module/templates/index.html` and `module/static/css/index.css`: Added the independent Publishing page, one-second polling, status filtering, and safe actions.
+- `tests/module/`: Added schema migration, progress, lifecycle, API, DOM, and regression coverage.
+- `README.md`, `README_CN.md`, and `docs/`: Documented the new page and schema behavior.
+- `progress.md`: Recorded implementation and verification evidence.
+
+Rollback:
+- Revert this implementation commit and restart the service. Because schema 2 is not accepted by the previous schema-1 code, production rollback must restore the pre-deploy `resource_bot.sqlite3` backup with the service stopped; preserve the current schema-2 database separately before restoring.

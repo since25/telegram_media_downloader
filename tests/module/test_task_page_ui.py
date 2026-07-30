@@ -81,3 +81,18 @@ def test_task_panel_styles_are_scoped_and_responsive():
         assert selector in css
     assert '.task-table tbody tr[aria-selected="true"]' in css
     assert "min-width: 820px" in css
+
+
+def test_resource_delivery_has_independent_publish_page():
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+    css = INDEX_CSS.read_text(encoding="utf-8")
+
+    assert 'data-tab="publishing"' in html
+    assert 'id="tab_publishing"' in html
+    assert 'id="resource_delivery_rows"' in html
+    assert "下载中 ${downloaded}/${total}" in html
+    assert "上传中 ${uploaded}/${total}" in html
+    assert "/api/resource-deliveries?page=1&page_size=100" in html
+    assert "state.timers.publishing = setInterval(pollResourceDeliveries, 1000)" in html
+    assert "/api/resource-deliveries/clear-terminal" in html
+    assert ".resource-delivery-table" in css

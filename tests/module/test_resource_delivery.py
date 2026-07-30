@@ -12,6 +12,7 @@ from module.resource_bot_store import ResourceBotStore
 from module.resource_delivery import (
     PreparedDeliveryItem,
     ResourceDeliveryService,
+    TransferSpeedTracker,
     build_delivery_groups,
     safe_delivery_filename,
 )
@@ -57,13 +58,18 @@ class FakeMainClient:
         self.get_calls.append((chat_id, message_id))
         return self.messages.get((chat_id, message_id))
 
-    async def download_media(self, message, file_name):
+    async def download_media(
+        self, message, file_name, progress=None, progress_args=()
+    ):
         self.download_calls.append(message.id)
         if message.id == self.fail_download_message_id:
             raise RuntimeError("download failed")
         path = Path(file_name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(f"media-{message.id}".encode("utf-8"))
+        payload = f"media-{message.id}".encode("utf-8")
+        path.write_bytes(payload)
+        if progress is not None:
+            await progress(len(payload), len(payload), *progress_args)
         return str(path)
 
 
@@ -85,22 +91,46 @@ class FakeResourceClient:
     async def send_media_group(self, chat_id, media):
         await self._record("media_group", chat_id, media)
 
-    async def send_photo(self, chat_id, file_name, caption=None):
+    async def send_photo(
+        self, chat_id, file_name, caption=None, progress=None, progress_args=()
+    ):
+        if progress is not None:
+            await progress(10, 10, *progress_args)
         await self._record("photo", chat_id, file_name, caption)
 
-    async def send_video(self, chat_id, file_name, caption=None):
+    async def send_video(
+        self, chat_id, file_name, caption=None, progress=None, progress_args=()
+    ):
+        if progress is not None:
+            await progress(10, 10, *progress_args)
         await self._record("video", chat_id, file_name, caption)
 
-    async def send_audio(self, chat_id, file_name, caption=None):
+    async def send_audio(
+        self, chat_id, file_name, caption=None, progress=None, progress_args=()
+    ):
+        if progress is not None:
+            await progress(10, 10, *progress_args)
         await self._record("audio", chat_id, file_name, caption)
 
-    async def send_document(self, chat_id, file_name, caption=None):
+    async def send_document(
+        self, chat_id, file_name, caption=None, progress=None, progress_args=()
+    ):
+        if progress is not None:
+            await progress(10, 10, *progress_args)
         await self._record("document", chat_id, file_name, caption)
 
-    async def send_voice(self, chat_id, file_name, caption=None):
+    async def send_voice(
+        self, chat_id, file_name, caption=None, progress=None, progress_args=()
+    ):
+        if progress is not None:
+            await progress(10, 10, *progress_args)
         await self._record("voice", chat_id, file_name, caption)
 
-    async def send_video_note(self, chat_id, file_name):
+    async def send_video_note(
+        self, chat_id, file_name, progress=None, progress_args=()
+    ):
+        if progress is not None:
+            await progress(10, 10, *progress_args)
         await self._record("video_note", chat_id, file_name)
 
     async def send_message(self, chat_id, text):
@@ -238,6 +268,21 @@ def test_incompatible_media_group_falls_back_to_single_items():
     groups = build_delivery_groups(items)
 
     assert [[item.ordinal for item in group] for group in groups] == [[1], [2]]
+
+
+def test_transfer_speed_tracker_throttles_and_reports_terminal_sample():
+    samples = []
+    ticks = iter([0.0, 0.4, 1.2, 1.5])
+    tracker = TransferSpeedTracker(
+        samples.append, clock=lambda: next(ticks), interval=1.0
+    )
+
+    tracker.observe(100, 1000)
+    tracker.observe(400, 1000)
+    tracker.observe(800, 1000)
+    tracker.observe(1000, 1000)
+
+    assert samples == [666, 666]
 
 
 def run(coroutine):
@@ -409,8 +454,15 @@ def test_revocation_during_download_stops_at_next_item(
     tmp_path, resource_store
 ):
     class RevokingMainClient(FakeMainClient):
-        async def download_media(self, message, file_name):
-            result = await super().download_media(message, file_name)
+        async def download_media(
+            self, message, file_name, progress=None, progress_args=()
+        ):
+            result = await super().download_media(
+                message,
+                file_name,
+                progress=progress,
+                progress_args=progress_args,
+            )
             if message.id == 10:
                 resource_store.revoke_user(200)
             return result
@@ -447,13 +499,26 @@ def test_worker_processes_queued_jobs_serially(tmp_path, resource_store):
             self.active_uploads = 0
             self.max_active_uploads = 0
 
-        async def send_document(self, chat_id, file_name, caption=None):
+        async def send_document(
+            self,
+            chat_id,
+            file_name,
+            caption=None,
+            progress=None,
+            progress_args=(),
+        ):
             self.active_uploads += 1
             self.max_active_uploads = max(
                 self.max_active_uploads, self.active_uploads
             )
             await asyncio.sleep(0)
-            await super().send_document(chat_id, file_name, caption)
+            await super().send_document(
+                chat_id,
+                file_name,
+                caption,
+                progress=progress,
+                progress_args=progress_args,
+            )
             self.active_uploads -= 1
 
     async def scenario():
@@ -516,10 +581,17 @@ def test_stop_marks_active_job_interrupted_and_cleans_temp(
             self.download_started = asyncio.Event()
             self.release_download = asyncio.Event()
 
-        async def download_media(self, message, file_name):
+        async def download_media(
+            self, message, file_name, progress=None, progress_args=()
+        ):
             self.download_started.set()
             await self.release_download.wait()
-            return await super().download_media(message, file_name)
+            return await super().download_media(
+                message,
+                file_name,
+                progress=progress,
+                progress_args=progress_args,
+            )
 
     async def scenario():
         items = [package_item(0, 10, "document", file_name="one.bin")]

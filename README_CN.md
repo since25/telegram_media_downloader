@@ -107,7 +107,7 @@
 
 发布时，后台主账号凭来源频道权限读取并下载资源，资源 Bot 再把本地临时文件上传到用户频道。因此资源 Bot 本身不需要加入来源频道；即使来源频道禁止原生转发，只要主账号仍可读取和下载，也可以走下载后上传路径。任务全局串行执行，会尽量保持资源包顺序和兼容的 Telegram 媒体组。若上传中途失败，任务会报告已发布数量且不会自动重试，以免频道出现重复内容。
 
-资源 Bot 使用独立的 `resource_bot.sqlite3` 保存激活、绑定和发布任务状态。完整生产接管步骤见 [`docs/resource-bot-server-handoff.md`](docs/resource-bot-server-handoff.md)。
+资源 Bot 使用独立的 `resource_bot.sqlite3` 保存激活、绑定和发布任务状态。Web 控制台的独立“发布”页可查看排队位置、下载/上传文件数、实时速度和结果，并可取消排队任务或清理终态历史；不会自动重试部分上传。完整生产接管步骤见 [`docs/resource-bot-server-handoff.md`](docs/resource-bot-server-handoff.md)。
 
 #### 手动添加标签功能
 

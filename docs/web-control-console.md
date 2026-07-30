@@ -155,10 +155,33 @@ as `restart_interrupted` and is not retried automatically. Partial uploads retai
 published count and are also not retried automatically, preventing duplicate posts.
 Temporary files are removed after every terminal outcome.
 
+The Web console exposes these jobs on an independent **发布** tab rather than mixing
+them into the download Tasks page. It polls once per second and shows package-level
+download/upload file counts (`下载中 n/x`, `上传中 y/x`), current transfer speed,
+queue position, user, destination channel, timestamps, and safe error summaries. It
+does not show per-file percentages or ETA. Only queued jobs can be cancelled. Completed,
+failed, and cancelled rows can be cleared individually or as terminal history; active
+downloads/uploads cannot be cancelled from this page, and partial uploads are never
+retried automatically.
+
+`resource_bot.sqlite3` schema version 2 adds `download_speed` and `upload_speed` byte-per-
+second samples to delivery jobs. Version-1 databases migrate additively on startup.
+Speed persistence is throttled to approximately one update per second. Single uploads
+use Pyrogram progress callbacks; compatible albums remain media groups and measure
+upload reads without splitting the album.
+
 The resource Bot and its delivery worker share the existing `start_download_bot` and
 `stop_download_bot` application entry. Leaving `resource_bot_token` empty preserves the
 management-only behavior. Production configuration and acceptance are documented in
 [`resource-bot-server-handoff.md`](resource-bot-server-handoff.md).
+
+Resource delivery Web routes use the existing authenticated Web session. Mutating routes
+also require the session CSRF token:
+
+- `GET /api/resource-deliveries?page=1&page_size=100`: newest-first jobs and summary.
+- `POST /api/resource-deliveries/<public_id>/cancel`: cancel a queued job only.
+- `POST /api/resource-deliveries/<public_id>/clear`: clear one terminal job.
+- `POST /api/resource-deliveries/clear-terminal`: clear all terminal history.
 
 ## Keyword Monitor Groups
 

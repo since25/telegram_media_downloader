@@ -1917,7 +1917,7 @@ def test_channel_library_tab_has_one_complete_spa_dom_contract():
         '<button type="button" class="app-tab" data-tab="channel-library" role="tab"'
         in html
     )
-    assert html.count('role="tabpanel"') == 6
+    assert html.count('role="tabpanel"') == 7
     assert 'aria-labelledby="app_tab_channel_library"' in html
     assert "['ArrowLeft','ArrowRight'].includes(e.key)" in html
     assert "next.focus(); next.click();" in html

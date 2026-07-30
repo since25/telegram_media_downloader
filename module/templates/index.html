@@ -17,6 +17,7 @@
         <button type="button" class="app-tab" data-tab="tasks" role="tab" id="app_tab_tasks" aria-controls="tab_tasks" aria-selected="true" aria-current="page">任务</button>
         <button type="button" class="app-tab" data-tab="files" role="tab" id="app_tab_files" aria-controls="tab_files" aria-selected="false">文件</button>
         <button type="button" class="app-tab" data-tab="packages" role="tab" id="app_tab_packages" aria-controls="tab_packages" aria-selected="false">资源包</button>
+        <button type="button" class="app-tab" data-tab="publishing" role="tab" id="app_tab_publishing" aria-controls="tab_publishing" aria-selected="false">发布</button>
         <button type="button" class="app-tab" data-tab="channel-library" role="tab" id="app_tab_channel_library" aria-controls="tab_channel-library" aria-selected="false">频道</button>
         <button type="button" class="app-tab" data-tab="keyword-monitor" role="tab" id="app_tab_keyword_monitor" aria-controls="tab_keyword-monitor" aria-selected="false">关键词监控</button>
         <button type="button" class="app-tab" data-tab="config" role="tab" id="app_tab_config" aria-controls="tab_config" aria-selected="false">高级配置</button>
@@ -168,6 +169,62 @@
           <div id="detail_body"></div>
         </div>
 
+      </div>
+      <div class="tab-panel" id="tab_publishing" role="tabpanel" aria-labelledby="app_tab_publishing">
+        <div class="resource-delivery-summary">
+          <div class="card blueprint resource-delivery-stat">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <span>排队中</span><strong class="nums" id="resource_delivery_queued">0</strong>
+          </div>
+          <div class="card blueprint resource-delivery-stat">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <span>进行中</span><strong class="nums" id="resource_delivery_active">0</strong>
+          </div>
+          <div class="card blueprint resource-delivery-stat">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <span>已完成</span><strong class="nums" id="resource_delivery_completed">0</strong>
+          </div>
+          <div class="card blueprint resource-delivery-stat">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <span>失败 / 取消</span><strong class="nums" id="resource_delivery_failed">0</strong>
+          </div>
+          <div class="card blueprint resource-delivery-stat resource-delivery-speed">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <span>下载速度</span><strong class="nums" id="resource_delivery_download_speed">0 B/s</strong>
+          </div>
+          <div class="card blueprint resource-delivery-stat resource-delivery-speed">
+            <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+            <span>上传速度</span><strong class="nums" id="resource_delivery_upload_speed">0 B/s</strong>
+          </div>
+        </div>
+
+        <section class="card blueprint resource-delivery-panel" aria-labelledby="resource_delivery_title">
+          <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+          <header class="resource-delivery-header">
+            <div>
+              <strong id="resource_delivery_title">资源发布任务</strong>
+              <span class="text-muted nums" id="resource_delivery_meta">共 0 个任务</span>
+            </div>
+            <div class="resource-delivery-controls">
+              <select class="input" id="resource_delivery_filter" aria-label="发布状态筛选">
+                <option value="all">全部状态</option>
+                <option value="active">排队与进行中</option>
+                <option value="completed">已完成</option>
+                <option value="failed">失败与取消</option>
+              </select>
+              <button type="button" class="btn btn-ghost" id="resource_delivery_clear_terminal">清空终态历史</button>
+            </div>
+          </header>
+          <div class="channel-library-notice" id="resource_delivery_notice" hidden></div>
+          <div class="table-scroll">
+            <table class="table resource-delivery-table">
+              <thead><tr>
+                <th>资源包</th><th>使用者 / 目标频道</th><th>状态</th><th>项目进度</th><th>速度</th><th>时间 / 结果</th><th>操作</th>
+              </tr></thead>
+              <tbody id="resource_delivery_rows"></tbody>
+            </table>
+          </div>
+        </section>
       </div>
       <div class="tab-panel" id="tab_packages" role="tabpanel" aria-labelledby="app_tab_packages">
         <section class="aggregate-workspace" aria-live="polite">
@@ -652,7 +709,8 @@
       }, aggregate:{items:[],nextCursor:null,expandedItems:{},selection:null,loading:false,
         pendingLibraryId:null,pendingPackageId:null},
       keywordMonitor:{groups:[],selectedGroupId:null,history:[],historyNextCursor:null,
-        draftDirty:false,draft:null} };
+        draftDirty:false,draft:null},
+      resourceDelivery:{items:[],payload:null,polling:false,filter:'all'} };
     let taskFilter = 'all';
 
     const ICONS = {
@@ -805,6 +863,96 @@
         state.taskPolling = false;
       }
     }
+
+    const RESOURCE_DELIVERY_TERMINAL = new Set(['completed','failed','cancelled']);
+    function resourceDeliveryProgress(job){
+      const total = Number(job.total_items)||0;
+      const downloaded = Number(job.downloaded_items)||0;
+      const uploaded = Number(job.uploaded_items)||0;
+      const downloadLabel = job.status === 'downloading'
+        ? `下载中 ${downloaded}/${total}` : `下载 ${downloaded}/${total}`;
+      const uploadLabel = job.status === 'uploading'
+        ? `上传中 ${uploaded}/${total}` : `上传 ${uploaded}/${total}`;
+      return `<span>${downloadLabel}</span><span>${uploadLabel}</span>`;
+    }
+    function resourceDeliveryActions(job){
+      const id = escapeHtml(job.public_id);
+      if (job.status === 'queued')
+        return `<button type="button" class="btn btn-secondary" data-resource-delivery-action="cancel" data-id="${id}">取消排队</button>`;
+      if (RESOURCE_DELIVERY_TERMINAL.has(job.status))
+        return `<button type="button" class="btn btn-ghost" data-resource-delivery-action="clear" data-id="${id}">清除</button>`;
+      return '<span class="text-muted">运行中不可取消</span>';
+    }
+    function resourceDeliveryMatchesFilter(job){
+      const filter = state.resourceDelivery.filter;
+      if (filter === 'active') return ['queued','downloading','uploading'].includes(job.status);
+      if (filter === 'completed') return job.status === 'completed';
+      if (filter === 'failed') return ['failed','cancelled'].includes(job.status);
+      return true;
+    }
+    function showResourceDeliveryNotice(message, tone='info'){
+      const notice = $('#resource_delivery_notice');
+      notice.hidden = !message;
+      notice.dataset.tone = tone;
+      notice.textContent = message || '';
+    }
+    function renderResourceDeliveries(payload){
+      const summary = payload.summary || {};
+      $('#resource_delivery_queued').textContent = Number(summary.queued)||0;
+      $('#resource_delivery_active').textContent = Number(summary.active)||0;
+      $('#resource_delivery_completed').textContent = Number(summary.completed)||0;
+      $('#resource_delivery_failed').textContent = (Number(summary.failed)||0) + (Number(summary.cancelled)||0);
+      $('#resource_delivery_download_speed').textContent = formatChannelBytes(summary.download_speed) + '/s';
+      $('#resource_delivery_upload_speed').textContent = formatChannelBytes(summary.upload_speed) + '/s';
+      $('#resource_delivery_meta').textContent = `共 ${Number(payload.total)||0} 个任务`;
+      const jobs = (payload.items||[]).filter(resourceDeliveryMatchesFilter);
+      const rows = $('#resource_delivery_rows');
+      if (!jobs.length){
+        rows.innerHTML = '<tr class="task-empty-row"><td colspan="7">当前筛选下没有发布任务</td></tr>';
+        return;
+      }
+      rows.innerHTML = jobs.map(job => {
+        const target = job.target_title || String(job.target_chat_id);
+        const targetUsername = job.target_username ? ` · @${job.target_username}` : '';
+        const source = job.source_title || '来源频道未知';
+        const queue = job.status === 'queued' && job.queue_position
+          ? `<span class="nums text-muted">队列 #${Number(job.queue_position)}</span>` : '';
+        const speed = job.status === 'downloading'
+          ? `⬇ ${formatChannelBytes(job.download_speed)}/s`
+          : job.status === 'uploading'
+            ? `⬆ ${formatChannelBytes(job.upload_speed)}/s`
+            : '—';
+        const result = job.error_summary || (job.status === 'completed' ? '发布完成' : '—');
+        return `<tr>
+          <td><div class="resource-delivery-package" title="${escapeHtml(job.package_title)}">${escapeHtml(job.package_title)}</div>
+            <div class="text-muted nums">#${Number(job.package_id)} · ${escapeHtml(source)} · ${escapeHtml(job.public_id)}</div></td>
+          <td><div class="nums">用户 ${Number(job.telegram_user_id)}</div>
+            <div class="text-muted">${escapeHtml(target + targetUsername)} · ${escapeHtml(job.target_chat_id)}</div></td>
+          <td><div class="resource-delivery-status">${statusTag(job.status)}${queue}</div></td>
+          <td><div class="resource-delivery-progress nums">${resourceDeliveryProgress(job)}</div></td>
+          <td class="nums">${escapeHtml(speed)}</td>
+          <td><div class="nums">${escapeHtml(formatChannelTime(job.created_at))}</div>
+            <div class="text-muted resource-delivery-result" title="${escapeHtml(result)}">${escapeHtml(result)}</div></td>
+          <td class="resource-delivery-actions">${resourceDeliveryActions(job)}</td>
+        </tr>`;
+      }).join('');
+    }
+    async function pollResourceDeliveries(){
+      if (state.resourceDelivery.polling) return;
+      state.resourceDelivery.polling = true;
+      try {
+        const payload = await channelRequest('/api/resource-deliveries?page=1&page_size=100');
+        state.resourceDelivery.items = payload.items || [];
+        state.resourceDelivery.payload = payload;
+        showResourceDeliveryNotice('');
+        renderResourceDeliveries(payload);
+      } catch (error) {
+        showResourceDeliveryNotice(error.message || '发布任务读取失败', 'error');
+      } finally {
+        state.resourceDelivery.polling = false;
+      }
+    }
+
     // ── task detail (T6): dispatches on task_type/status into one of three renderers ──
     function isCurrentDetail(task, generation){
       return !(generation !== state.detailGeneration || state.selectedTaskId !== task.task_id);
@@ -1948,6 +2096,35 @@
     });
     $('#keyword_history_more').addEventListener('click',()=>loadKeywordHistory({append:true}));
 
+    $('#resource_delivery_filter').addEventListener('change', e => {
+      state.resourceDelivery.filter = e.target.value;
+      if (state.resourceDelivery.payload)
+        renderResourceDeliveries(state.resourceDelivery.payload);
+    });
+    $('#resource_delivery_rows').addEventListener('click', async e => {
+      const button = e.target.closest('button[data-resource-delivery-action]');
+      if (!button) return;
+      const action = button.dataset.resourceDeliveryAction;
+      button.disabled = true;
+      try {
+        await channelApiWrite('POST', `/api/resource-deliveries/${button.dataset.id}/${action}`);
+        await pollResourceDeliveries();
+      } catch (error) {
+        showResourceDeliveryNotice(error.message || '发布任务操作失败', 'error');
+      } finally {
+        button.disabled = false;
+      }
+    });
+    $('#resource_delivery_clear_terminal').addEventListener('click', async () => {
+      if (!confirm('清空全部已完成、失败和已取消的发布历史？')) return;
+      try {
+        await channelApiWrite('POST', '/api/resource-deliveries/clear-terminal');
+        await pollResourceDeliveries();
+      } catch (error) {
+        showResourceDeliveryNotice(error.message || '清空发布历史失败', 'error');
+      }
+    });
+
     // ── files (T7): 下载中 / 上传中 / 已完成 three stacked tables ──
     async function pollFiles(){
       const [dl, ul, done, dash] = await Promise.all([
@@ -2048,6 +2225,7 @@
       stopPolling();
       if (tab==='tasks'){ pollTasks(); state.timers.tasks = setInterval(pollTasks, 1000); }
       else if (tab==='files'){ pollFiles(); state.timers.files = setInterval(pollFiles, 1000); }  // T7
+      else if (tab==='publishing'){ pollResourceDeliveries(); state.timers.publishing = setInterval(pollResourceDeliveries, 1000); }
       else if (tab==='packages'){
         activateAggregatePackages();
         state.timers.packages = setInterval(()=>Promise.all([loadAggregatePackages(),loadAggregateSelection()]),5000);

@@ -964,6 +964,139 @@ class WebTestCase(unittest.TestCase):
                 TaskStatus.CANCELLED,
             )
 
+    def test_resource_delivery_api_lists_enriched_jobs_and_manages_safe_actions(self):
+        from module.resource_bot_store import ResourceBotStore
+
+        class FakePackageStore:
+            @staticmethod
+            def get_package(package_id):
+                return {
+                    "id": int(package_id),
+                    "title": f"Package {package_id}",
+                    "source_chat_title": "Source Channel",
+                }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            resource_store = ResourceBotStore(
+                os.path.join(tmp_dir, "resource_bot.sqlite3")
+            )
+            resource_store.initialize()
+            key = resource_store.create_activation_key(1)
+            self.assertTrue(resource_store.redeem_activation_key(key, 200))
+            resource_store.bind_channel(200, -1001, "Target", "target")
+            job, _ = resource_store.create_delivery_job(
+                idempotency_key="web-action",
+                user_id=200,
+                package_id=12,
+                package_revision=3,
+                target_chat_id=-1001,
+                total_items=2,
+            )
+            app.resource_bot_store = resource_store
+            app.channel_library_service = SimpleNamespace(store=FakePackageStore())
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.get(
+                "/api/resource-deliveries?page=1&page_size=100"
+            )
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            self.assertEqual(payload["total"], 1)
+            self.assertEqual(payload["items"][0]["public_id"], job["public_id"])
+            self.assertEqual(payload["items"][0]["package_title"], "Package 12")
+            self.assertEqual(payload["items"][0]["source_title"], "Source Channel")
+            self.assertEqual(payload["items"][0]["target_title"], "Target")
+            self.assertEqual(payload["summary"]["queued"], 1)
+
+            missing_csrf = client.post(
+                f"/api/resource-deliveries/{job['public_id']}/cancel"
+            )
+            self.assertEqual(missing_csrf.status_code, 403)
+
+            csrf = client.get("/api/csrf-token").get_json()["csrf_token"]
+            cancelled = client.post(
+                f"/api/resource-deliveries/{job['public_id']}/cancel",
+                headers={"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(cancelled.status_code, 200)
+            self.assertEqual(cancelled.get_json()["job"]["status"], "cancelled")
+
+            cleared = client.post(
+                f"/api/resource-deliveries/{job['public_id']}/clear",
+                headers={"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(cleared.status_code, 200)
+            self.assertTrue(cleared.get_json()["cleared"])
+
+    def test_resource_delivery_api_rejects_active_cancel_and_clears_terminal_history(self):
+        from module.resource_bot_store import ResourceBotStore
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            resource_store = ResourceBotStore(
+                os.path.join(tmp_dir, "resource_bot.sqlite3")
+            )
+            resource_store.initialize()
+            key = resource_store.create_activation_key(1)
+            self.assertTrue(resource_store.redeem_activation_key(key, 200))
+            resource_store.bind_channel(200, -1001, "Target", None)
+            active, _ = resource_store.create_delivery_job(
+                idempotency_key="active",
+                user_id=200,
+                package_id=12,
+                package_revision=3,
+                target_chat_id=-1001,
+                total_items=1,
+            )
+            terminal, _ = resource_store.create_delivery_job(
+                idempotency_key="terminal",
+                user_id=200,
+                package_id=13,
+                package_revision=3,
+                target_chat_id=-1001,
+                total_items=1,
+            )
+            resource_store.claim_next_delivery_job()
+            resource_store.cancel_queued_delivery_job(terminal["public_id"])
+            app.resource_bot_store = resource_store
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self.web_module.get_flask_app().test_client()
+            csrf = client.get("/api/csrf-token").get_json()["csrf_token"]
+
+            conflict = client.post(
+                f"/api/resource-deliveries/{active['public_id']}/cancel",
+                headers={"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(conflict.status_code, 409)
+
+            cleared = client.post(
+                "/api/resource-deliveries/clear-terminal",
+                headers={"X-CSRF-Token": csrf},
+            )
+            self.assertEqual(cleared.status_code, 200)
+            self.assertEqual(cleared.get_json()["cleared"], 1)
+            self.assertIsNotNone(resource_store.get_delivery_job(active["id"]))
+
+    def test_resource_delivery_api_is_unavailable_without_resource_bot(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            app.resource_bot_store = None
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self.web_module.get_flask_app().test_client()
+
+            response = client.get("/api/resource-deliveries")
+
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(
+                response.get_json()["error_code"], "service_unavailable"
+            )
+
     def test_index_contains_industry_app_shell(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
@@ -981,6 +1114,7 @@ class WebTestCase(unittest.TestCase):
             self.assertIn('id="logout_btn"', html)
             self.assertIn('id="tab_tasks"', html)
             self.assertIn('id="tab_files"', html)
+            self.assertIn('id="tab_publishing"', html)
             self.assertIn('id="tab_config"', html)
             self.assertIn('id="app_version"', html)
             self.assertIn('id="foot_speed"', html)

@@ -95,6 +95,7 @@ def app_config(*, admin_token="admin", resource_token=""):
     return SimpleNamespace(
         bot_token=admin_token,
         resource_bot_token=resource_token,
+        resource_bot_store=None,
         channel_library_service=SimpleNamespace(store=object()),
         temp_save_path="/tmp/resource-bot-test",
     )
@@ -140,9 +141,10 @@ def test_both_roles_and_delivery_start_from_one_manager():
     async def scenario():
         events = []
         manager = make_manager(events)
+        app = app_config(resource_token="resource")
 
         await manager.start(
-            app_config(resource_token="resource"),
+            app,
             object(),
             object(),
             object(),
@@ -156,6 +158,7 @@ def test_both_roles_and_delivery_start_from_one_manager():
             "admin.commands",
         ]
         assert manager.resource_role.delivery_service is manager.delivery_service
+        assert app.resource_bot_store is manager.resource_store
 
         await manager.stop()
         assert events[-3:] == [
@@ -163,6 +166,7 @@ def test_both_roles_and_delivery_start_from_one_manager():
             "resource.stop",
             "admin.stop",
         ]
+        assert app.resource_bot_store is None
 
     run(scenario())
 
