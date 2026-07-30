@@ -2928,3 +2928,39 @@ Changed files:
 
 Rollback:
 - Revert the Phase 2 commit. No schema version change is introduced; existing `web_tasks.sqlite3` data remains compatible with the prior Phase 1 code.
+
+## 2026-07-30 - Task: Harden Web mutations, Rclone, and builds
+
+### What was done
+
+- Required the authenticated session-bound CSRF token on every Web state-changing route while preserving unauthenticated login.
+- Routed every frontend mutation through a shared CSRF-aware fetch helper, including logout, settings, download state, task actions, and prescan selection.
+- Removed Rclone shell execution, passed mkdir/copy arguments directly, decided success from exit code, and limited cache/counter/file cleanup changes to successful operations.
+- Pinned the Pyrogram fork to immutable commit `51a100c5e2745471ee89c1dd96dd69962973108b` with SHA-256 verification.
+- Made the runtime image consume only its local compile stage, excluded runtime secrets/state from the Docker context, and simplified Docker publishing to one checkout-based runtime build.
+
+### Testing
+
+- Initial Phase 3 contract run -> `10 failed, 3 passed`, reproducing incomplete CSRF coverage, direct mutating frontend fetches, Rclone shell/exit-code defects, remote mutable compile-image use, missing build-context exclusions, and the mutable Pyrogram branch.
+- Phase 3 focused Web, channel-library, CSRF, Rclone, Docker, and dependency regressions -> `179 passed`.
+- Natural-order complete suite with isolated task/resource/auth paths -> `658 passed, 1 skipped`.
+- Immutable Pyrogram archive download succeeded and matched SHA-256 `30e55236a741deec461a952fec638e2857e4cf7bb2d8c6616d41fd2e4e0685ca`.
+- Fresh dependency wheel resolution from `requirements.txt` succeeded, including building the pinned Pyrogram wheel.
+- `docker compose -f docker-compose.yaml config` passed; it emitted only the existing obsolete top-level `version` warning.
+- Local Docker image build was not run because Docker CLI could not connect to the configured Colima daemon socket; this remains an environment verification gap, not a claimed pass.
+- Workflow/Compose YAML parsing, `check_imports.py`, changed-module/test compilation, `.venv/bin/pip check`, focused Black checks, and `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/web.py`, `module/templates/index.html`: Unified authenticated mutation CSRF enforcement and frontend token attachment.
+- `module/cloud_drive.py`: Replaced shell execution with argument arrays and return-code-based Rclone lifecycle handling.
+- `requirements.txt`: Pinned the Pyrogram fork to an immutable archive and checksum.
+- `Dockerfile`, `.dockerignore`, `.github/workflows/docker-publish.yml`: Made the runtime build local-stage, context-bounded, and checkout-reproducible.
+- `tests/test_web_csrf_contract.py`, `tests/module/test_cloud_drive.py`, `tests/test_dependency_contract.py`, `tests/test_docker_contract.py`: Added Web security, command execution, immutable dependency, and Docker build contracts.
+- `tests/module/test_web.py`, `tests/module/test_channel_library_web.py`, `tests/test_web_cancel_task.py`, `tests/test_web_clear_download_list.py`, `tests/test_web_prescan_retention.py`, `tests/test_web_upload_progress.py`: Updated mutation and Rclone regressions for the hardened contracts.
+- `README.md`, `README_CN.md`, `docs/web-control-console.md`: Documented runtime-mounted configuration, CSRF coverage, immutable build inputs, and return-code-based Rclone behavior.
+- `progress.md`: Recorded Phase 3 implementation, verification, and the unavailable Docker daemon gap.
+
+Rollback:
+- Revert the Phase 3 commit. The change introduces no database schema migration; restore the prior image/workflow and requirements file together so the remote compile-image and mutable dependency behavior are not mixed with the new runtime Dockerfile.

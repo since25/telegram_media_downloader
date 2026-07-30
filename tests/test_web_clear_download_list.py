@@ -21,6 +21,8 @@ def client():
     app.config["LOGIN_DISABLED"] = True
     try:
         with app.test_client() as test_client:
+            token = test_client.get("/api/csrf-token").get_json()["csrf_token"]
+            test_client.environ_base["HTTP_X_CSRF_TOKEN"] = token
             yield test_client
     finally:
         app.config["LOGIN_DISABLED"] = old_login_disabled

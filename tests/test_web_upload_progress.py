@@ -265,17 +265,18 @@ def test_rclone_upload_success_pops_cloud_stat_entry(monkeypatch):
     class _FakeProc:
         def __init__(self, lines):
             self.stdout = _FakeStdout(lines)
+            self.returncode = 0
 
         async def wait(self):
             return 0
 
-    async def _fake_create_subprocess_shell(*_args, **_kwargs):
+    async def _fake_create_subprocess_exec(*_args, **_kwargs):
         return _FakeProc(["Transferred: 1 / 1, 100%, , ETA 0s\n"])
 
     monkeypatch.setattr(
-        asyncio, "create_subprocess_shell", _fake_create_subprocess_shell
+        asyncio, "create_subprocess_exec", _fake_create_subprocess_exec
     )
-    monkeypatch.setattr(CloudDrive, "rclone_mkdir", lambda *a, **k: None)
+    monkeypatch.setattr(CloudDrive, "rclone_mkdir", lambda *a, **k: True)
 
     class _Node:
         pass

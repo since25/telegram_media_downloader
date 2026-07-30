@@ -1290,7 +1290,10 @@ def test_cancel_channel_task_delegates_to_persisted_batch_service(web_env):
         calls.append(value) or ImmediateFuture(value=True)
     )
 
-    response = env.client.post(f"/api/tasks/{task_id}/cancel")
+    response = env.client.post(
+        f"/api/tasks/{task_id}/cancel",
+        headers=csrf_headers(env),
+    )
 
     assert response.status_code == 200
     assert response.get_json() == {

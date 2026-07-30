@@ -256,7 +256,7 @@ docker pull tangyoha/telegram_media_downloader:latest
 mkdir -p ~/app/log ~/app/state && cd ~/app
 wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/docker-compose.yaml -O docker-compose.yaml
 wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/config.example.yaml -O config.example.yaml
-wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/data.yaml -O data.yaml
+wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/data.example.yaml -O data.yaml
 # 复制配置文件示例为实际配置文件
 cp config.example.yaml config.yaml
 # 编辑配置文件
@@ -281,6 +281,12 @@ Compose 会把宿主机 `./state` 挂载到容器 `/app/state`，并在其中保
 `.web_auth.json`。备份时应把该目录与 `config.yaml`、`sessions/` 一并保存。已有
 Docker 部署升级前必须先停止容器，三个数据库使用 SQLite backup API 迁移，不能在
 WAL 仍有写入时直接复制；原有 Web 认证文件应在新 Compose 启动前移入 `state/`。
+
+发布镜像只从当前检出的源码和 Dockerfile 内本地 `compile-image` 阶段构建。真实的
+`config.yaml`、`data.yaml`、会话、数据库、下载文件、日志和 Web 认证信息都会被
+排除在构建上下文之外，必须在运行时挂载。Pyrogram 分支固定到不可变提交和归档
+校验值；Rclone 使用参数数组启动，上传是否成功只依据进程退出码，不再依赖可读
+进度文本。
 
 容器中的状态路径通过以下环境变量明确指定，必要时可以覆盖：
 

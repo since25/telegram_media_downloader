@@ -249,6 +249,39 @@ def init_web(app: Application, client=None):
         ).start()
 
 
+def _csrf_token() -> str:
+    token = session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+    return token
+
+
+def _require_csrf(function):
+    """Require the session's synchronizer token on one mutating endpoint."""
+
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return function(*args, **kwargs)
+        supplied = request.headers.get("X-CSRF-Token", "")
+        expected = session.get("csrf_token")
+        if not isinstance(expected, str) or not hmac.compare_digest(supplied, expected):
+            return (
+                jsonify(
+                    {
+                        "error_code": "csrf_failed",
+                        "message": "CSRF token is missing or invalid",
+                    }
+                ),
+                403,
+            )
+        return function(*args, **kwargs)
+
+    wrapped._csrf_protected = True
+    return wrapped
+
+
 @_flask_app.route("/login", methods=["GET", "POST"])
 def login():
     """
@@ -286,6 +319,7 @@ def login():
 
 @_flask_app.route("/logout", methods=["POST"])
 @login_required
+@_require_csrf
 def logout():
     """Log out current web user."""
 
@@ -329,30 +363,6 @@ def _channel_api(function):
                 "service_unavailable",
                 "Channel library service is unavailable",
             )
-
-    return wrapped
-
-
-def _csrf_token() -> str:
-    token = session.get("csrf_token")
-    if not token:
-        token = secrets.token_urlsafe(32)
-        session["csrf_token"] = token
-    return token
-
-
-def _require_csrf(function):
-    """Require the session's synchronizer token on one mutating endpoint."""
-
-    @wraps(function)
-    def wrapped(*args, **kwargs):
-        supplied = request.headers.get("X-CSRF-Token", "")
-        expected = session.get("csrf_token")
-        if not isinstance(expected, str) or not hmac.compare_digest(supplied, expected):
-            raise _ChannelApiError(
-                403, "csrf_failed", "CSRF token is missing or invalid"
-            )
-        return function(*args, **kwargs)
 
     return wrapped
 
@@ -1584,6 +1594,7 @@ def system_metrics():
 
 @_flask_app.route("/set_download_state", methods=["POST"])
 @login_required
+@_require_csrf
 def web_set_download_state():
     """Set download state"""
     state = request.args.get("state")
@@ -1645,6 +1656,7 @@ def get_download_list():
 
 @_flask_app.route("/clear_download_list", methods=["POST"])
 @login_required
+@_require_csrf
 def clear_download_list():
     """Remove completed entries from the Files page download cache."""
     cleared = clear_completed_download_result()
@@ -2438,6 +2450,7 @@ def _submit_web_prescan(app: Application, link: str, payload: dict) -> dict:
 
 @_flask_app.route("/api/tasks", methods=["POST"])
 @login_required
+@_require_csrf
 def submit_task():
     """Submit a Telegram link from the Web UI."""
 
@@ -2473,6 +2486,7 @@ def _prune_orphaned_prescans() -> None:
 
 @_flask_app.route("/api/tasks/<task_id>/confirm", methods=["POST"])
 @login_required
+@_require_csrf
 def confirm_task(task_id: str):
     """Confirm a scanned Web preview and queue its download."""
 
@@ -2548,6 +2562,7 @@ def confirm_task(task_id: str):
 
 @_flask_app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
 @login_required
+@_require_csrf
 def cancel_task(task_id: str):
     """Cancel a Web task.
 
@@ -2622,6 +2637,7 @@ def cancel_task(task_id: str):
 
 @_flask_app.route("/api/tasks/<task_id>/clear", methods=["POST"])
 @login_required
+@_require_csrf
 def clear_task(task_id: str):
     """Remove one terminal task from Web history."""
 
@@ -2641,6 +2657,7 @@ def clear_task(task_id: str):
 
 @_flask_app.route("/api/tasks/clear-completed", methods=["POST"])
 @login_required
+@_require_csrf
 def clear_completed_tasks():
     """Remove completed task history from the Web dashboard."""
 
@@ -2681,6 +2698,7 @@ def upload_retry_files(task_id: str):
 
 @_flask_app.route("/api/tasks/<task_id>/upload-retries/cleanup", methods=["POST"])
 @login_required
+@_require_csrf
 def cleanup_upload_retry_files(task_id: str):
     """Schedule explicit cleanup of retained channel-library upload failures."""
 
@@ -2705,6 +2723,7 @@ def cleanup_upload_retry_files(task_id: str):
 
 @_flask_app.route("/api/tasks/<task_id>/retry", methods=["POST"])
 @login_required
+@_require_csrf
 def retry_task(task_id: str):
     """Retry retained upload failures when a channel batch owns the task."""
 
@@ -2788,6 +2807,7 @@ def prescan_packages(task_id: str):
     "/api/prescans/<task_id>/packages/<int:package_id>/select", methods=["POST"]
 )
 @login_required
+@_require_csrf
 def select_prescan_package(task_id: str, package_id: int):
     """Select or deselect one Web prescan package."""
 
@@ -2821,6 +2841,7 @@ def select_prescan_package(task_id: str, package_id: int):
 
 @_flask_app.route("/api/prescans/<task_id>/packages/select-all", methods=["POST"])
 @login_required
+@_require_csrf
 def select_all_prescan_packages(task_id: str):
     """Select or clear every Web prescan package at once."""
 
@@ -3119,6 +3140,7 @@ def _apply_settings(app: Application, payload: dict) -> dict:
 
 @_flask_app.route("/api/settings", methods=["GET", "POST"])
 @login_required
+@_require_csrf
 def web_settings():
     """Read or update advanced download settings."""
 

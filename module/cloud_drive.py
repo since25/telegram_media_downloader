@@ -1,12 +1,10 @@
 """provide upload cloud drive"""
 import asyncio
-import functools
 import importlib
 import inspect
 import os
 import re
-from asyncio import subprocess
-from subprocess import Popen
+import subprocess
 from typing import Callable
 from zipfile import ZipFile
 
@@ -59,13 +57,13 @@ class CloudDrive:
     @staticmethod
     def rclone_mkdir(drive_config: CloudDriveConfig, remote_dir: str):
         """mkdir in remote"""
-        with Popen(
-            f'"{drive_config.rclone_path}" mkdir "{remote_dir}/"',
-            shell=True,
+        completed = subprocess.run(
+            [drive_config.rclone_path, "mkdir", remote_dir],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-        ):
-            pass
+            check=False,
+        )
+        return completed.returncode == 0
 
     @staticmethod
     def aligo_mkdir(drive_config: CloudDriveConfig, remote_dir: str):
@@ -104,10 +102,14 @@ class CloudDrive:
                 + "/"
                 + os.path.dirname(local_file_path).replace(save_path, "")
                 + "/"
-            ).replace("\\", "/")
+            ).replace("\\", "/").rstrip("/") + "/"
 
             if not drive_config.dir_cache.get(remote_dir):
-                CloudDrive.rclone_mkdir(drive_config, remote_dir)
+                created = await asyncio.to_thread(
+                    CloudDrive.rclone_mkdir, drive_config, remote_dir
+                )
+                if not created:
+                    return False
                 drive_config.dir_cache[remote_dir] = True
 
             zip_file_path: str = ""
@@ -118,53 +120,50 @@ class CloudDrive:
             else:
                 file_path = local_file_path
 
-            cmd = (
-                f'"{drive_config.rclone_path}" copy "{file_path}" '
-                f'"{remote_dir}/" --create-empty-src-dirs --ignore-existing --progress'
-            )
-            proc = await asyncio.create_subprocess_shell(
-                cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            proc = await asyncio.create_subprocess_exec(
+                drive_config.rclone_path,
+                "copy",
+                file_path,
+                remote_dir,
+                "--create-empty-src-dirs",
+                "--ignore-existing",
+                "--progress",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
             )
             if proc.stdout:
                 async for output in proc.stdout:
                     s = output.decode(errors="replace")
-                    if "Transferred" in s and "100%" in s and "1 / 1" in s:
-                        logger.info(f"upload file {local_file_path} success")
-                        drive_config.total_upload_success_file_count += 1
-                        if drive_config.after_upload_file_delete:
-                            os.remove(local_file_path)
-                        if drive_config.before_upload_file_zip:
-                            os.remove(zip_file_path)
-                        upload_status = True
-                        # rclone's final "100%" line never reaches the
-                        # progress_callback branch below, so the display
-                        # cache would otherwise keep a stale sub-100% entry
-                        # for this message forever. Drop it here.
-                        if progress_args:
-                            node, message_id, *_ = progress_args
-                            node.cloud_drive_upload_stat_dict.pop(message_id, None)
-                    else:
-                        pattern = (
-                            r"Transferred: (.*?) / (.*?), (.*?)%, (.*?/s)?, ETA (.*?)$"
+                    pattern = (
+                        r"Transferred: (.*?) / (.*?), (.*?)%, (.*?/s)?, ETA (.*?)$"
+                    )
+                    transferred_match = re.search(pattern, s)
+                    if transferred_match and progress_callback:
+                        callback_result = progress_callback(
+                            transferred_match.group(1),
+                            transferred_match.group(2),
+                            transferred_match.group(3),
+                            transferred_match.group(4),
+                            transferred_match.group(5),
+                            *progress_args,
                         )
-                        transferred_match = re.search(pattern, s)
+                        if inspect.isawaitable(callback_result):
+                            await callback_result
 
-                        if transferred_match:
-                            if progress_callback:
-                                func = functools.partial(
-                                    progress_callback,
-                                    transferred_match.group(1),
-                                    transferred_match.group(2),
-                                    transferred_match.group(3),
-                                    transferred_match.group(4),
-                                    transferred_match.group(5),
-                                    *progress_args,
-                                )
+            return_code = await proc.wait()
+            if return_code != 0:
+                return False
 
-                            if inspect.iscoroutinefunction(progress_callback):
-                                await func()
-
-            await proc.wait()
+            logger.info(f"upload file {local_file_path} success")
+            drive_config.total_upload_success_file_count += 1
+            if drive_config.after_upload_file_delete:
+                os.remove(local_file_path)
+            if drive_config.before_upload_file_zip:
+                os.remove(zip_file_path)
+            upload_status = True
+            if progress_args:
+                node, message_id, *_ = progress_args
+                node.cloud_drive_upload_stat_dict.pop(message_id, None)
         except Exception as e:
             logger.error(f"{e.__class__} {e}")
             return False

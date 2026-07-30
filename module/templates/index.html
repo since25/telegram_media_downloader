@@ -831,7 +831,7 @@
     }
 
     async function getJSON(url){ const r = await fetch(url); return r.json(); }
-    async function postJSON(url, body){ const r = await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.json(); }
+    async function postJSON(url, body){ const r = await mutationFetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined}); return r.json(); }
 
     async function pollTasks() {
       if (state.taskPolling) return;
@@ -1303,6 +1303,11 @@
           .finally(() => { state.channel.csrfPromise = null; });
       }
       return state.channel.csrfPromise;
+    }
+    async function mutationFetch(url, options={}){
+      const token = await ensureChannelCsrf();
+      const headers = {'X-CSRF-Token': token, ...(options.headers || {})};
+      return fetch(url, {...options, headers});
     }
     async function channelApiWrite(method, url, body=null, extraHeaders={}){
       await ensureChannelCsrf();
@@ -2209,7 +2214,7 @@
           rclone_path:$('#rclone_path').value, remote_dir:$('#remote_dir').value,
           before_upload_file_zip:swOn('#sw_before_upload_file_zip'), after_upload_file_delete:swOn('#sw_after_upload_file_delete')},
       };
-      const r = await fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const r = await mutationFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const res = await r.json();
       $('#config_status').textContent = res.ok ? '已保存 · 主机/端口修改后需重启' : (res.error||'保存失败');
     }
@@ -2277,7 +2282,7 @@
       const link = $('#web_task_link').value.trim();
       const mode = document.querySelector('input[name="web_task_mode"]:checked').value;
       const body = mode==='prescan' ? {link, mode:'prescan', max_messages:Number($('#web_task_count').value)||2000} : {link};
-      const r = await fetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const r = await mutationFetch('/api/tasks',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       const res = await r.json();
       $('#task_submit_status').textContent = res.error ? res.error : '已提交';
       if (res.task_id){ state.selectedTaskId = res.task_id; state.selectedTaskType = res.task_type||null; }
@@ -2332,9 +2337,9 @@
     // state chip + logout
     $('#download_state').addEventListener('click', async () => {
       const next = $('#download_state').dataset.value;
-      await fetch('/set_download_state?state='+next, {method:'POST'}); pollTasks();
+      await mutationFetch('/set_download_state?state='+next, {method:'POST'}); pollTasks();
     });
-    $('#logout_btn').addEventListener('click', async () => { await fetch('/logout',{method:'POST'}); location.href='/'; });
+    $('#logout_btn').addEventListener('click', async () => { await mutationFetch('/logout',{method:'POST'}); location.href='/'; });
 
     startPolling('tasks');
   </script>

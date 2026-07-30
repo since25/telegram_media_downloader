@@ -55,6 +55,12 @@ class WebTestCase(unittest.TestCase):
         web_module.get_download_result().clear()
         get_task_store().clear()
 
+    def _csrf_client(self):
+        client = self.web_module.get_flask_app().test_client()
+        token = client.get("/api/csrf-token").get_json()["csrf_token"]
+        client.environ_base["HTTP_X_CSRF_TOKEN"] = token
+        return client
+
     def tearDown(self):
         if self.old_auth_env is None:
             os.environ.pop(self.web_module.WEB_AUTH_FILE_ENV, None)
@@ -102,7 +108,7 @@ class WebTestCase(unittest.TestCase):
             app = build_web_test_app(tmp_dir)
             self.web_module._current_app = app
             self.web_module._flask_app.config["LOGIN_DISABLED"] = True
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post(
                 "/api/settings",
@@ -380,7 +386,7 @@ class WebTestCase(unittest.TestCase):
                 "packages": [package],
                 "selected_package_ids": set(),
             }
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.get("/api/prescans/web-prescan-2/packages")
             select_response = client.post(
@@ -410,7 +416,7 @@ class WebTestCase(unittest.TestCase):
                 "packages": [make_pkg(1), make_pkg(2), make_pkg(3)],
                 "selected_package_ids": set(),
             }
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             select_all = client.post(
                 "/api/prescans/web-prescan-all/packages/select-all",
@@ -462,7 +468,7 @@ class WebTestCase(unittest.TestCase):
                 "packages": [package],
                 "selected_package_ids": {1},
             }
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post("/api/tasks/web-prescan-3/confirm")
 
@@ -480,7 +486,7 @@ class WebTestCase(unittest.TestCase):
             store = get_task_store()
             store.create_task("clear-1", status=TaskStatus.COMPLETED)
             store.update_task("clear-1", status=TaskStatus.COMPLETED)
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post("/api/tasks/clear-1/clear")
 
@@ -496,7 +502,7 @@ class WebTestCase(unittest.TestCase):
             self.web_module._current_app = app
             self.web_module._flask_app.config["LOGIN_DISABLED"] = True
             get_task_store().create_task("retry-1", status=TaskStatus.FAILED)
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post("/api/tasks/retry-1/retry")
 
@@ -508,7 +514,7 @@ class WebTestCase(unittest.TestCase):
             app = build_web_test_app(tmp_dir)
             self.web_module._current_app = app
             self.web_module._flask_app.config["LOGIN_DISABLED"] = True
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post("/api/tasks", json={"link": "not-a-telegram-link"})
 
@@ -522,7 +528,7 @@ class WebTestCase(unittest.TestCase):
             app = build_web_test_app(tmp_dir)
             self.web_module._current_app = app
             self.web_module._flask_app.config["LOGIN_DISABLED"] = True
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post(
                 "/api/tasks",
@@ -550,7 +556,7 @@ class WebTestCase(unittest.TestCase):
                 task_type="prescan",
                 status=TaskStatus.SCANNING,
             )
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post("/api/tasks/web-scan-9/cancel")
 
@@ -575,7 +581,7 @@ class WebTestCase(unittest.TestCase):
                 task_type="package",
                 status=TaskStatus.DOWNLOADING,
             )
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             with patch.object(
                 self.web_module,
@@ -705,7 +711,7 @@ class WebTestCase(unittest.TestCase):
             app.loop = FakeLoop()
             self.web_module._current_app = app
             self.web_module._flask_app.config["LOGIN_DISABLED"] = True
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post(
                 "/api/tasks",
@@ -919,7 +925,7 @@ class WebTestCase(unittest.TestCase):
                 "messages": [],
                 "failed_message_ids": [],
             }
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post("/api/tasks/web-preview-2/confirm")
 
@@ -949,7 +955,7 @@ class WebTestCase(unittest.TestCase):
                 "messages": [],
                 "failed_message_ids": [],
             }
-            client = self.web_module.get_flask_app().test_client()
+            client = self._csrf_client()
 
             response = client.post("/api/tasks/web-preview-3/cancel")
 

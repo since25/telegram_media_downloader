@@ -140,8 +140,8 @@ Make sure you have **docker** and **docker-compose** installed
 docker pull tangyoha/telegram_media_downloader:latest
 mkdir -p ~/app/log ~/app/state && cd ~/app
 wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/docker-compose.yaml -O docker-compose.yaml
-wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/config.yaml -O config.yaml
-wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/data.yaml -O data.yaml
+wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/config.example.yaml -O config.yaml
+wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/data.example.yaml -O data.yaml
 # vi config.yaml and docker-compose.yaml
 vi config.yaml
 
@@ -165,6 +165,13 @@ The Compose file mounts `./state` at `/app/state` and stores
 `sessions/`. For an existing Docker installation, stop the container first and migrate
 the three databases with the SQLite backup API; do not copy a live WAL database. Move
 the existing Web auth file into `state/` before starting the new Compose definition.
+
+The published runtime image is built only from the checked-out source and its local
+`compile-image` stage. Real `config.yaml`, `data.yaml`, sessions, databases, downloads,
+logs, and Web credentials are excluded from the build context and must be mounted at
+runtime. The Pyrogram fork is pinned to an immutable commit/archive checksum. Rclone
+commands are executed as argument arrays, and upload success is determined by the
+process exit code rather than a human-readable progress line.
 
 The container paths are explicit and may be overridden when needed:
 

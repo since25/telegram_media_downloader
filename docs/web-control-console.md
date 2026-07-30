@@ -229,7 +229,15 @@ channel, package revision, batch, task, and live download status.
 
 ## Channel Library API
 
-The channel library uses the existing Web login session. Call `GET /api/csrf-token` after login and send its `csrf_token` value in `X-CSRF-Token` on every mutating channel-library request. The token is bound to that browser session. Only this authenticated GET mints a token; missing, wrong, and cross-session mutation attempts return `403` without creating or rotating session state. Read and write channel routes return `503 service_unavailable` until Telegram has started and the single channel-library service is running.
+The whole Web console uses the existing login session. Call `GET /api/csrf-token` after
+login and send its `csrf_token` value in `X-CSRF-Token` on every authenticated `POST`,
+`PUT`, `PATCH`, or `DELETE` request, including logout, settings, download-state, task,
+prescan, resource-delivery, and channel-library mutations. The token is bound to that
+browser session. Only this authenticated GET mints a token; missing, wrong, and
+cross-session mutation attempts return `403` without creating or rotating session state.
+The bundled frontend obtains the token through one shared mutation helper. Read and write
+channel routes return `503 service_unavailable` until Telegram has started and the single
+channel-library service is running.
 
 Errors use one JSON envelope: `{"error_code": "<stable_code>", "message": "<safe summary>"}`. Supported status classes are `400 invalid_request` or `invalid_link`, `403 csrf_failed`, `404 not_found`, `409 state_conflict` or `redownload_required`, and `503 service_unavailable` or `service_timeout`. Raw exceptions, Telegram session details, tokens, and configuration secrets are not returned.
 
@@ -286,6 +294,13 @@ replacement therefore preserves task history, the channel index, resource-delive
 state, and the Web credential verifier. Existing Docker installations must stop the
 container, migrate each SQLite database through the SQLite backup API, verify
 `PRAGMA integrity_check`, and move the Web auth file before starting the new mount.
+
+The Docker runtime image copies Rclone and Python packages only from its local named
+compile stage. `.dockerignore` excludes real configuration, sessions, databases,
+downloads, logs, temporary files, and Web credentials. The Pyrogram source URL is pinned
+to an immutable commit and SHA-256. Rclone mkdir/copy operations use argument arrays
+without a shell; directory cache entries are created only after mkdir succeeds, and file
+deletion/upload counters advance only when the copy process exits with code `0`.
 
 Before an upgrade or rollback that could affect these stores:
 
