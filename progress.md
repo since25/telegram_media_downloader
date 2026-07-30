@@ -3180,3 +3180,26 @@ Changed files:
 
 Rollback:
 - Revert the Phase 8 commit. No database schema or row migration is introduced. If the container migration has been applied, stop the container, retain the migrated `state/` directory and database backups, restore the pre-migration Compose file and directory snapshot, and restore the prior ownership before starting the old image.
+
+## 2026-07-30 - Task: First-principles remediation implementation plan
+
+### What was done
+
+- Converted the first-principles audit findings into seven independently testable and reversible implementation phases covering runtime state ownership, truthful readiness, verified artifact publication, durable state contracts, bootstrap boundaries, final adversarial review, and backed-up production deployment.
+- Defined exact success criteria, required regression style, commit boundaries, verification gates, production preflight requirements, backup contents, fast-forward-only deployment, and rollback evidence.
+- Preserved the current single-process application and bounded SQLite architecture; the plan explicitly rejects an unrelated framework, distributed-queue, or database rewrite.
+
+### Testing
+
+- Reviewed the plan against the current `HEAD` `24e71e3`, the two architecture-hardening specifications, the complete first-principles audit findings, and the repository-level execution constraints.
+- Confirmed the worktree was clean before this documentation change.
+- `git diff --check`: passed after the plan and progress entry were added.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/plans/2026-07-30-first-principles-remediation.md`: Added the phased repair, adversarial-review, and deployment plan.
+- `progress.md`: Recorded the Phase 0 planning deliverable and verification evidence.
+
+Rollback:
+- Revert the Phase 0 planning commit. This phase changes documentation only and does not alter runtime, configuration, databases, dependencies, CI execution, or production state.
