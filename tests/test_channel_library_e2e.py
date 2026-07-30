@@ -187,7 +187,7 @@ def test_full_channel_library_recovers_and_downloads_filtered_selection(
         import media_downloader
         import module.task_state as task_state_module
 
-        from module.download_stat import get_active_task_nodes
+        from module.download_stat import remove_active_task_node
 
         database_path = tmp_path / "channel-library.sqlite3"
         initial_store = ChannelLibraryStore(database_path)
@@ -374,8 +374,8 @@ def test_full_channel_library_recovers_and_downloads_filtered_selection(
             assert resumed_service.schedule_pending_download_batches() == []
             results = await download_task
         finally:
+            remove_active_task_node(batch["task_id"])
             task_state_module._TASK_STORE = old_task_store
-            get_active_task_nodes().pop(batch["task_id"], None)
 
         expected_ranges = [
             (package["start_message_id"], package["end_message_id"])

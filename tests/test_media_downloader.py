@@ -2260,7 +2260,6 @@ class MediaDownloaderTestCase(unittest.TestCase):
         from module.comment_workflow import plan_message_package
         from module.download_stat import (
             add_active_task_node,
-            get_active_task_nodes,
             remove_active_task_node,
         )
         from module.prescan_workflow import PrescanPackage
@@ -2363,8 +2362,8 @@ class MediaDownloaderTestCase(unittest.TestCase):
                         )
                     )
             finally:
+                remove_active_task_node(node.task_id)
                 task_state_module._TASK_STORE = old_store
-                get_active_task_nodes().pop(node.task_id, None)
 
             self.assertEqual(lifecycle, ["add", "remove"])
             self.assertEqual(
@@ -2390,7 +2389,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         from types import SimpleNamespace
 
         from module.comment_workflow import plan_message_package
-        from module.download_stat import get_active_task_nodes
+        from module.download_stat import remove_active_task_node
         from module.prescan_workflow import PrescanPackage
         from module.task_state import FileStatus, TaskStateStore
 
@@ -2484,8 +2483,8 @@ class MediaDownloaderTestCase(unittest.TestCase):
                         )
                     )
             finally:
+                remove_active_task_node(node.task_id)
                 task_state_module._TASK_STORE = old_store
-                get_active_task_nodes().pop(node.task_id, None)
 
             # Each package is built immediately before its own download, so only
             # one package is ever materialized at a time.
@@ -2508,7 +2507,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         import module.task_state as task_state_module
 
         from module.comment_workflow import plan_message_package
-        from module.download_stat import get_active_task_nodes
+        from module.download_stat import remove_active_task_node
         from module.prescan_workflow import PrescanPackage
         from module.task_state import FileStatus, TaskStateStore
 
@@ -2574,8 +2573,8 @@ class MediaDownloaderTestCase(unittest.TestCase):
                         )
                     )
             finally:
+                remove_active_task_node(node.task_id)
                 task_state_module._TASK_STORE = old_store
-                get_active_task_nodes().pop(node.task_id, None)
 
         self.assertEqual(results[0].expected_message_ids, (1, 2, 3))
         self.assertEqual(tuple(results[0].message_results), (1, 2, 3))
@@ -2586,7 +2585,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         import module.task_state as task_state_module
 
         from module.comment_workflow import plan_message_package
-        from module.download_stat import get_active_task_nodes
+        from module.download_stat import remove_active_task_node
         from module.prescan_workflow import PrescanPackage
         from module.task_state import FileStatus, TaskStateStore
 
@@ -2665,8 +2664,8 @@ class MediaDownloaderTestCase(unittest.TestCase):
                         )
                     )
             finally:
+                remove_active_task_node(node.task_id)
                 task_state_module._TASK_STORE = old_store
-                get_active_task_nodes().pop(node.task_id, None)
 
             self.assertEqual(
                 [result.status for result in results],

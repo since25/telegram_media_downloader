@@ -22,10 +22,6 @@ setup(
         "Natural Language :: English",
         "Programming Language :: Python",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.7",
-        "Programming Language :: Python :: 3.8",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Topic :: Internet",
         "Topic :: Communications",
@@ -38,5 +34,5 @@ setup(
         "Community": "https://t.me/TeegramMediaDownload",
         "Source": "https://github.com/tangyoha/telegram_media_downloader",
     },
-    python_requires="~=3.7",
+    python_requires="~=3.11.0",
 )

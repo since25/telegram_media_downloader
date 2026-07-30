@@ -1,6 +1,8 @@
 """Download Stat"""
+
 import asyncio
 import re
+import threading
 import time
 from enum import Enum
 
@@ -27,6 +29,7 @@ _total_download_size: int = 0
 _last_download_time: float = time.time()
 _download_state: DownloadState = DownloadState.Downloading
 _active_task_nodes: dict = {}  # 全局活跃TaskNode管理: {task_id: TaskNode}
+_active_task_nodes_lock = threading.RLock()
 
 
 def get_download_result() -> dict:
@@ -41,9 +44,10 @@ def clear_completed_download_result() -> int:
         messages = _download_result[chat_id]
         for msg_id in list(messages):
             value = messages[msg_id]
-            if value.get("down_byte", 0) == value.get("total_size", 0) and value.get(
-                "total_size", 0
-            ) > 0:
+            if (
+                value.get("down_byte", 0) == value.get("total_size", 0)
+                and value.get("total_size", 0) > 0
+            ):
                 del messages[msg_id]
                 removed += 1
         if not messages:
@@ -53,8 +57,8 @@ def clear_completed_download_result() -> int:
 
 def add_active_task_node(
     node,
-    source: str = None,
-    task_type: str = None,
+    source: str | None = None,
+    task_type: str | None = None,
     publish_snapshot: bool = True,
 ) -> None:
     """添加或更新活跃的TaskNode
@@ -63,13 +67,14 @@ def add_active_task_node(
         node: TaskNode实例
     """
     if node.task_id:
-        if source:
-            node.task_source = source
-        if task_type:
-            node.task_display_type = task_type
-        _active_task_nodes[node.task_id] = node
-        if publish_snapshot:
-            snapshot_node(node)
+        with _active_task_nodes_lock:
+            if source:
+                node.task_source = source
+            if task_type:
+                node.task_display_type = task_type
+            _active_task_nodes[node.task_id] = node
+            if publish_snapshot:
+                snapshot_node(node)
 
 
 def remove_active_task_node(task_id: int) -> None:
@@ -78,10 +83,11 @@ def remove_active_task_node(task_id: int) -> None:
     Args:
         task_id: TaskNode的task_id
     """
-    if task_id in _active_task_nodes:
-        snapshot_node(_active_task_nodes[task_id])
-        get_task_store().complete_task(task_id)
-        del _active_task_nodes[task_id]
+    with _active_task_nodes_lock:
+        if task_id in _active_task_nodes:
+            snapshot_node(_active_task_nodes[task_id])
+            get_task_store().complete_task(task_id)
+            del _active_task_nodes[task_id]
 
 
 def get_active_task_nodes() -> dict:
@@ -90,7 +96,8 @@ def get_active_task_nodes() -> dict:
     Returns:
         dict: {task_id: TaskNode} 格式的活跃TaskNode字典
     """
-    return _active_task_nodes
+    with _active_task_nodes_lock:
+        return dict(_active_task_nodes)
 
 
 def get_total_download_speed() -> int:
@@ -288,5 +295,9 @@ async def update_download_status(
 
     if should_report:
         # 更新上次报告的信息
-        node.last_progress_report = {"percent": progress_percent, "time": cur_time}
+        setattr(
+            node,
+            "last_progress_report",
+            {"percent": progress_percent, "time": cur_time},
+        )
         await report_bot_status(client=client, node=node)

@@ -1,11 +1,12 @@
 """provide upload cloud drive"""
+
 import asyncio
 import importlib
 import inspect
 import os
 import re
 import subprocess
-from typing import Callable
+from typing import Callable, Optional
 from zipfile import ZipFile
 
 from loguru import logger
@@ -91,7 +92,7 @@ class CloudDrive:
         drive_config: CloudDriveConfig,
         save_path: str,
         local_file_path: str,
-        progress_callback: Callable = None,
+        progress_callback: Optional[Callable] = None,
         progress_args: tuple = (),
     ) -> bool:
         """Use Rclone upload file"""

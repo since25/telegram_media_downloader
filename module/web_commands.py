@@ -20,7 +20,7 @@ def submit_web_coroutine(loop, coroutine) -> concurrent.futures.Future:
         except Exception:
             coroutine.close()
             raise
-        accepted = concurrent.futures.Future()
+        accepted: concurrent.futures.Future[object] = concurrent.futures.Future()
         accepted.set_result(task)
         return accepted
     try:

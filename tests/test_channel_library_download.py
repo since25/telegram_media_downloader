@@ -927,7 +927,7 @@ def test_run_download_batch_streams_one_package_into_memory_at_a_time(tmp_path):
     import module.task_state as task_state_module
 
     from module.app import DownloadStatus
-    from module.download_stat import get_active_task_nodes
+    from module.download_stat import remove_active_task_node
     from module.task_state import FileStatus
 
     client = TrackingClient()
@@ -967,8 +967,8 @@ def test_run_download_batch_streams_one_package_into_memory_at_a_time(tmp_path):
                     service.run_download_batch(batch["id"])
                 )
         finally:
+            remove_active_task_node(batch["task_id"])
             task_state_module._TASK_STORE = old_store
-            get_active_task_nodes().pop(batch["task_id"], None)
 
         # Each package is refetched immediately before its own download; the
         # next package is not refetched until the previous one has downloaded.
@@ -1021,7 +1021,7 @@ def test_run_download_batch_cross_package_no_misfile(tmp_path):
     import module.task_state as task_state_module
 
     from module.app import DownloadStatus
-    from module.download_stat import get_active_task_nodes
+    from module.download_stat import remove_active_task_node
     from module.task_state import FileStatus
 
     client = CompleteClient()
@@ -1108,8 +1108,8 @@ def test_run_download_batch_cross_package_no_misfile(tmp_path):
             ):
                 loop.run_until_complete(service.run_download_batch(batch["id"]))
         finally:
+            remove_active_task_node(batch["task_id"])
             task_state_module._TASK_STORE = old_store
-            get_active_task_nodes().pop(batch["task_id"], None)
 
         expected_start_message_id = {101: 101, 102: 101, 201: 201, 202: 201}
         for message_id, start_message_id in expected_start_message_id.items():

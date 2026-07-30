@@ -215,6 +215,28 @@ class TaskStateStoreTestCase(unittest.TestCase):
 
         remove_active_task_node(88)
 
+    def test_active_task_registry_returns_a_container_snapshot(self):
+        from module.download_stat import (
+            add_active_task_node,
+            get_active_task_nodes,
+            remove_active_task_node,
+        )
+        from module.task_state import get_task_store
+
+        store = get_task_store()
+        store.clear()
+        node = TaskNode(chat_id=-1003, task_id="registry-snapshot")
+        add_active_task_node(node)
+
+        try:
+            caller_snapshot = get_active_task_nodes()
+            caller_snapshot.pop(node.task_id)
+
+            self.assertIn(node.task_id, get_active_task_nodes())
+        finally:
+            remove_active_task_node(node.task_id)
+            store.clear()
+
     def test_progress_callback_updates_task_and_file_snapshot(self):
         import asyncio
 

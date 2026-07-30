@@ -1,48 +1,61 @@
 # See https://pre-commit.com for more information
 # See https://pre-commit.com/hooks.html for more hooks
+default_language_version:
+    python: python3.11
+
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.4.0
+    rev: v6.0.0
     hooks:
     -   id: trailing-whitespace
+        files: ^(\.github/workflows/(unittest|code-checks)\.yml|\.pre-commit-config\.yaml|Makefile|README(_CN)?\.md|setup\.py|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|module/(cloud_drive|download_stat|task_state|web_commands)\.py|tests/(test_runtime_contract|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/test_task_state\.py)$
     -   id: end-of-file-fixer
+        files: ^(\.github/workflows/(unittest|code-checks)\.yml|\.pre-commit-config\.yaml|Makefile|README(_CN)?\.md|setup\.py|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|module/(cloud_drive|download_stat|task_state|web_commands)\.py|tests/(test_runtime_contract|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/test_task_state\.py)$
 -   repo: https://github.com/psf/black
-    rev: 22.3.0
+    rev: 25.12.0
     hooks:
     -   id: black
         name: black
         entry: black
         types: [python]
+        files: ^(module/(cloud_drive|download_stat|web_commands)\.py|tests/test_runtime_contract\.py)$
 -   repo: https://github.com/pycqa/isort
-    rev: 5.12.0
+    rev: 6.1.0
     hooks:
     -   id: isort
         name: isort
         entry: isort
         types: [python]
         args: ["--profile", "black", "--filter-files"]
+        files: ^(module/(cloud_drive|download_stat|web_commands)\.py|tests/test_runtime_contract\.py)$
 -   repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v0.961
+    rev: v1.20.2
     hooks:
     -   id: mypy
         name: mypy
         entry: mypy
         types: [python]
-        args: [--ignore-missing-imports]
-        files: utils/|media_downloader.py|module/
+        args:
+        - --ignore-missing-imports
+        - --follow-imports=silent
+        additional_dependencies:
+        - types-PyYAML==6.0.12.20260724
+        - types-pytz==2026.3.1.20260727
+        - types-croniter==2.0.0.20240423
+        files: ^module/(cloud_drive|download_admission|download_lifecycle|download_queue|download_stat|progress_persistence|task_state|telegram_activity|web_commands)\.py$
         exclude: tests/|module/static/|module/templates
 -   repo: https://github.com/pycqa/pylint
-    rev: v2.14.5
+    rev: v3.3.9
     hooks:
     -   id: pylint
         name: pylint
         entry: pylint
-        language: system
         types: [python]
         args: [
           "-rn", # Only display messages
           "-sn", # Don't display the score
+          "--errors-only", # Block only correctness errors on the typed boundary
           "--rcfile=pylintrc" # Link to your config file
         ]
-        files: utils/|media_downloader.py|module/
+        files: ^module/(cloud_drive|download_admission|download_lifecycle|download_queue|download_stat|progress_persistence|task_state|telegram_activity|web_commands)\.py$
         exclude: tests/|module/static/|module/templates

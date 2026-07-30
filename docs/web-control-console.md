@@ -302,6 +302,13 @@ to an immutable commit and SHA-256. Rclone mkdir/copy operations use argument ar
 without a shell; directory cache entries are created only after mkdir succeeds, and file
 deletion/upload counters advance only when the copy process exits with code `0`.
 
+The supported production and development interpreter is Python 3.11. Package metadata,
+CI, `Makefile`, pre-commit hooks, and development dependencies use that same contract.
+`make static_type_check` and the blocking Pylint hook cover the task-state, lifecycle,
+progress, admission, Telegram-activity, Rclone, and Web command boundaries stabilized by
+the architecture hardening work. Older dynamic application areas remain outside that
+blocking type boundary until they can be migrated with dedicated tests.
+
 Before an upgrade or rollback that could affect these stores:
 
 1. Stop the service so no scan, dispatch, or task update is in flight.
@@ -319,6 +326,11 @@ SQLite WAL mode. The channel library persists its index in the separate
 in `resource_bot.sqlite3`. Runtime Telegram sessions and downloaded media are not stored
 in these databases; the Web credential verifier is the separate `.web_auth.json` file
 and must be backed up with them.
+
+The process-local active-task registry is protected by a re-entrant lock. Callers receive
+a shallow dictionary snapshot and cannot add or remove registry entries by mutating the
+returned container. `TaskNode` values remain live compatibility projections; durable
+task/file status must be read from and written through `TaskStateStore`.
 
 To keep small 1 vCPU / 1 GiB servers responsive:
 

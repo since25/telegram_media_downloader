@@ -679,7 +679,10 @@ class TaskStateStore:
         return connection
 
     def _init_storage(self) -> None:
-        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        storage_path = self.storage_path
+        if storage_path is None:
+            return
+        storage_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             schema_version = int(
                 connection.execute("PRAGMA user_version").fetchone()[0]
@@ -1055,18 +1058,20 @@ def snapshot_node(
 ) -> TaskSnapshot:
     task_id = getattr(node, "task_id", None) or f"{getattr(node, 'chat_id', 'unknown')}"
     existing = get_task_store().get_task(task_id)
-    preserve_identity = bool(
-        existing is not None and getattr(node, "preserve_task_identity", False)
+    preserved_identity = (
+        existing
+        if existing is not None and getattr(node, "preserve_task_identity", False)
+        else None
     )
     resolved_source = (
-        (existing.source if preserve_identity else None)
+        (preserved_identity.source if preserved_identity else None)
         or source
         or getattr(node, "task_source", None)
         or (existing.source if existing else None)
         or "bot"
     )
     resolved_type = (
-        (existing.task_type if preserve_identity else None)
+        (preserved_identity.task_type if preserved_identity else None)
         or task_type
         or getattr(node, "task_display_type", None)
         or (existing.task_type if existing else None)
@@ -1081,16 +1086,25 @@ def snapshot_node(
         task_id=task_id,
         source=resolved_source,
         task_type=resolved_type,
-        chat_id=(existing.chat_id if preserve_identity else getattr(node, "chat_id", None)),
+        chat_id=(
+            preserved_identity.chat_id
+            if preserved_identity
+            else getattr(node, "chat_id", None)
+        ),
         title=(
-            existing.title
-            if preserve_identity
+            preserved_identity.title
+            if preserved_identity
             else title
             or getattr(node, "replay_message", "")
             or getattr(node, "file_name_tag", "")
+            or ""
         ),
         status=_status_from_node(node),
-        total_count=(existing.total_count if preserve_identity else resolved_total_count),
+        total_count=(
+            preserved_identity.total_count
+            if preserved_identity
+            else resolved_total_count
+        ),
         success_count=int(getattr(node, "success_download_task", 0) or 0),
         failed_count=int(getattr(node, "failed_download_task", 0) or 0),
         skipped_count=int(getattr(node, "skip_download_task", 0) or 0),

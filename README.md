@@ -107,7 +107,7 @@ production handoff.
 
 | Category             | Support                                          |
 | -------------------- | ------------------------------------------------ |
-| Language             | `Python 3.7` and above                           |
+| Language             | `Python 3.11`                                    |
 | Download media types | audio, document, photo, video, video_note, voice |
 
 ### Version release plan

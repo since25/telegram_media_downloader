@@ -71,14 +71,12 @@ disable=
     fixme,
     useless-object-inheritance,
 
-    redefined-variable-type,
     redefined-argument-from-local,
     wrong-import-position,
     consider-using-ternary,
     redefined-outer-name,
 
     invalid-name,
-    bad-continuation,
     import-error,
     broad-except,
 
@@ -506,4 +504,4 @@ min-public-methods=0
 
 # Exceptions that will emit a warning when being caught. Defaults to
 # "Exception".
-overgeneral-exceptions=Exception
+overgeneral-exceptions=builtins.Exception

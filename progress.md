@@ -2964,3 +2964,38 @@ Changed files:
 
 Rollback:
 - Revert the Phase 3 commit. The change introduces no database schema migration; restore the prior image/workflow and requirements file together so the remote compile-image and mutable dependency behavior are not mixed with the new runtime Dockerfile.
+
+## 2026-07-30 - Task: Align runtime and module boundaries
+
+### What was done
+
+- Protected the process-local active-task registry with a re-entrant lock and made every reader receive a shallow container snapshot instead of the live mutable dictionary.
+- Unified package metadata, CI, local commands, documentation, and development tools on the production Python 3.11 runtime.
+- Upgraded and isolated the formatting, type-checking, lint, test, and pre-commit toolchain, with a blocking static-analysis boundary around the architecture-hardened task, lifecycle, progress, admission, Rclone, Telegram-activity, and Web-command modules.
+- Removed obsolete Pylint configuration values and made test cleanup use the public active-task lifecycle API instead of mutating registry internals.
+
+### Testing
+
+- Initial Phase 4 RED verification -> `5 failed`, covering the live registry container and inconsistent package, CI, Makefile, documentation, dependency, and pre-commit runtime declarations.
+- Pinned development dependencies installed successfully under Python `3.11.15`.
+- Upgraded full-source mypy scan ran and reported `330` pre-existing errors across generated parser data, implicit Optional annotations, dynamic Pyrogram APIs, and legacy store/Web modules; these were recorded as historical debt rather than suppressed or expanded into an unrelated refactor.
+- Blocking static boundary -> mypy `Success: no issues found in 9 source files`; Pylint error-only check passed without the obsolete-config warnings.
+- Focused runtime, registry, task-state, lifecycle, progress, Web-command, Rclone, activity, and admission regressions -> `49 passed`; final runtime/registry contract rerun -> `5 passed`.
+- Natural-order complete suite with isolated task/resource/auth paths -> `664 passed, 1 skipped`.
+- All six isolated pre-commit hooks passed: trailing whitespace, end-of-file, Black, isort, mypy, and Pylint.
+- `check_imports.py`, changed-module/test compilation, `.venv/bin/python -m pip check`, `make style_check`, `docker compose -f docker-compose.yaml config`, and `git diff --check` passed. Compose emitted only the existing obsolete top-level `version` warning.
+
+### Notes
+
+Changed files:
+- `module/download_stat.py`: Locked active-task registry mutations and returned shallow snapshots to readers.
+- `module/task_state.py`, `module/cloud_drive.py`, `module/web_commands.py`: Narrowed current-scope types without changing persisted schemas or public behavior.
+- `setup.py`, `Makefile`, `dev-requirements.txt`, `pylintrc`: Declared Python 3.11 and aligned install, test, type, lint, and tool versions.
+- `.github/workflows/unittest.yml`, `.github/workflows/code-checks.yml`, `.pre-commit-config.yaml`: Aligned CI actions, Python, isolated hooks, and the blocking static-analysis boundary.
+- `README.md`, `README_CN.md`, `docs/web-control-console.md`: Documented the Python 3.11 and active-task ownership contracts.
+- `tests/test_runtime_contract.py`, `tests/module/test_task_state.py`: Added runtime/toolchain and registry snapshot contracts.
+- `tests/test_media_downloader.py`, `tests/test_channel_library_download.py`, `tests/test_channel_library_e2e.py`: Replaced direct registry-container cleanup with the public removal API.
+- `progress.md`: Recorded Phase 4 red-green, static-analysis scope, regression, and operational evidence.
+
+Rollback:
+- Revert the Phase 4 commit. No database schema, persisted task data, production configuration, or runtime state migration is introduced; revert the metadata, CI, toolchain, registry boundary, tests, and documentation together.
