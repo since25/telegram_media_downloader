@@ -2171,6 +2171,18 @@
     }
     function chipValues(container){ return [...container.querySelectorAll('[data-chip][data-on="1"]')].map(c=>c.dataset.chip); }
     function setSwitch(el, on){ el.classList.toggle('on',on); el.classList.toggle('off',!on); el.dataset.on=on?1:0; el.onclick=()=>{ const v=el.dataset.on==='1'; setSwitch(el,!v); }; }
+    const RESTART_FIELD_LABELS = {
+      save_path:'保存路径', max_download_task:'下载 Worker 数', max_concurrent_transmissions:'Telegram 并发数',
+      start_timeout:'启动超时', 'upload_drive.upload_adapter':'上传适配器',
+      'web.enable_web':'Web 开关', 'web.web_host':'Web 地址', 'web.web_port':'Web 端口',
+    };
+    function renderSettingsRestartState(settings){
+      const pending = settings.restart_fields || [];
+      const status = $('#config_status');
+      status.textContent = pending.length
+        ? `已保存 · 待重启生效：${pending.map(field=>RESTART_FIELD_LABELS[field]||field).join('、')}`
+        : '当前配置已生效';
+    }
 
     async function loadConfig(){
       const s = await getJSON('/api/settings'); state.settingsCache = s;
@@ -2197,6 +2209,7 @@
       // chat_id / download_filter / upload_telegram_chat_id come from config.yaml (user-editable) —
       // escape before innerHTML, same rule as task titles/filenames elsewhere in this script.
       $('#chat_rows').innerHTML = s.chats.map(c=>`<tr><td class="nums" style="padding-left:16px;font-family:ui-monospace,Menlo,monospace;font-size:12px">${escapeHtml(c.chat_id)}</td><td class="nums">${escapeHtml(c.last_read_message_id)}</td><td class="text-muted">${escapeHtml(c.download_filter)||'—'}</td><td class="nums text-muted" style="padding-right:16px">${escapeHtml(c.upload_telegram_chat_id)||'—'}</td></tr>`).join('');
+      renderSettingsRestartState(s);
     }
     async function saveConfig(){
       const swOn = id => $(id).dataset.on==='1';
@@ -2216,7 +2229,8 @@
       };
       const r = await mutationFetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
       const res = await r.json();
-      $('#config_status').textContent = res.ok ? '已保存 · 主机/端口修改后需重启' : (res.error||'保存失败');
+      if (res.ok) renderSettingsRestartState(res);
+      else $('#config_status').textContent = res.error||'保存失败';
     }
     $('#save_config_btn').addEventListener('click', saveConfig);
     function setStateChip(dstate){

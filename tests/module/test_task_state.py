@@ -1,12 +1,119 @@
+import os
+import subprocess
+import sys
+import threading
 import unittest
 import tempfile
 import sqlite3
 from pathlib import Path
+from unittest import mock
 
 from module.app import DownloadStatus, TaskNode
 
 
 class TaskStateStoreTestCase(unittest.TestCase):
+    def test_import_does_not_create_task_database(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "web_tasks.sqlite3"
+            environment = os.environ.copy()
+            environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+            environment["TMD_TASK_DB_PATH"] = str(db_path)
+
+            subprocess.run(
+                [sys.executable, "-c", "import module.task_state"],
+                cwd=tmp_dir,
+                env=environment,
+                check=True,
+            )
+
+            self.assertFalse(db_path.exists())
+
+    def test_get_task_store_requires_explicit_initialization(self):
+        from module.task_state import (
+            get_task_store,
+            initialize_task_store,
+            reset_task_store_for_tests,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            previous_store = reset_task_store_for_tests()
+            try:
+                with self.assertRaisesRegex(RuntimeError, "not initialized"):
+                    get_task_store()
+                initialized = initialize_task_store(
+                    Path(tmp_dir) / "tasks.sqlite3",
+                    recover_interrupted=False,
+                )
+                self.assertIs(get_task_store(), initialized)
+            finally:
+                reset_task_store_for_tests(previous_store)
+
+    def test_reader_snapshots_cannot_mutate_store_state(self):
+        from module.task_state import (
+            FileStatus,
+            TaskStateStore,
+            WorkflowSnapshot,
+        )
+
+        store = TaskStateStore()
+        store.create_task(
+            "immutable-read",
+            workflow=WorkflowSnapshot(selected_count=1),
+        )
+        store.upsert_file(
+            "immutable-read",
+            101,
+            status=FileStatus.DOWNLOADING,
+            downloaded_size=10,
+        )
+
+        task = store.get_task("immutable-read")
+        task.workflow.selected_count = 99
+        task.files["101"].downloaded_size = 999
+        task.files["extra"] = task.files["101"]
+        store.tasks()[0].status = "caller-mutated"
+
+        persisted = store.get_task("immutable-read")
+        self.assertEqual(persisted.workflow.selected_count, 1)
+        self.assertEqual(persisted.files["101"].downloaded_size, 10)
+        self.assertNotIn("extra", persisted.files)
+        self.assertNotEqual(persisted.status, "caller-mutated")
+
+    def test_serialization_uses_stable_snapshot_during_concurrent_file_update(self):
+        from module.task_state import TaskSnapshot, TaskStateStore
+
+        store = TaskStateStore()
+        store.create_task("serialize-concurrent")
+        store.upsert_file("serialize-concurrent", 1, filename="one.bin")
+        entered_serializer = threading.Event()
+        release_serializer = threading.Event()
+        errors = []
+        serialized = []
+        original_to_dict = TaskSnapshot.to_dict
+
+        def blocking_to_dict(task_snapshot, *args, **kwargs):
+            entered_serializer.set()
+            release_serializer.wait(timeout=2)
+            return original_to_dict(task_snapshot, *args, **kwargs)
+
+        def serialize():
+            try:
+                serialized.extend(store.serialize_tasks(include_files=True))
+            except Exception as error:  # pragma: no cover - asserted below
+                errors.append(error)
+
+        with mock.patch.object(TaskSnapshot, "to_dict", blocking_to_dict):
+            reader = threading.Thread(target=serialize)
+            reader.start()
+            self.assertTrue(entered_serializer.wait(timeout=1))
+            store.upsert_file("serialize-concurrent", 2, filename="two.bin")
+            release_serializer.set()
+            reader.join(timeout=2)
+
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(serialized[0]["files"]), 1)
+
     def test_transition_file_updates_task_and_file_together(self):
         from module.task_state import FileStatus, TaskStateStore, TaskStatus
 
@@ -293,6 +400,29 @@ class TaskStateStoreTestCase(unittest.TestCase):
             self.assertEqual(snapshot.status, TaskStatus.WAITING_CONFIRMATION)
             self.assertEqual(snapshot.task_type, "package")
             self.assertEqual(len(snapshot.files), 2)
+
+    @unittest.skipUnless(os.name == "posix", "POSIX file modes are required")
+    def test_sqlite_store_uses_owner_only_mode_wal_and_busy_timeout(self):
+        from module.task_state import TaskStateStore
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            with sqlite3.connect(db_path):
+                pass
+            os.chmod(db_path, 0o644)
+
+            store = TaskStateStore(storage_path=db_path)
+
+            self.assertEqual(db_path.stat().st_mode & 0o777, 0o600)
+            with store._connect() as connection:
+                self.assertEqual(
+                    connection.execute("PRAGMA journal_mode").fetchone()[0],
+                    "wal",
+                )
+                self.assertEqual(
+                    connection.execute("PRAGMA busy_timeout").fetchone()[0],
+                    5000,
+                )
 
     def test_sqlite_migration_persists_upload_progress_and_sets_schema_version(self):
         from module.task_state import FileStatus, TaskStateStore, TaskStatus

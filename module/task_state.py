@@ -451,6 +451,31 @@ class TaskStateStore:
                 self._persist_task(task)
             return task
 
+    def update_workflow(
+        self,
+        task_id: Any,
+        **updates,
+    ) -> Optional[TaskSnapshot]:
+        """Update workflow fields without exposing the stored mutable object."""
+
+        task_key = str(task_id)
+        with self._lock:
+            task = self._active.get(task_key) or self._completed.get(task_key)
+            if task is None:
+                return None
+            workflow = copy.deepcopy(task.workflow or WorkflowSnapshot())
+            for key, value in updates.items():
+                if value is not None and hasattr(workflow, key):
+                    setattr(workflow, key, value)
+            self._apply_updates(task, workflow=workflow)
+            if task.status in TERMINAL_TASK_STATUSES:
+                self._move_completed(task_key, task)
+            else:
+                self._completed.pop(task_key, None)
+                self._active[task_key] = task
+                self._persist_task(task)
+            return copy.deepcopy(task)
+
     def transition_file(
         self,
         task_id: Any,
@@ -554,7 +579,8 @@ class TaskStateStore:
     def get_task(self, task_id: Any) -> Optional[TaskSnapshot]:
         task_key = str(task_id)
         with self._lock:
-            return self._active.get(task_key) or self._completed.get(task_key)
+            task = self._active.get(task_key) or self._completed.get(task_key)
+            return copy.deepcopy(task) if task is not None else None
 
     def remove_task(self, task_id: Any) -> bool:
         task_key = str(task_id)
@@ -590,7 +616,9 @@ class TaskStateStore:
 
     def tasks(self) -> list[TaskSnapshot]:
         with self._lock:
-            return list(self._active.values()) + list(self._completed.values())
+            return copy.deepcopy(
+                list(self._active.values()) + list(self._completed.values())
+            )
 
     def serialize_tasks(
         self,
@@ -674,8 +702,9 @@ class TaskStateStore:
         task.updated_at = _now()
 
     def _connect(self):
-        connection = sqlite3.connect(self.storage_path)
+        connection = sqlite3.connect(self.storage_path, timeout=5.0)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
         return connection
 
     def _init_storage(self) -> None:
@@ -683,6 +712,14 @@ class TaskStateStore:
         if storage_path is None:
             return
         storage_path.parent.mkdir(parents=True, exist_ok=True)
+        if os.name == "posix":
+            descriptor = os.open(
+                storage_path,
+                os.O_CREAT | os.O_WRONLY,
+                0o600,
+            )
+            os.close(descriptor)
+            os.chmod(storage_path, 0o600)
         with self._connect() as connection:
             schema_version = int(
                 connection.execute("PRAGMA user_version").fetchone()[0]
@@ -1016,9 +1053,8 @@ def _default_storage_path() -> Optional[Path]:
     return Path(os.path.abspath(".")) / "web_tasks.sqlite3"
 
 
-_TASK_STORE = TaskStateStore(
-    storage_path=_default_storage_path(), recover_interrupted=True
-)
+_TASK_STORE: Optional[TaskStateStore] = None
+_TASK_STORE_INIT_LOCK = threading.RLock()
 
 
 def _sort_message_key(message_id: str):
@@ -1028,7 +1064,37 @@ def _sort_message_key(message_id: str):
         return (1, str(message_id))
 
 
+def initialize_task_store(
+    storage_path: Optional[Path] = None,
+    recover_interrupted: bool = True,
+) -> TaskStateStore:
+    """Initialize the process task store from the application lifecycle."""
+
+    global _TASK_STORE
+    with _TASK_STORE_INIT_LOCK:
+        if _TASK_STORE is None:
+            _TASK_STORE = TaskStateStore(
+                storage_path=storage_path or _default_storage_path(),
+                recover_interrupted=recover_interrupted,
+            )
+        return _TASK_STORE
+
+
+def reset_task_store_for_tests(
+    store: Optional[TaskStateStore] = None,
+) -> Optional[TaskStateStore]:
+    """Install a test-owned store and return the previously installed value."""
+
+    global _TASK_STORE
+    with _TASK_STORE_INIT_LOCK:
+        previous_store = _TASK_STORE
+        _TASK_STORE = store
+        return previous_store
+
+
 def get_task_store() -> TaskStateStore:
+    if _TASK_STORE is None:
+        raise RuntimeError("task store is not initialized")
     return _TASK_STORE
 
 

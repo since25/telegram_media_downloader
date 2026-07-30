@@ -44,7 +44,9 @@ requests, and no longer replaces the panel with a loading state every second.
 persisted upload byte/speed fields on startup without rebuilding either table; a database
 created by newer code is rejected instead of silently downgrading its schema marker.
 Terminal task history and its file rows are pruned together to the configured recent-task
-limit, so restart no longer reloads an unbounded completed history.
+limit, so restart no longer reloads an unbounded completed history. Importing task, Web,
+or diagnostic modules does not open, recover, or prune this database; the application
+lifecycle initializes it explicitly after configuration is loaded.
 
 On restart, non-channel tasks that have no durable command to resume are closed as failed
 with `restart_interrupted`; queued/downloading/uploading file rows are closed at the same
@@ -66,6 +68,18 @@ confirmation reloaded without its process-only Telegram preview is closed with t
 `restart_interrupted` reason instead of being presented as usable. Cancelling a live Web
 task also stops its `TaskNode` on the owner loop; an unavailable or stopped loop returns
 `503` instead of reporting a cancellation that cannot execute.
+
+## Settings Activation
+
+Web settings distinguish the persisted value from the value active in the current
+process. Media filters, naming, display flags, per-chat fields, and compatible
+upload options apply on the owner loop and affect subsequent work immediately.
+`save_path`, download worker count, Telegram transmission concurrency, startup timeout,
+Web enablement/bind address/port, and upload-adapter replacement are restart-required.
+Saving one of these fields updates `config.yaml` but does not mutate the live dependency;
+the response and UI show both `configured_settings` and `active_settings` plus the exact
+`restart_fields`. A stopped owner loop returns `503` instead of partially applying the
+request.
 
 ## Resources And Channel Indexes
 
@@ -289,7 +303,7 @@ Every route rejects undocumented query keys, JSON fields, and request bodies wit
 
 ## Channel Library Operations
 
-`channel_library.sqlite3` is created in the runtime directory with SQLite WAL, foreign keys, and file mode `0600`; startup tightens an existing file if its permissions are wider. It contains channel metadata, checkpoints, package revisions, selections, failure ranges, and immutable download-batch snapshots. `web_tasks.sqlite3` separately contains the dispatched Web task and file evidence. Telegram session files, credentials, downloaded media, and configuration secrets do not belong in either database.
+`channel_library.sqlite3` is created in the runtime directory with SQLite WAL, foreign keys, and file mode `0600`; startup tightens an existing file if its permissions are wider. It contains channel metadata, checkpoints, package revisions, selections, failure ranges, and immutable download-batch snapshots. `web_tasks.sqlite3` separately contains the dispatched Web task and file evidence; it also uses WAL, a 5000 ms busy timeout, and mode `0600`. Telegram session files, credentials, downloaded media, and configuration secrets do not belong in either database.
 
 The checked-in Docker Compose contract mounts the host `./state` directory at
 `/app/state` and sets `TMD_TASK_DB_PATH`, `TMD_CHANNEL_LIBRARY_DB_PATH`,

@@ -10,6 +10,7 @@ class DownloadRuntime:
 
     logger: Any
     translate: Callable[[str], str]
+    initialize_task_store: Callable[..., Any]
     init_web: Callable[..., Any]
     set_max_concurrent_transmissions: Callable[..., Any]
     start_server: Callable[..., Any]
@@ -33,6 +34,7 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
     tasks = []
     try:
         application.pre_run()
+        runtime.initialize_task_store()
         if application.enable_web:
             runtime.init_web(application, client)
         else:

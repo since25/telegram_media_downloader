@@ -5,7 +5,9 @@ import concurrent.futures
 import json
 import os
 import tempfile
+import threading
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -129,60 +131,113 @@ class WebTestCase(unittest.TestCase):
     def test_web_settings_updates_download_config(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
+            original_save_path = app.save_path
+            original_max_download_task = app.max_download_task
+            original_max_concurrent_transmissions = app.max_concurrent_transmissions
+            original_start_timeout = app.start_timeout
+            original_upload_adapter = app.cloud_drive_config.upload_adapter
+            original_web_enabled = app.enable_web
+            original_web_port = app.web_port
+            app.channel_library_service = SimpleNamespace(
+                disk_admission=SimpleNamespace(path=Path(original_save_path))
+            )
             self.web_module._current_app = app
             self.web_module._flask_app.config["LOGIN_DISABLED"] = True
             client = self._csrf_client()
 
-            response = client.post(
-                "/api/settings",
-                json={
-                    "save_path": os.path.join(tmp_dir, "new_downloads"),
-                    "media_types": ["video", "document"],
-                    "file_formats": {
-                        "audio": ["mp3"],
-                        "document": ["pdf", "zip"],
-                        "video": ["mp4"],
+            with patch.object(
+                self.web_module,
+                "submit_web_coroutine",
+                side_effect=completed_web_command,
+            ):
+                response = client.post(
+                    "/api/settings",
+                    json={
+                        "save_path": os.path.join(tmp_dir, "new_downloads"),
+                        "media_types": ["video", "document"],
+                        "file_formats": {
+                            "audio": ["mp3"],
+                            "document": ["pdf", "zip"],
+                            "video": ["mp4"],
+                        },
+                        "file_path_prefix": ["chat_title"],
+                        "file_name_prefix": ["message_id", "caption"],
+                        "file_name_prefix_split": " - ",
+                        "max_download_task": 8,
+                        "max_concurrent_transmissions": 24,
+                        "start_timeout": 120,
+                        "date_format": "%Y_%m_%d",
+                        "hide_file_name": True,
+                        "drop_no_audio_video": True,
+                        "enable_download_txt": True,
+                        "after_upload_telegram_delete": False,
+                        "upload_drive": {
+                            "enable_upload_file": False,
+                            "upload_adapter": "aligo",
+                            "rclone_path": "/usr/bin/rclone",
+                            "remote_dir": "remote:/tg",
+                            "before_upload_file_zip": False,
+                            "after_upload_file_delete": False,
+                        },
+                        "web": {
+                            "enable_web": True,
+                            "web_host": "0.0.0.0",
+                            "web_port": 80,
+                        },
+                        "chats": [
+                            {
+                                "chat_id": "me",
+                                "last_read_message_id": 9,
+                                "download_filter": "media_type == 'video'",
+                                "upload_telegram_chat_id": "",
+                            }
+                        ],
                     },
-                    "file_path_prefix": ["chat_title"],
-                    "file_name_prefix": ["message_id", "caption"],
-                    "file_name_prefix_split": " - ",
-                    "max_download_task": 8,
-                    "max_concurrent_transmissions": 24,
-                    "start_timeout": 120,
-                    "date_format": "%Y_%m_%d",
-                    "hide_file_name": True,
-                    "drop_no_audio_video": True,
-                    "enable_download_txt": True,
-                    "after_upload_telegram_delete": False,
-                    "upload_drive": {
-                        "enable_upload_file": False,
-                        "upload_adapter": "rclone",
-                        "rclone_path": "/usr/bin/rclone",
-                        "remote_dir": "remote:/tg",
-                        "before_upload_file_zip": False,
-                        "after_upload_file_delete": False,
-                    },
-                    "web": {
-                        "enable_web": True,
-                        "web_host": "0.0.0.0",
-                        "web_port": 80,
-                    },
-                    "chats": [
-                        {
-                            "chat_id": "me",
-                            "last_read_message_id": 9,
-                            "download_filter": "media_type == 'video'",
-                            "upload_telegram_chat_id": "",
-                        }
-                    ],
-                },
-            )
+                )
 
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertTrue(payload["ok"])
             self.assertTrue(payload["restart_required"])
-            self.assertEqual(app.max_download_task, 8)
+            self.assertEqual(
+                payload["restart_fields"],
+                [
+                    "max_concurrent_transmissions",
+                    "max_download_task",
+                    "save_path",
+                    "start_timeout",
+                    "upload_drive.upload_adapter",
+                    "web.enable_web",
+                    "web.web_port",
+                ],
+            )
+            self.assertEqual(app.save_path, original_save_path)
+            self.assertEqual(app.max_download_task, original_max_download_task)
+            self.assertEqual(
+                app.max_concurrent_transmissions,
+                original_max_concurrent_transmissions,
+            )
+            self.assertEqual(app.start_timeout, original_start_timeout)
+            self.assertEqual(
+                app.cloud_drive_config.upload_adapter,
+                original_upload_adapter,
+            )
+            self.assertEqual(app.enable_web, original_web_enabled)
+            self.assertEqual(app.web_port, original_web_port)
+            self.assertEqual(
+                app.channel_library_service.disk_admission.path,
+                Path(original_save_path),
+            )
+            self.assertEqual(payload["active_settings"]["save_path"], original_save_path)
+            self.assertEqual(
+                payload["configured_settings"]["save_path"],
+                os.path.join(tmp_dir, "new_downloads"),
+            )
+            self.assertEqual(
+                payload["configured_settings"]["max_download_task"],
+                8,
+            )
+            self.assertEqual(app.config["max_download_task"], 8)
             self.assertEqual(app.cloud_drive_config.remote_dir, "remote:/tg")
             self.assertFalse(app.cloud_drive_config.after_upload_file_delete)
             self.assertEqual(
@@ -190,11 +245,49 @@ class WebTestCase(unittest.TestCase):
                 "media_type == 'video'",
             )
 
+            app.update_config()
             with open(app.config_file, encoding="utf-8") as handle:
                 saved_config = handle.read()
             self.assertIn("enable_web: true", saved_config)
             self.assertIn("web_port: 80", saved_config)
             self.assertIn("after_upload_file_delete: false", saved_config)
+
+    def test_web_settings_are_applied_on_owner_loop(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            loop = asyncio.new_event_loop()
+            loop_started = threading.Event()
+            update_thread_ids = []
+
+            def run_loop():
+                asyncio.set_event_loop(loop)
+                loop_started.set()
+                loop.run_forever()
+
+            def record_update(_immediate=True):
+                update_thread_ids.append(threading.get_ident())
+
+            owner_thread = threading.Thread(target=run_loop)
+            owner_thread.start()
+            loop_started.wait(timeout=1)
+            app.loop = loop
+            app.update_config = record_update
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self._csrf_client()
+
+            try:
+                response = client.post(
+                    "/api/settings",
+                    json={"date_format": "%Y-%m-%d"},
+                )
+            finally:
+                loop.call_soon_threadsafe(loop.stop)
+                owner_thread.join(timeout=2)
+                loop.close()
+
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(update_thread_ids, [owner_thread.ident])
 
     def test_task_dashboard_returns_task_summary(self):
         from module.task_state import FileStatus, TaskStatus, get_task_store

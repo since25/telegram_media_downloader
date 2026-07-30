@@ -293,11 +293,11 @@ git commit -m "fix: restore runtime ownership invariants"
 - Produces: `reset_task_store_for_tests(store=None)`.
 - `get_task_store()` raises before application initialization unless a test explicitly installs a store.
 
-- [ ] Add a subprocess regression proving `import module.task_state` does not create or mutate a database.
-- [ ] Run it and retain RED evidence.
-- [ ] Replace import-time `_TASK_STORE = TaskStateStore(...)` with explicit initialization.
-- [ ] Initialize after configuration loading and before Web/channel/Bot/worker startup.
-- [ ] Verify restart recovery still runs once from the application lifecycle.
+- [x] Add a subprocess regression proving `import module.task_state` does not create or mutate a database.
+- [x] Run it and retain RED evidence.
+- [x] Replace import-time `_TASK_STORE = TaskStateStore(...)` with explicit initialization.
+- [x] Initialize after configuration loading and before Web/channel/Bot/worker startup.
+- [x] Verify restart recovery still runs once from the application lifecycle.
 
 ### Task 6.2: Return immutable task snapshots
 
@@ -312,11 +312,11 @@ git commit -m "fix: restore runtime ownership invariants"
 - `get_task()`, `tasks()`, and pagination readers return deep-copy snapshots.
 - Produces: `update_workflow(task_id, **fields) -> Optional[TaskSnapshot]`.
 
-- [ ] Add a failing test proving mutation of a returned task/workflow/file does not alter stored state.
-- [ ] Add a failing concurrent serialization test that adds files while dashboard snapshots are read.
-- [ ] Implement snapshot reads and the focused workflow update command.
-- [ ] Replace direct `task.workflow.selected_count = ...` mutations with `update_workflow()`.
-- [ ] Verify channel reconciliation and Web task display regressions.
+- [x] Add a failing test proving mutation of a returned task/workflow/file does not alter stored state.
+- [x] Add a failing concurrent serialization test that adds files while dashboard snapshots are read.
+- [x] Implement snapshot reads and the focused workflow update command.
+- [x] Replace direct `task.workflow.selected_count = ...` mutations with `update_workflow()`.
+- [x] Verify channel reconciliation and Web task display regressions.
 
 ### Task 6.3: Harden the task database connection
 
@@ -329,9 +329,9 @@ git commit -m "fix: restore runtime ownership invariants"
 - SQLite connections use `timeout=5.0`, `PRAGMA busy_timeout=5000`, and WAL.
 - POSIX database mode is `0600` after initialization.
 
-- [ ] Add failing permission and busy-timeout tests.
-- [ ] Implement the connection and permission parity.
-- [ ] Verify migration, rollback, recovery, and integrity tests.
+- [x] Add failing permission and busy-timeout tests.
+- [x] Implement the connection and permission parity.
+- [x] Verify migration, rollback, recovery, and integrity tests.
 
 ### Task 6.4: Persist configuration atomically
 
@@ -345,11 +345,11 @@ git commit -m "fix: restore runtime ownership invariants"
 - Produces: `atomic_write_yaml(path: Path, value, yaml_writer) -> None`.
 - `Application.update_config()` holds one re-entrant lock and atomically replaces both files.
 
-- [ ] Add a failing test proving serialization failure leaves the previous file unchanged.
-- [ ] Add a failing concurrent-write test.
-- [ ] Implement owner-only temporary files, flush, `os.fsync()`, and `os.replace()`.
-- [ ] Route both configuration files through the helper.
-- [ ] Verify existing config compatibility tests.
+- [x] Add a failing test proving serialization failure leaves the previous file unchanged.
+- [x] Add a failing concurrent-write test.
+- [x] Implement owner-only temporary files, flush, `os.fsync()`, and `os.replace()`.
+- [x] Route both configuration files through the helper.
+- [x] Verify existing config compatibility tests.
 
 ### Task 6.5: Make Web settings activation explicit
 
@@ -366,18 +366,18 @@ git commit -m "fix: restore runtime ownership invariants"
 - Produces: `_apply_settings_owned(app, payload)`.
 - Restart-only fields are persisted without mutating active runtime dependencies.
 
-- [ ] Add failing tests for `save_path`, worker count, transmission concurrency, Web binding, and adapter replacement.
-- [ ] Prove `save_path` no longer diverges from the active disk-admission path.
-- [ ] Submit settings application through the owner-loop command boundary.
-- [ ] Return configured and active values plus exact restart fields.
-- [ ] Update the UI to label pending-restart values.
+- [x] Add failing tests for `save_path`, worker count, transmission concurrency, Web binding, and adapter replacement.
+- [x] Prove `save_path` no longer diverges from the active disk-admission path.
+- [x] Submit settings application through the owner-loop command boundary.
+- [x] Return configured and active values plus exact restart fields.
+- [x] Update the UI to label pending-restart values.
 
 ### Phase 6 verification and commit
 
-- [ ] Run task-store, settings, channel restart, config persistence, and full tests.
-- [ ] Run imports, compilation, dependency, static, database integrity, and diff checks.
-- [ ] Append `progress.md`.
-- [ ] Commit as `refactor: make state and config ownership explicit`.
+- [x] Run task-store, settings, channel restart, config persistence, and full tests.
+- [x] Run imports, compilation, dependency, static, database integrity, and diff checks.
+- [x] Append `progress.md`.
+- [x] Commit as `refactor: make state and config ownership explicit`.
 
 ---
 

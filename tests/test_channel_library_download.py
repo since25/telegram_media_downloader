@@ -826,8 +826,10 @@ def test_pending_dispatch_preserves_matching_terminal_task(tmp_path):
             service.store.get_download_batch(pending["id"])["dispatch_status"]
             == "dispatched"
         )
-        assert service.task_store.get_task(pending["task_id"]) is terminal
-        assert terminal.status == TaskStatus.COMPLETED
+        stored_task = service.task_store.get_task(pending["task_id"])
+        assert stored_task is not terminal
+        assert stored_task == terminal
+        assert stored_task.status == TaskStatus.COMPLETED
     finally:
         loop.close()
 

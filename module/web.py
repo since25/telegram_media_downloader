@@ -1,5 +1,6 @@
 """web ui for media download"""
 
+import copy
 import hmac
 import json
 import logging
@@ -8,6 +9,7 @@ import secrets
 import shutil
 import threading
 import time
+from dataclasses import dataclass
 from functools import wraps
 from pathlib import Path
 from typing import Any, Optional
@@ -87,6 +89,25 @@ WEB_PRESCAN_MAX_BATCH_SIZE = 100
 WEB_PRESCAN_BATCH_DELAY_SECONDS = 1
 _active_web_prescan_task_id: Optional[str] = None
 _prescan_lock = threading.RLock()
+
+
+@dataclass(frozen=True)
+class SettingsApplyResult:
+    """Configured and active settings after one owner-loop update."""
+
+    active_settings: dict
+    configured_settings: dict
+    restart_fields: tuple[str, ...]
+
+    def to_dict(self) -> dict:
+        return {
+            "active_settings": self.active_settings,
+            "configured_settings": self.configured_settings,
+            "restart_required": bool(self.restart_fields),
+            "restart_fields": list(self.restart_fields),
+        }
+
+
 CHANNEL_FILTER_FIELDS = frozenset(
     {
         "q",
@@ -2865,10 +2886,7 @@ def select_prescan_package(task_id: str, package_id: int):
             selected_ids.discard(package_id)
         selected_count = len(selected_ids)
         is_selected = package_id in selected_ids
-    task = get_task_store().get_task(task_id)
-    if task and task.workflow:
-        task.workflow.selected_count = selected_count
-        get_task_store().update_task(task_id, workflow=task.workflow)
+    get_task_store().update_workflow(task_id, selected_count=selected_count)
     return jsonify(
         {
             "ok": True,
@@ -2900,10 +2918,7 @@ def select_all_prescan_packages(task_id: str):
         else:
             selected_ids = set()
         prescan["selected_package_ids"] = selected_ids
-    task = get_task_store().get_task(task_id)
-    if task and task.workflow:
-        task.workflow.selected_count = len(selected_ids)
-        get_task_store().update_task(task_id, workflow=task.workflow)
+    get_task_store().update_workflow(task_id, selected_count=len(selected_ids))
     return jsonify(
         {
             "ok": True,
@@ -3017,6 +3032,96 @@ def _settings_from_app(app: Application) -> dict:
     }
 
 
+def _configured_settings_from_app(app: Application) -> dict:
+    """Overlay persisted restart-required values onto the active settings."""
+
+    configured = copy.deepcopy(_settings_from_app(app))
+    config = app.config
+    configured["save_path"] = str(config.get("save_path", app.save_path))
+    configured["max_download_task"] = int(
+        config.get("max_download_task", app.max_download_task)
+    )
+    configured["max_concurrent_transmissions"] = int(
+        config.get(
+            "max_concurrent_transmissions",
+            app.max_concurrent_transmissions,
+        )
+    )
+    configured["start_timeout"] = int(
+        config.get("start_timeout", app.start_timeout)
+    )
+
+    upload_config = config.get("upload_drive")
+    if isinstance(upload_config, dict):
+        configured["upload_drive"]["upload_adapter"] = str(
+            upload_config.get(
+                "upload_adapter",
+                app.cloud_drive_config.upload_adapter,
+            )
+        )
+
+    configured["web"] = {
+        "enable_web": _as_bool(config.get("enable_web"), app.enable_web),
+        "web_host": str(config.get("web_host", app.web_host)),
+        "web_port": int(config.get("web_port", app.web_port)),
+    }
+    return configured
+
+
+def _settings_apply_result(app: Application) -> SettingsApplyResult:
+    """Return active/configured values and exact pending-restart fields."""
+
+    active = _settings_from_app(app)
+    configured = _configured_settings_from_app(app)
+    restart_fields = []
+    comparisons = (
+        ("save_path", active["save_path"], configured["save_path"]),
+        (
+            "max_download_task",
+            active["max_download_task"],
+            configured["max_download_task"],
+        ),
+        (
+            "max_concurrent_transmissions",
+            active["max_concurrent_transmissions"],
+            configured["max_concurrent_transmissions"],
+        ),
+        (
+            "start_timeout",
+            active["start_timeout"],
+            configured["start_timeout"],
+        ),
+        (
+            "upload_drive.upload_adapter",
+            active["upload_drive"]["upload_adapter"],
+            configured["upload_drive"]["upload_adapter"],
+        ),
+        (
+            "web.enable_web",
+            active["web"]["enable_web"],
+            configured["web"]["enable_web"],
+        ),
+        (
+            "web.web_host",
+            active["web"]["web_host"],
+            configured["web"]["web_host"],
+        ),
+        (
+            "web.web_port",
+            active["web"]["web_port"],
+            configured["web"]["web_port"],
+        ),
+    )
+    for field_name, active_value, configured_value in comparisons:
+        if active_value != configured_value:
+            restart_fields.append(field_name)
+    return SettingsApplyResult(
+        active_settings=active,
+        configured_settings=configured,
+        restart_fields=tuple(sorted(restart_fields)),
+    )
+
+
 def _update_chat_config(app: Application, chats: Any) -> None:
     """Apply editable per-chat download settings."""
 
@@ -3059,14 +3164,15 @@ def _update_chat_config(app: Application, chats: Any) -> None:
             config_entry.pop("upload_telegram_chat_id", None)
 
 
-def _apply_settings(app: Application, payload: dict) -> dict:
-    """Apply web settings to the running app and config.yaml."""
+async def _apply_settings_owned(
+    app: Application,
+    payload: dict,
+) -> SettingsApplyResult:
+    """Apply hot fields and persist restart-required fields on the owner loop."""
 
-    restart_fields = set()
     if "save_path" in payload:
         save_path = str(payload.get("save_path") or "").strip()
         if save_path:
-            app.save_path = save_path
             app.config["save_path"] = save_path
 
     media_types = _as_string_list(payload.get("media_types"), SUPPORTED_MEDIA_TYPES)
@@ -3097,26 +3203,34 @@ def _apply_settings(app: Application, payload: dict) -> dict:
         app.file_name_prefix_split = str(payload.get("file_name_prefix_split") or "")
         app.config["file_name_prefix_split"] = app.file_name_prefix_split
 
-    old_max_download_task = app.max_download_task
-    app.max_download_task = _as_positive_int(
-        payload.get("max_download_task"), app.max_download_task, minimum=1, maximum=32
-    )
-    app.config["max_download_task"] = app.max_download_task
-    if app.max_download_task != old_max_download_task:
-        restart_fields.add("max_download_task")
+    if "max_download_task" in payload:
+        app.config["max_download_task"] = _as_positive_int(
+            payload.get("max_download_task"),
+            int(app.config.get("max_download_task", app.max_download_task)),
+            minimum=1,
+            maximum=32,
+        )
 
-    app.max_concurrent_transmissions = _as_positive_int(
-        payload.get("max_concurrent_transmissions"),
-        app.max_concurrent_transmissions,
-        minimum=1,
-        maximum=200,
-    )
-    app.config["max_concurrent_transmissions"] = app.max_concurrent_transmissions
+    if "max_concurrent_transmissions" in payload:
+        app.config["max_concurrent_transmissions"] = _as_positive_int(
+            payload.get("max_concurrent_transmissions"),
+            int(
+                app.config.get(
+                    "max_concurrent_transmissions",
+                    app.max_concurrent_transmissions,
+                )
+            ),
+            minimum=1,
+            maximum=200,
+        )
 
-    app.start_timeout = _as_positive_int(
-        payload.get("start_timeout"), app.start_timeout, minimum=1, maximum=3600
-    )
-    app.config["start_timeout"] = app.start_timeout
+    if "start_timeout" in payload:
+        app.config["start_timeout"] = _as_positive_int(
+            payload.get("start_timeout"),
+            int(app.config.get("start_timeout", app.start_timeout)),
+            minimum=1,
+            maximum=3600,
+        )
 
     if "date_format" in payload:
         app.date_format = str(payload.get("date_format") or app.date_format)
@@ -3149,34 +3263,38 @@ def _apply_settings(app: Application, payload: dict) -> dict:
                     ),
                 )
                 upload_config[key] = getattr(app.cloud_drive_config, key)
-        for key in ("upload_adapter", "rclone_path", "remote_dir"):
+        if "upload_adapter" in upload_drive:
+            upload_config["upload_adapter"] = str(
+                upload_drive.get("upload_adapter") or ""
+            )
+        for key in ("rclone_path", "remote_dir"):
             if key in upload_drive:
                 setattr(app.cloud_drive_config, key, str(upload_drive.get(key) or ""))
                 upload_config[key] = getattr(app.cloud_drive_config, key)
 
     web_config = payload.get("web")
     if isinstance(web_config, dict):
-        web_host = str(web_config.get("web_host") or app.web_host)
+        web_host = str(
+            web_config.get("web_host")
+            or app.config.get("web_host")
+            or app.web_host
+        )
         web_port = _as_positive_int(
-            web_config.get("web_port"), app.web_port, minimum=1, maximum=65535
+            web_config.get("web_port"),
+            int(app.config.get("web_port", app.web_port)),
+            minimum=1,
+            maximum=65535,
         )
         app.config["web_host"] = web_host
         app.config["web_port"] = web_port
         app.config["enable_web"] = _as_bool(
-            web_config.get("enable_web"), app.enable_web
+            web_config.get("enable_web"),
+            _as_bool(app.config.get("enable_web"), app.enable_web),
         )
-        if web_host != app.web_host or web_port != app.web_port:
-            restart_fields.add("web")
-        app.web_host = web_host
-        app.web_port = web_port
-        app.enable_web = app.config["enable_web"]
 
     _update_chat_config(app, payload.get("chats"))
     app.update_config(True)
-    return {
-        "restart_required": bool(restart_fields),
-        "restart_fields": sorted(restart_fields),
-    }
+    return _settings_apply_result(app)
 
 
 @_flask_app.route("/api/settings", methods=["GET", "POST"])
@@ -3187,11 +3305,29 @@ def web_settings():
 
     app = _active_app()
     if request.method == "GET":
-        return jsonify(_settings_from_app(app))
+        result = _settings_apply_result(app)
+        return jsonify({**result.configured_settings, **result.to_dict()})
 
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return jsonify({"ok": False, "error": "invalid json"}), 400
 
-    result = _apply_settings(app, payload)
-    return jsonify({"ok": True, "settings": _settings_from_app(app), **result})
+    try:
+        result = wait_for_web_command(
+            submit_web_coroutine(
+                getattr(app, "loop", None),
+                _apply_settings_owned(app, payload),
+            ),
+            timeout=10,
+        )
+    except WebCommandTimeout:
+        return jsonify({"ok": False, "error": "settings update timed out"}), 503
+    except RuntimeError:
+        return jsonify({"ok": False, "error": "service unavailable"}), 503
+    return jsonify(
+        {
+            "ok": True,
+            "settings": result.configured_settings,
+            **result.to_dict(),
+        }
+    )

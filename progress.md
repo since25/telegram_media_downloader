@@ -3063,3 +3063,45 @@ Changed files:
 
 Rollback:
 - Revert the Phase 5 commit. No database schema, persisted task migration, configuration, dependency, service, or production state change is introduced.
+
+## 2026-07-30 - Task: Phase 6 persistent state and configuration ownership
+
+### What was done
+
+- Removed task-database creation, recovery, pruning, and loading from module import; the application lifecycle now initializes the process store after `pre_run` and before Web, channel, Bot, or worker startup, while tests install an explicit in-memory store.
+- Made task readers return deep-copy snapshots, added a command-only workflow update, and removed Web mutations of returned workflow objects so callers cannot bypass the store lock or race dashboard serialization.
+- Hardened `web_tasks.sqlite3` with explicit five-second connections, `busy_timeout=5000`, WAL, and POSIX mode `0600` before schema work.
+- Added locked atomic YAML persistence using owner-only same-directory temporary files, flush, file `fsync`, `os.replace`, and directory `fsync`; configuration serialization failures leave the previous file intact.
+- Split Web settings into active and configured values. Hot-safe fields apply on the owner loop; `save_path`, worker count, Telegram concurrency, startup timeout, Web binding/enablement, and upload-adapter replacement persist for restart without mutating live dependencies. The API and UI expose exact pending-restart fields.
+
+### Testing
+
+- RED: the subprocess import regression found `web_tasks.sqlite3` created by `import module.task_state`.
+- RED: caller mutation changed the stored workflow count from `1` to `99`, and a concurrent file update changed an in-progress serialization from one file to two.
+- RED: an existing task database remained mode `0644` instead of `0600`.
+- RED: config-persistence tests failed at collection because `module.config_persistence` did not exist.
+- RED: Web settings reported only coarse restart fields, changed live restart-only objects, and executed `Application.update_config()` on the Flask request thread instead of the owner loop.
+- `.venv/bin/python -m pytest -q tests/module/test_task_state.py tests/module/test_config_persistence.py tests/module/test_app.py tests/module/test_web.py tests/module/test_channel_library_web.py tests/test_web_prescan_retention.py tests/test_runtime_contract.py tests/module/test_bot_manager.py`: `200 passed`.
+- First full-suite run exposed one obsolete object-identity assertion for `get_task()`; it was changed to require an equal but independent snapshot.
+- `.venv/bin/python -m pytest -q`: `680 passed, 1 skipped`.
+- `TMD_TASK_DB_PATH=<temporary>/import.sqlite3 .venv/bin/python check_imports.py` followed by an absence check: both imports passed and no task database was created.
+- `.venv/bin/python -m compileall -q module tests`: passed.
+- `.venv/bin/python -m pip check`: no broken requirements.
+- `make style_check PYTHON=.venv/bin/python`: blocking mypy and Pylint checks passed.
+- `.venv/bin/python -m mypy module/config_persistence.py module/task_state.py module/download_runtime.py --ignore-missing-imports --follow-imports=silent`: passed.
+- `.venv/bin/python -m pylint module/config_persistence.py module/task_state.py module/download_runtime.py -rn -sn --errors-only --rcfile=pylintrc`: passed.
+- Temporary task-database contract probe: `PRAGMA integrity_check=ok`, `journal_mode=wal`, `busy_timeout=5000`, and POSIX mode `0600`.
+- `git diff --check`: passed.
+
+### Notes
+
+Changed files:
+- `module/task_state.py`, `module/download_runtime.py`, `module/download_entry.py`, `tests/conftest.py`: Added explicit store ownership, immutable reads, workflow commands, connection hardening, lifecycle wiring, and isolated test installation.
+- `module/config_persistence.py`, `module/app.py`: Added locked, atomic, owner-only YAML persistence and preserved configured restart values across later shutdown writes.
+- `module/web.py`, `module/templates/index.html`: Added owner-loop settings application, active/configured responses, exact restart fields, and pending-restart UI feedback.
+- `tests/module/test_task_state.py`, `tests/module/test_config_persistence.py`, `tests/module/test_app.py`, `tests/module/test_web.py`, `tests/module/test_bot_manager.py`, `tests/test_channel_library_download.py`: Added red-green ownership, concurrency, persistence, lifecycle, and compatibility regressions.
+- `docs/web-control-console.md`, `docs/superpowers/plans/2026-07-30-architecture-hardening-follow-up.md`: Documented and marked the Phase 6 contracts complete.
+- `progress.md`: Recorded Phase 6 implementation and verification evidence.
+
+Rollback:
+- Revert the Phase 6 commit. The task database schema remains version 1 and no persisted row migration is introduced; rollback restores import-time initialization and the prior Web settings behavior, so stop the service before rollback and preserve current configuration files.

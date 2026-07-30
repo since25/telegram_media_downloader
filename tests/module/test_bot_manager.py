@@ -308,6 +308,7 @@ def test_runtime_uses_single_bot_entry_when_only_resource_token_is_set():
             exception=lambda *args: None,
         ),
         translate=lambda value: value,
+        initialize_task_store=lambda: events.append("task_store.initialize"),
         init_web=lambda *args: None,
         set_max_concurrent_transmissions=lambda *args: None,
         start_server=noop_async,
@@ -327,5 +328,6 @@ def test_runtime_uses_single_bot_entry_when_only_resource_token_is_set():
 
     run_application(FakeApplication(), object(), runtime)
 
+    assert events[:2] == ["pre_run", "task_store.initialize"]
     assert "bot.start" in events
     assert "bot.stop" in events

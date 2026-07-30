@@ -69,7 +69,7 @@ from module.package_download import (
     run_package_callback as _execute_package_callback,
     run_packages,
 )
-from module.task_state import get_task_store, snapshot_node
+from module.task_state import get_task_store, initialize_task_store, snapshot_node
 from module.transfer_progress import transfer_key
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import _t
@@ -1903,6 +1903,7 @@ def main():
     runtime = DownloadRuntime(
         logger=logger,
         translate=_t,
+        initialize_task_store=initialize_task_store,
         init_web=init_web,
         set_max_concurrent_transmissions=set_max_concurrent_transmissions,
         start_server=start_server,

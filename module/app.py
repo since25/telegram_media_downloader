@@ -2,11 +2,13 @@
 
 import asyncio
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Callable, List, Optional, Union
 
 from loguru import logger
@@ -14,6 +16,7 @@ from ruamel import yaml
 
 from module.channel_library_store import ChannelLibraryConfig
 from module.cloud_drive import CloudDrive, CloudDriveConfig
+from module.config_persistence import atomic_write_yaml
 from module.filter import Filter
 from module.language import Language, set_language
 from utils.format import replace_date_time, validate_title
@@ -447,6 +450,7 @@ class Application:
         self.application_name: str = application_name
         self.download_filter = Filter()
         self.is_running = True
+        self._config_lock = threading.RLock()
 
         self.total_download_task = 0
 
@@ -906,6 +910,12 @@ class Application:
         immediate: bool
             If update config immediate,default True
         """
+        with self._config_lock:
+            self._update_config_locked(immediate)
+
+    def _update_config_locked(self, immediate: bool) -> None:
+        """Update mutable config state while holding the persistence lock."""
+
         # TODO: fix this not exist chat
         if not self.app_data.get("chat") and self.config.get("chat"):
             self.app_data["chat"] = [
@@ -944,7 +954,7 @@ class Application:
             self.app_data["chat"][idx]["ids_to_retry"] = value.ids_to_retry
             idx += 1
 
-        self.config["save_path"] = self.save_path
+        self.config.setdefault("save_path", self.save_path)
         self.config["file_path_prefix"] = self.file_path_prefix
 
         if self.config.get("ids_to_retry"):
@@ -966,12 +976,8 @@ class Application:
         # self.app_data["already_download_ids"] = list(self.already_download_ids_set)
 
         if immediate:
-            with open(self.config_file, "w", encoding="utf-8") as yaml_file:
-                _yaml.dump(self.config, yaml_file)
-
-        if immediate:
-            with open(self.app_data_file, "w", encoding="utf-8") as yaml_file:
-                _yaml.dump(self.app_data, yaml_file)
+            atomic_write_yaml(Path(self.config_file), self.config, _yaml.dump)
+            atomic_write_yaml(Path(self.app_data_file), self.app_data, _yaml.dump)
 
     def set_language(self, language: Language):
         """Set Language"""
