@@ -2999,3 +2999,29 @@ Changed files:
 
 Rollback:
 - Revert the Phase 4 commit. No database schema, persisted task data, production configuration, or runtime state migration is introduced; revert the metadata, CI, toolchain, registry boundary, tests, and documentation together.
+
+## 2026-07-30 - Task: Design and plan architecture hardening follow-up
+
+### What was done
+
+- Converted the final adversarial findings and first-principles audit into explicit transfer-progress, command-acceptance, runtime-ownership, failure-classification, import-safety, configuration, authentication, adapter, shutdown, static-analysis, container, and deployment invariants.
+- Selected a surgical single-process ownership consolidation instead of an ASGI rewrite or multi-process service split, preserving the mature channel-library saga, disk admission, resource staging, database schemas, public commands, and Web payloads.
+- Defined four ordered implementation phases with red-green tests, full-suite gates, independent commits, a complete adversarial review, production backup, fast-forward deployment, acceptance, and rollback requirements.
+
+### Testing
+
+- Cross-checked the follow-up scope against the current clean `49af7c8` worktree, the original hardening design/plan, the independent review findings, transfer progress/watchdog data flow, Web cancellation and settings paths, task-store initialization, Web auth, Aligo execution, application shutdown, CI/static boundaries, Docker inputs, and current production preflight evidence.
+- Confirmed each confirmed defect is assigned to one implementation phase and every phase includes focused tests, full regression, operational checks, documentation, progress logging, and one commit boundary.
+- `rg -n "TBD|TODO|待定|implement later|Similar to" <follow-up-design> <follow-up-plan>`: no placeholders found.
+- `git diff --check` and `git diff --no-index --check /dev/null <new-document>`: passed for the tracked update and both new Markdown files.
+- `.venv/bin/python` documentation contract check: passed; both documents contain Phases 5-8, the complete adversarial-review gate, the production-deployment gate, and all four independent phase commit boundaries.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-07-30-architecture-hardening-follow-up-design.md`: Added the follow-up design, alternatives, ownership invariants, phase boundaries, verification policy, and deployment/rollback contract.
+- `docs/superpowers/plans/2026-07-30-architecture-hardening-follow-up.md`: Added the ordered TDD implementation, full adversarial review, and production deployment plan.
+- `progress.md`: Recorded the approved follow-up design and implementation-plan scope.
+
+Rollback:
+- Revert the follow-up documentation commit. No runtime code, database schema, configuration, dependency, service, or production state is changed.
