@@ -2732,3 +2732,30 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, preserve the schema-3 resource database, restore the pre-deploy schema-2 resource database and configuration backup, return code to the pre-deploy commit, and restart. Other databases do not require rollback.
+
+## 2026-07-30 - Task: Deploy private staging-channel resource publishing
+
+### What was done
+
+- Derived production staging channel ID `-1004472735675` from the provided private-channel message link and verified the resource Bot is an administrator with publish and delete permissions.
+- Confirmed there were no active or queued resource deliveries, stopped the service, and created a restricted pre-deploy backup.
+- Fast-forwarded production from `70316fc` to `1a5d76a`, added only `resource_staging_chat_id` to protected configuration, and migrated `resource_bot.sqlite3` from schema 2 to schema 3.
+- Restarted the unified service and verified authenticated Publishing-page/API access, preserved delivery history, empty staging manifests, service health, and live staging-channel send/delete behavior.
+
+### Testing
+
+- Production backup: `/root/telegram_media_downloader/backups/release-20260730-042143-staging-pipeline` (`177M`, directory mode `0700`).
+- Backup database integrity -> channel `ok` schema 0, Web task `ok` schema 1, resource Bot `ok` schema 2.
+- Production preflight -> `check_imports.py`, changed-module compilation, and `.venv/bin/pip check` passed.
+- Live database integrity -> channel `ok` schema 0, Web task `ok` schema 1, resource Bot `ok` schema 3; resource database mode `0600`.
+- Authenticated Web acceptance -> login `200/code=1`, root `200` with Publishing tab, delivery API `200`, three preserved jobs (`2 completed`, `1 failed`, no active/queued work).
+- Staging acceptance -> Bot permission `administrator/post/delete`; one deployment-check message was successfully sent and deleted.
+- Service -> `active/running`, `NRestarts=0`, `ExecMainStatus=0`, approximately `99MB` memory; recent journal contained no matching traceback, critical, startup, schema, or staging-permission failures.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the production backup, configuration, schema migration, service health, authenticated Web acceptance, and staging-channel smoke test.
+
+Rollback:
+- Stop `tg-downloader.service`, preserve the live schema-3 resource database and configuration, restore `config.yaml` and `resource_bot.sqlite3` from `/root/telegram_media_downloader/backups/release-20260730-042143-staging-pipeline`, return code to commit `70316fc`, and restart. Do not restore the channel or Web-task databases unless independently required.
