@@ -2789,3 +2789,29 @@ Changed files:
 
 Rollback:
 - Revert this fix commit and restart the service. No schema, configuration, activation, binding, or delivery-history rollback is required.
+
+## 2026-07-30 - Task: Deploy tracked album upload filename fix
+
+### What was done
+
+- Confirmed there were no active or queued resource deliveries, stopped the service, and created a restricted pre-deploy backup.
+- Fast-forwarded production from `66aecdc` to `dd4eb00`, ran import/compile/dependency checks, and restarted the unified service.
+- Performed a real Pyrogram acceptance test with two valid small videos using the production resource Bot and staging channel.
+- Verified both tracked streams exposed string filenames, Telegram created one two-item media group, and both staging messages were deleted afterward.
+
+### Testing
+
+- Production backup: `/root/telegram_media_downloader/backups/release-20260730-044707-album-stream-fix`.
+- Backup database integrity -> channel `ok` schema 0, Web task `ok` schema 1, resource Bot `ok` schema 3.
+- Production preflight -> `check_imports.py`, changed-module compilation, and `.venv/bin/pip check` passed.
+- Live Telegram acceptance -> stream filename types `str`, album sent `2` messages with `1` media-group ID, album cleanup deleted `2` messages.
+- Live database integrity -> channel `ok` schema 0, Web task `ok` schema 1, resource Bot `ok` schema 3.
+- Service -> `active/running`, `NRestarts=0`, `ExecMainStatus=0`; recent journal contained no matching traceback, critical, startup, PosixPath, or staging-upload failures.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded production backup, deployment, and real Telegram album acceptance evidence.
+
+Rollback:
+- Stop `tg-downloader.service`, return code to commit `66aecdc`, and restart. The backup at `/root/telegram_media_downloader/backups/release-20260730-044707-album-stream-fix` is available if configuration, sessions, or databases independently require restoration; this code-only fix does not require database rollback.
