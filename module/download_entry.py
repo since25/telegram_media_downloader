@@ -1811,10 +1811,24 @@ async def run_until_all_task_finish():
         await asyncio.sleep(1)
 
 
-def _exec_loop():
+def _exec_loop(shutdown_request: asyncio.Event):
     """Exec loop"""
 
-    app.loop.run_until_complete(run_until_all_task_finish())
+    async def wait_for_completion():
+        completion = asyncio.create_task(run_until_all_task_finish())
+        shutdown = asyncio.create_task(shutdown_request.wait())
+        done, pending = await asyncio.wait(
+            (completion, shutdown),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        if completion in done:
+            await completion
+
+    app.loop.run_until_complete(wait_for_completion())
 
 
 async def start_server(client: PyrogramClient):

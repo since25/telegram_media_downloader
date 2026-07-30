@@ -10,6 +10,7 @@ import shutil
 import threading
 import time
 from dataclasses import dataclass
+from datetime import timedelta
 from functools import wraps
 from pathlib import Path
 from typing import Any, Optional
@@ -51,6 +52,8 @@ from module.web_commands import (
     submit_web_coroutine,
     wait_for_web_command,
 )
+from module.web_auth import LoginAttemptLimiter, WebAuthState
+from module.web_server import WebServer
 from utils.format import format_byte
 
 log = logging.getLogger("werkzeug")
@@ -63,11 +66,15 @@ _flask_app.secret_key = secrets.token_urlsafe(32)
 _flask_app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+    SESSION_REFRESH_EACH_REQUEST=False,
+    MAX_CONTENT_LENGTH=1024 * 1024,
 )
 _login_manager = LoginManager()
 _login_manager.login_view = "login"
 _login_manager.init_app(_flask_app)
-web_login_users: dict = {}
+_web_auth_state: Optional[WebAuthState] = None
+_login_attempt_limiter = LoginAttemptLimiter()
 _current_app: Optional[Application] = None
 _web_task_counter = 0
 _pending_web_task_previews: dict[str, dict] = {}
@@ -163,16 +170,6 @@ def get_flask_app() -> Flask:
     return _flask_app
 
 
-def run_web_server(app: Application):
-    """
-    Runs a web server using the Flask framework.
-    """
-
-    get_flask_app().run(
-        app.web_host, app.web_port, debug=app.debug_web, use_reloader=False
-    )
-
-
 def _web_auth_file_path() -> Path:
     """Return the local auth file path."""
 
@@ -182,72 +179,28 @@ def _web_auth_file_path() -> Path:
     return Path(os.path.abspath(".")) / WEB_AUTH_FILE_NAME
 
 
-def _load_json_file(path: Path) -> dict:
-    """Load a JSON object, returning an empty dict on missing or invalid files."""
-
-    if not path.exists():
-        return {}
-    try:
-        with path.open(encoding="utf-8") as auth_file:
-            data = json.load(auth_file)
-            return data if isinstance(data, dict) else {}
-    except (OSError, json.JSONDecodeError) as error:
-        logger.warning("failed to load web auth file %s: %s", path, error)
-        return {}
-
-
-def _write_local_auth_file(path: Path, data: dict) -> None:
-    """Persist local web auth state with owner-only permissions."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(data, ensure_ascii=False, indent=2)
-    file_descriptor = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        0o600,
-    )
-    with os.fdopen(file_descriptor, "w", encoding="utf-8") as auth_file:
-        auth_file.write(payload)
-        auth_file.write("\n")
-
-
 def _ensure_web_auth(app: Application) -> None:
-    """Enable login with config secret or a generated local password."""
+    """Load the local verifier or migrate an existing plaintext auth file."""
 
-    global web_login_users
+    global _web_auth_state
 
     auth_file_path = _web_auth_file_path()
-    auth_data = _load_json_file(auth_file_path)
-    password = str(app.web_login_secret or auth_data.get("password") or "")
-    auth_changed = False
-    if not password:
-        password = secrets.token_urlsafe(18)
-        auth_data["password"] = password
-        auth_changed = True
-
-    session_secret = str(auth_data.get("session_secret") or "")
-    if not session_secret:
-        session_secret = secrets.token_urlsafe(32)
-        auth_data["session_secret"] = session_secret
-        auth_changed = True
-
-    auth_data["username"] = "root"
-    if app.web_login_secret:
-        auth_data["password_source"] = "config.web_login_secret"
-    else:
-        auth_data["password_source"] = "local"
-
-    if auth_changed:
-        _write_local_auth_file(auth_file_path, auth_data)
+    _web_auth_state = WebAuthState.load_or_create(
+        auth_file_path,
+        app.web_login_secret,
+    )
+    if _web_auth_state.has_bootstrap_password:
         logger.warning("web auth initialized at %s", auth_file_path)
 
-    _flask_app.secret_key = session_secret
-    _flask_app.config["LOGIN_DISABLED"] = False
-    web_login_users = {"root": password}
+    _flask_app.secret_key = _web_auth_state.session_secret
+    _flask_app.config.update(
+        LOGIN_DISABLED=False,
+        SESSION_COOKIE_SECURE=bool(app.web_secure_cookie),
+    )
 
 
 # pylint: disable = W0603
-def init_web(app: Application, client=None):
+def init_web(app: Application, client=None) -> WebServer:
     """
     Set the value of the users variable.
 
@@ -262,12 +215,10 @@ def init_web(app: Application, client=None):
     if client is not None:
         app.web_client = client
     _ensure_web_auth(app)
-    if app.debug_web:
-        threading.Thread(target=run_web_server, args=(app,)).start()
-    else:
-        threading.Thread(
-            target=get_flask_app().run, daemon=True, args=(app.web_host, app.web_port)
-        ).start()
+    get_flask_app().debug = bool(app.debug_web)
+    server = WebServer(get_flask_app(), app.web_host, app.web_port)
+    server.start()
+    return server
 
 
 def _csrf_token() -> str:
@@ -312,28 +263,49 @@ def login():
     - No parameters
 
     Returns:
-    - If the request method is "POST" and the username and
-      password match the ones in the web_login_users dictionary,
-      it returns a JSON response with a code of "1".
+    - If the request method is "POST" and the password matches the
+      configured verifier, it returns a JSON response with a code of "1".
     - Otherwise, it returns a JSON response with a code of "0".
     - If the request method is not "POST", it returns the rendered "login.html" template.
     """
     if request.method == "POST":
-        username = "root"
+        client_key = request.remote_addr or "unknown"
+        retry_after = _login_attempt_limiter.retry_after(client_key)
+        if retry_after:
+            response = jsonify({"code": "0"})
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after)
+            return response
+
         web_login_form = {key: value for key, value in request.form.items() if value}
 
         if not web_login_form.get("password"):
-            return jsonify({"code": "0"})
+            retry_after = _login_attempt_limiter.record_failure(client_key)
+            response = jsonify({"code": "0"})
+            if retry_after:
+                response.status_code = 429
+                response.headers["Retry-After"] = str(retry_after)
+            return response
 
         password = web_login_form["password"]
-        if username in web_login_users and hmac.compare_digest(
-            web_login_users[username], password
-        ):
+        if _web_auth_state is not None and _web_auth_state.verify_password(password):
+            try:
+                _web_auth_state.consume_bootstrap_password()
+            except OSError:
+                logger.exception("failed to remove consumed Web bootstrap password")
+                return jsonify({"code": "0"}), 503
+            _login_attempt_limiter.record_success(client_key)
             user = User()
             login_user(user)
+            session.permanent = True
             return jsonify({"code": "1"})
 
-        return jsonify({"code": "0"})
+        retry_after = _login_attempt_limiter.record_failure(client_key)
+        response = jsonify({"code": "0"})
+        if retry_after:
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after)
+        return response
 
     return render_template("login.html")
 

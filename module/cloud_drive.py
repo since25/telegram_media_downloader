@@ -52,7 +52,15 @@ class CloudDrive:
     def init_upload_adapter(drive_config: CloudDriveConfig):
         """Initialize the upload adapter."""
         if drive_config.upload_adapter == "aligo":
-            Aligo = importlib.import_module("aligo").Aligo
+            try:
+                Aligo = importlib.import_module("aligo").Aligo
+            except ModuleNotFoundError as error:
+                if error.name != "aligo":
+                    raise
+                raise RuntimeError(
+                    "Aligo upload adapter requires optional dependency 'aligo'; "
+                    "install the reviewed pinned version before restarting"
+                ) from error
             drive_config.aligo = Aligo()
 
     @staticmethod
@@ -255,6 +263,11 @@ class CloudDrive:
                 drive_config, save_path, local_file_path
             )
         elif drive_config.upload_adapter == "aligo":
-            ret = CloudDrive.aligo_upload_file(drive_config, save_path, local_file_path)
+            ret = await asyncio.to_thread(
+                CloudDrive.aligo_upload_file,
+                drive_config,
+                save_path,
+                local_file_path,
+            )
 
         return ret

@@ -1,5 +1,6 @@
 """test app"""
 
+import asyncio
 import os
 import sys
 import tempfile
@@ -9,7 +10,7 @@ import unittest
 from unittest import mock
 
 import module.app
-from module.app import Application, ChatDownloadConfig, DownloadStatus
+from module.app import Application, ChatDownloadConfig, CloudDrive, DownloadStatus
 
 sys.path.append("..")  # Adds higher directory to python modules path.
 
@@ -64,6 +65,65 @@ def test_resource_bot_token_loads_from_config():
     assert app.bot_token == "admin-token"
     assert app.resource_bot_token == "resource-token"
     assert app.resource_staging_chat_id == -1009
+
+
+def test_aligo_upload_passes_callable_to_application_executor(monkeypatch):
+    app = Application("", "")
+    app.cloud_drive_config.enable_upload_file = True
+    app.cloud_drive_config.upload_adapter = "aligo"
+    calls = []
+
+    def fake_aligo_upload(*args):
+        calls.append(args)
+        return True
+
+    async def fake_run_in_executor(executor, function):
+        assert executor is app.executor
+        assert callable(function)
+        return function()
+
+    monkeypatch.setattr(CloudDrive, "aligo_upload_file", fake_aligo_upload)
+    monkeypatch.setattr(app.loop, "run_in_executor", fake_run_in_executor)
+    try:
+        result = app.loop.run_until_complete(app.upload_file("/tmp/source.bin"))
+    finally:
+        app.executor.shutdown(wait=True)
+        app.loop.close()
+
+    assert result is True
+    assert calls == [(app.cloud_drive_config, app.save_path, "/tmp/source.bin")]
+
+
+def test_runtime_resources_close_executor_and_loop_once():
+    app = Application("", "")
+    app.executor.shutdown(wait=True)
+    app.loop.close()
+    calls = []
+
+    class RecordingExecutor:
+        def shutdown(self, **kwargs):
+            calls.append(("executor.shutdown", kwargs))
+
+    class RecordingLoop:
+        def is_closed(self):
+            return False
+
+        def close(self):
+            calls.append(("loop.close", {}))
+
+    app.executor = RecordingExecutor()
+    app.loop = RecordingLoop()
+
+    app.close_runtime_resources()
+    app.close_runtime_resources()
+
+    assert calls == [
+        (
+            "executor.shutdown",
+            {"wait": True, "cancel_futures": True},
+        ),
+        ("loop.close", {}),
+    ]
 
 
 class AppTestCase(unittest.TestCase):

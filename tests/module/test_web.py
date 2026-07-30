@@ -7,6 +7,7 @@ import os
 import tempfile
 import threading
 import unittest
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -69,6 +70,8 @@ class WebTestCase(unittest.TestCase):
 
         self.web_module = web_module
         self.old_auth_env = os.environ.get(web_module.WEB_AUTH_FILE_ENV)
+        self.old_web_auth_state = web_module._web_auth_state
+        self.old_login_attempt_limiter = web_module._login_attempt_limiter
         self.old_current_app = web_module._current_app
         self.old_login_disabled = web_module._flask_app.config.get("LOGIN_DISABLED")
         self.old_secret_key = web_module._flask_app.secret_key
@@ -94,6 +97,8 @@ class WebTestCase(unittest.TestCase):
         self.web_module._current_app = self.old_current_app
         self.web_module._flask_app.config["LOGIN_DISABLED"] = self.old_login_disabled
         self.web_module._flask_app.secret_key = self.old_secret_key
+        self.web_module._web_auth_state = self.old_web_auth_state
+        self.web_module._login_attempt_limiter = self.old_login_attempt_limiter
         from module.task_state import get_task_store
 
         self.web_module._pending_web_task_previews.clear()
@@ -107,7 +112,7 @@ class WebTestCase(unittest.TestCase):
         self.assertNotEqual(self.web_module._flask_app.secret_key, "tdl")
         self.assertGreaterEqual(len(self.web_module._flask_app.secret_key), 32)
 
-    def test_web_auth_generates_local_password_and_allows_plaintext_login(self):
+    def test_web_auth_generates_bootstrap_password_and_removes_it_after_login(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             auth_file = os.path.join(tmp_dir, "web_auth.json")
             os.environ[self.web_module.WEB_AUTH_FILE_ENV] = auth_file
@@ -119,14 +124,93 @@ class WebTestCase(unittest.TestCase):
             with open(auth_file, encoding="utf-8") as handle:
                 auth_data = json.load(handle)
             self.assertEqual(auth_data["username"], "root")
-            self.assertTrue(auth_data["password"])
+            self.assertTrue(auth_data["password_hash"])
+            self.assertTrue(auth_data["bootstrap_password"])
             self.assertEqual(auth_data["password_source"], "local")
 
             client = self.web_module.get_flask_app().test_client()
-            response = client.post("/login", data={"password": auth_data["password"]})
+            response = client.post(
+                "/login",
+                data={"password": auth_data["bootstrap_password"]},
+            )
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.get_json()["code"], "1")
+            with open(auth_file, encoding="utf-8") as handle:
+                consumed_auth_data = json.load(handle)
+            self.assertNotIn("bootstrap_password", consumed_auth_data)
+
+    def test_login_rate_limit_session_lifetime_and_success_reset(self):
+        from module.web_auth import LoginAttemptLimiter
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            auth_file = os.path.join(tmp_dir, "web_auth.json")
+            os.environ[self.web_module.WEB_AUTH_FILE_ENV] = auth_file
+            app = build_web_test_app(tmp_dir)
+            app.web_login_secret = "configured-secret"
+            now = [100.0]
+            self.web_module._login_attempt_limiter = LoginAttemptLimiter(
+                max_failures=5,
+                window_seconds=300,
+                retry_delay_seconds=60,
+                clock=lambda: now[0],
+            )
+            self.web_module._ensure_web_auth(app)
+            client = self.web_module.get_flask_app().test_client()
+
+            for _ in range(4):
+                response = client.post("/login", data={"password": "wrong"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json(), {"code": "0"})
+
+            limited = client.post("/login", data={"password": "wrong"})
+            self.assertEqual(limited.status_code, 429)
+            self.assertEqual(limited.get_json(), {"code": "0"})
+            self.assertEqual(limited.headers["Retry-After"], "60")
+
+            now[0] += 61
+            accepted = client.post(
+                "/login",
+                data={"password": "configured-secret"},
+            )
+            self.assertEqual(accepted.status_code, 200)
+            self.assertEqual(accepted.get_json(), {"code": "1"})
+            with client.session_transaction() as login_session:
+                self.assertTrue(login_session.permanent)
+            self.assertEqual(
+                self.web_module._flask_app.permanent_session_lifetime,
+                timedelta(hours=12),
+            )
+            self.assertFalse(
+                self.web_module._flask_app.config["SESSION_REFRESH_EACH_REQUEST"]
+            )
+            self.assertEqual(
+                self.web_module._login_attempt_limiter.record_failure(
+                    "127.0.0.1"
+                ),
+                0,
+            )
+
+    def test_secure_cookie_is_explicitly_configured(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            auth_file = os.path.join(tmp_dir, "web_auth.json")
+            os.environ[self.web_module.WEB_AUTH_FILE_ENV] = auth_file
+            app = build_web_test_app(tmp_dir)
+            app.web_login_secret = "configured-secret"
+            app.web_secure_cookie = True
+
+            self.web_module._ensure_web_auth(app)
+            client = self.web_module.get_flask_app().test_client()
+            response = client.post(
+                "/login",
+                data={"password": "configured-secret"},
+            )
+
+            self.assertIn("Secure", response.headers["Set-Cookie"])
+            self.assertEqual(
+                self.web_module._flask_app.config["MAX_CONTENT_LENGTH"],
+                1024 * 1024,
+            )
 
     def test_web_settings_updates_download_config(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -2,8 +2,10 @@
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 from module import web
+from module.web_auth import LoginAttemptLimiter
 
 
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
@@ -29,7 +31,15 @@ def test_login_remains_the_only_mutation_without_csrf(monkeypatch):
     app.config["TESTING"] = True
     old_login_disabled = app.config.get("LOGIN_DISABLED")
     app.config["LOGIN_DISABLED"] = False
-    monkeypatch.setitem(web.web_login_users, "root", "secret")
+    monkeypatch.setattr(
+        web,
+        "_web_auth_state",
+        SimpleNamespace(
+            verify_password=lambda candidate: candidate == "secret",
+            consume_bootstrap_password=lambda: False,
+        ),
+    )
+    monkeypatch.setattr(web, "_login_attempt_limiter", LoginAttemptLimiter())
     try:
         with app.test_client() as client:
             response = client.post("/login", data={"password": "secret"})
@@ -45,7 +55,15 @@ def test_logout_requires_the_authenticated_session_token(monkeypatch):
     app.config["TESTING"] = True
     old_login_disabled = app.config.get("LOGIN_DISABLED")
     app.config["LOGIN_DISABLED"] = False
-    monkeypatch.setitem(web.web_login_users, "root", "secret")
+    monkeypatch.setattr(
+        web,
+        "_web_auth_state",
+        SimpleNamespace(
+            verify_password=lambda candidate: candidate == "secret",
+            consume_bootstrap_password=lambda: False,
+        ),
+    )
+    monkeypatch.setattr(web, "_login_attempt_limiter", LoginAttemptLimiter())
     try:
         client = app.test_client()
         assert client.post("/login", data={"password": "secret"}).status_code == 200

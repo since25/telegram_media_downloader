@@ -2,6 +2,8 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 class _FakeStdout:
     def __init__(self, lines):
@@ -163,3 +165,60 @@ def test_nonzero_copy_exit_keeps_source_even_with_success_text(monkeypatch, tmp_
     assert result is False
     assert local_file.exists()
     assert config.total_upload_success_file_count == 0
+
+
+def test_async_aligo_upload_runs_blocking_adapter_in_thread(monkeypatch, tmp_path):
+    import module.cloud_drive as cloud_drive
+
+    config = cloud_drive.CloudDriveConfig(
+        enable_upload_file=True,
+        upload_adapter="aligo",
+    )
+    calls = []
+    to_thread_calls = []
+
+    def fake_aligo_upload(*args):
+        calls.append(args)
+        return True
+
+    async def fake_to_thread(function, *args):
+        assert callable(function)
+        to_thread_calls.append((function, args))
+        return function(*args)
+
+    monkeypatch.setattr(
+        cloud_drive.CloudDrive,
+        "aligo_upload_file",
+        fake_aligo_upload,
+    )
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+    result = asyncio.run(
+        cloud_drive.CloudDrive.upload_file(
+            config,
+            str(tmp_path),
+            str(tmp_path / "source.bin"),
+        )
+    )
+
+    assert result is True
+    assert len(to_thread_calls) == 1
+    assert calls == [(config, str(tmp_path), str(tmp_path / "source.bin"))]
+
+
+def test_aligo_missing_optional_dependency_has_clear_startup_error(monkeypatch):
+    import module.cloud_drive as cloud_drive
+
+    config = cloud_drive.CloudDriveConfig(
+        enable_upload_file=True,
+        upload_adapter="aligo",
+    )
+
+    def fake_import_module(name):
+        assert name == "aligo"
+        raise ModuleNotFoundError("No module named 'aligo'", name="aligo")
+
+    monkeypatch.setattr(cloud_drive.importlib, "import_module", fake_import_module)
+
+    with pytest.raises(RuntimeError, match="optional dependency 'aligo'"):
+        config.pre_run()

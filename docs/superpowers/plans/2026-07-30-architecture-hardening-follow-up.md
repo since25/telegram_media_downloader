@@ -400,10 +400,10 @@ git commit -m "fix: restore runtime ownership invariants"
 - Existing plaintext password migrates to a Werkzeug password hash without changing the accepted credential.
 - Generated bootstrap plaintext is removed after the first successful login.
 
-- [ ] Add failing migration, bootstrap-removal, wrong-password, and file-mode tests.
-- [ ] Implement password hashing and atomic auth-file persistence.
-- [ ] Preserve the session secret and current login response contract.
-- [ ] Document credential recovery and rollback.
+- [x] Add failing migration, bootstrap-removal, wrong-password, and file-mode tests.
+- [x] Implement password hashing and atomic auth-file persistence.
+- [x] Preserve the session secret and current login response contract.
+- [x] Document credential recovery and rollback.
 
 ### Task 7.2: Bound login attempts and session lifetime
 
@@ -421,10 +421,10 @@ git commit -m "fix: restore runtime ownership invariants"
 - `web_secure_cookie` is explicit; production enables it.
 - Session lifetime is twelve hours and `SESSION_REFRESH_EACH_REQUEST` is false.
 
-- [ ] Add failing threshold, expiry, success-reset, cookie, and session tests.
-- [ ] Implement the limiter with monotonic time.
-- [ ] Apply safe generic error responses and `Retry-After`.
-- [ ] Set `MAX_CONTENT_LENGTH` to one MiB.
+- [x] Add failing threshold, expiry, success-reset, cookie, and session tests.
+- [x] Implement the limiter with monotonic time.
+- [x] Apply safe generic error responses and `Retry-After`.
+- [x] Set `MAX_CONTENT_LENGTH` to one MiB.
 
 ### Task 7.3: Correct and validate optional Aligo execution
 
@@ -442,10 +442,10 @@ git commit -m "fix: restore runtime ownership invariants"
 - Selecting Aligo is restart-required.
 - Startup reports a clear configuration error when the optional package is unavailable.
 
-- [ ] Add a failing executor-callable regression reproducing `'bool' object is not callable`.
-- [ ] Add a failing missing-optional-dependency startup test.
-- [ ] Implement the callable boundary and validation.
-- [ ] Document the optional dependency contract without silently installing an unreviewed package.
+- [x] Add a failing executor-callable regression reproducing `'bool' object is not callable`.
+- [x] Add a failing missing-optional-dependency startup test.
+- [x] Implement the callable boundary and validation.
+- [x] Document the optional dependency contract without silently installing an unreviewed package.
 
 ### Task 7.4: Own the Web server lifecycle
 
@@ -461,9 +461,9 @@ git commit -m "fix: restore runtime ownership invariants"
 - Uses one owned background thread and `werkzeug.serving.make_server`.
 - Start failure is observable; stop shuts down and joins the thread.
 
-- [ ] Add failing start, stop, port-conflict, and double-stop tests.
-- [ ] Replace daemon `Flask.run()` threads with the owned server.
-- [ ] Wire server stop before event-loop shutdown.
+- [x] Add failing start, stop, port-conflict, and double-stop tests.
+- [x] Replace daemon `Flask.run()` threads with the owned server.
+- [x] Wire server stop before event-loop shutdown.
 
 ### Task 7.5: Await complete process shutdown
 
@@ -479,16 +479,16 @@ git commit -m "fix: restore runtime ownership invariants"
 - Worker tasks are cancelled and awaited with `asyncio.gather(..., return_exceptions=True)`.
 - The custom executor and event loop are closed exactly once.
 
-- [ ] Add failing tests for worker finalizers, SIGTERM, executor shutdown, and loop closure.
-- [ ] Implement one idempotent shutdown sequence.
-- [ ] Preserve config update and service stop ordering.
+- [x] Add failing tests for worker finalizers, SIGTERM, executor shutdown, and loop closure.
+- [x] Implement one idempotent shutdown sequence.
+- [x] Preserve config update and service stop ordering.
 
 ### Phase 7 verification and commit
 
-- [ ] Run Web auth, login, CloudDrive, server, Bot, lifecycle, and full tests.
-- [ ] Run imports, compilation, dependency, static, security-contract, and diff checks.
-- [ ] Append `progress.md`.
-- [ ] Commit as `security: harden web auth and shutdown`.
+- [x] Run Web auth, login, CloudDrive, server, Bot, lifecycle, and full tests.
+- [x] Run imports, compilation, dependency, static, security-contract, and diff checks.
+- [x] Append `progress.md`.
+- [x] Commit as `security: harden web auth and shutdown`.
 
 ---
 

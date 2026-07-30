@@ -81,6 +81,32 @@ the response and UI show both `configured_settings` and `active_settings` plus t
 `restart_fields`. A stopped owner loop returns `503` instead of partially applying the
 request.
 
+## Authentication And Process Lifecycle
+
+`.web_auth.json` stores a Werkzeug password verifier and the session secret. Existing
+plaintext auth files migrate on startup without changing the accepted password. A
+generated bootstrap password remains readable in that file only until the first
+successful login, when it is removed atomically; configured passwords are never written
+there in plaintext. The file is maintained with mode `0600`.
+
+Five failed logins within five minutes trigger a 60-second retry delay with a generic
+response. Successful login clears the client failure history. Sessions expire after
+twelve hours without sliding refresh, request bodies are capped at 1 MiB, cookies are
+HTTP-only and SameSite Lax, and `web_secure_cookie` must be enabled for production HTTPS
+deployment. Changing that setting requires a restart.
+
+Credential recovery is a stopped-service operation: set a new `web_login_secret` in
+`config.yaml` and restart. Back up the auth file with the databases and configuration.
+For rollback to code that predates password verifiers, keep the new auth file as evidence
+and configure `web_login_secret`; do not recreate or persist the old plaintext field.
+
+The Web listener is owned by a non-daemon `WebServer` using Werkzeug's server API.
+Binding happens synchronously, so a port conflict fails startup visibly. Shutdown stops
+the listener and joins its thread before channel/Bot services and owner-loop resources
+are released. SIGINT and SIGTERM request the same idempotent shutdown path: reject new
+work, stop services, cancel and await worker finalizers, flush configuration, shut down
+the executor, and close the event loop exactly once.
+
 ## Resources And Channel Indexes
 
 The Resources tab is the primary package interface. It searches, filters, selects, and
@@ -319,6 +345,12 @@ downloads, logs, temporary files, and Web credentials. The Pyrogram source URL i
 to an immutable commit and SHA-256. Rclone mkdir/copy operations use argument arrays
 without a shell; directory cache entries are created only after mkdir succeeds, and file
 deletion/upload counters advance only when the copy process exits with code `0`.
+
+The optional Aligo adapter is not installed by the base requirements. Install the
+reviewed pinned package with `pip install aligo==5.4.0`, select `upload_adapter: aligo`,
+and restart; adapter replacement is never hot-applied. Startup fails explicitly if Aligo
+is selected while the package is missing. Blocking Aligo uploads run outside the owner
+event loop.
 
 The supported production and development interpreter is Python 3.11. Package metadata,
 CI, `Makefile`, pre-commit hooks, and development dependencies use that same contract.

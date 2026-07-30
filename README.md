@@ -278,6 +278,7 @@ web_host: 127.0.0.1
 web_port: 5000
 language: EN
 web_login_secret: set-a-strong-unique-password
+web_secure_cookie: false
 allowed_user_ids:
 - 'me'
 date_format: '%Y_%m'
@@ -306,7 +307,7 @@ enable_download_txt: false
 - **upload_drive** - You can upload file to cloud drive.
   - `enable_upload_file` - Enable upload file, default `false`.
   - `remote_dir` - Where you upload, like `drive_id/drive_name`.
-  - `upload_adapter` - Upload file adapter, which can be `rclone`, `aligo`. If it is `rclone`, it supports all `rclone` servers that support uploading. If it is `aligo`, it supports uploading `Ali cloud disk`.
+  - `upload_adapter` - Upload file adapter, which can be `rclone`, `aligo`. If it is `rclone`, it supports all `rclone` servers that support uploading. If it is `aligo`, it supports uploading `Ali cloud disk`. Aligo is an optional dependency and is not installed by `requirements.txt`; install the reviewed pinned version with `pip install aligo==5.4.0`, select the adapter, and restart the service. Startup fails with a clear error when the package is unavailable.
   - `rclone_path` - RClone exe path, see [How to use rclone](https://github.com/tangyoha/telegram_media_downloader/wiki/Rclone)
   - `before_upload_file_zip` - Zip file before upload, default `false`.
   - `after_upload_file_delete` - Delete file after upload success, default `false`.
@@ -321,11 +322,21 @@ enable_download_txt: false
 - **web_port** - Web port
 - **language** - Application language, the default is English (`EN`), optional `ZH`(Chinese),`RU`,`UA`
 - **web_login_secret** - Web page login password. Use a strong, unique value. The Web console always requires login and should be exposed through HTTPS when it is reachable beyond localhost.
+- **web_secure_cookie** - Set `true` only when the Web console is served over HTTPS, then restart. HTTPS production deployments should enable it; direct HTTP deployments must leave it `false` or the browser will not return the session cookie.
 - **log_level** - see `logging._nameToLevel`.
 - **forward_limit** - Limit the number of forwards per minute, the default is 33, please do not modify this parameter by default.
 - **allowed_user_ids** - Who is allowed to use the robot? The default login account can be used. Please add single quotes to the name with @.
 - **date_format** Support custom configuration of media_datetime format in file_path_prefix.see [python-datetime](https://docs.python.org/3/library/datetime.html)
 - **enable_download_txt** Enable download txt file, default `false`
+
+The Web auth file stores a password verifier instead of the configured plaintext
+password. An existing plaintext `.web_auth.json` is migrated on startup without changing
+the accepted password. If `web_login_secret` is empty, a generated bootstrap password is
+written to the auth file only until the first successful login, then removed atomically.
+For credential recovery, stop the service, set a new `web_login_secret` in `config.yaml`,
+and restart. Back up `.web_auth.json` with the other state files; when rolling back to an
+older release, configure `web_login_secret` because older code cannot consume the new
+password-hash field.
 
 ## Execution
 

@@ -6,6 +6,7 @@ import queue
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import List, Union
@@ -372,6 +373,18 @@ class MediaDownloaderTestCase(unittest.TestCase):
             asyncio.set_event_loop(cls.loop)
         rest_app(MOCK_CONF)
         app.loop = cls.loop
+
+    def setUp(self):
+        if self.__class__.loop.is_closed():
+            self.__class__.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.__class__.loop)
+            app.loop = self.__class__.loop
+            app.executor = ThreadPoolExecutor(
+                max_workers=1,
+                thread_name_prefix="test-runtime",
+            )
+            app._executor_shutdown = False
+            app._event_loop_closed = False
 
     # @mock.patch("media_downloader.app.save_path", new=MOCK_DIR)
     def test_get_media_meta(self):

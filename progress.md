@@ -3105,3 +3105,42 @@ Changed files:
 
 Rollback:
 - Revert the Phase 6 commit. The task database schema remains version 1 and no persisted row migration is introduced; rollback restores import-time initialization and the prior Web settings behavior, so stop the service before rollback and preserve current configuration files.
+
+## 2026-07-30 - Task: Phase 7 authentication, adapter, and shutdown lifecycle
+
+### What was done
+
+- Replaced reusable Web password plaintext with a Werkzeug verifier, migrated existing plaintext auth files without changing the accepted credential, retained generated bootstrap plaintext only until first successful login, and enforced atomic owner-only auth-file persistence.
+- Added bounded per-client login failures, a twelve-hour non-sliding permanent session, an explicit secure-cookie setting, and a one-MiB request-body limit while preserving generic login failure responses.
+- Corrected Aligo execution so the application executor receives a callable, the generic async adapter offloads blocking work, and selecting Aligo without its optional package fails startup with an actionable configuration error.
+- Replaced unmanaged Flask threads with an owned Werkzeug server whose bind failure is observable and whose stop path shuts down and joins the non-daemon thread.
+- Unified SIGINT and SIGTERM on one shutdown request; stopped Web, channel, Bot, and Telegram services in order; cancelled and awaited tracked and residual owner-loop tasks; isolated configuration-flush failures; and shut down the executor and event loop exactly once.
+- Updated English, Chinese, and operations documentation for credential migration/recovery/rollback, HTTPS cookies, optional Aligo installation, restart-only adapter activation, and process shutdown.
+
+### Testing
+
+- RED Web auth/login tests: plaintext migration, bootstrap removal, configured-secret non-persistence, file mode, rate-limit threshold/expiry/reset, permanent session, secure cookie, and request limit initially failed against the plaintext in-memory login implementation; focused green runs reached `6 passed, 31 deselected` and then `10 passed, 31 deselected`.
+- RED Aligo: `.venv/bin/python -m pytest tests/module/test_app.py::test_aligo_upload_passes_callable_to_application_executor tests/module/test_cloud_drive.py::test_async_aligo_upload_runs_blocking_adapter_in_thread tests/module/test_cloud_drive.py::test_aligo_missing_optional_dependency_has_clear_startup_error -q` reproduced the boolean-as-callable and raw missing-module failures (`2 failed, 1 passed`); the tightened thread-offload assertion separately failed (`1 failed`); green rerun: `3 passed`.
+- RED Web server: `.venv/bin/python -m pytest tests/module/test_web_server.py -q` failed collection with `ModuleNotFoundError: module.web_server`; green rerun: `4 passed`.
+- RED shutdown: executor/loop ownership, worker finalizers, shared SIGTERM/SIGINT, and Web-before-loop tests failed (`4 failed`); green rerun: `5 passed`. A separate config-flush failure regression failed because cleanup aborted before resource close, then passed after cleanup stages were isolated.
+- Phase-focused Web auth, Web routes, CloudDrive, Web server, Application, Bot, and channel-library tests: `180 passed`; final security-contract selection: `77 passed`.
+- The first full-suite run exposed test-fixture reuse of the now-correctly closed global loop plus two CSRF tests coupled to the removed plaintext map (`11 failed, 689 passed, 1 skipped`). Test isolation and verifier injection were repaired; final complete suite: `700 passed, 1 skipped`.
+- `TMD_TASK_DB_PATH=<temporary>/import.sqlite3 .venv/bin/python check_imports.py`: both supported import probes passed and no task database was created.
+- `.venv/bin/python -m compileall -q module tests` and `.venv/bin/python -m pip check`: passed with no broken requirements.
+- `make style_check PYTHON=.venv/bin/python`: existing blocking mypy/Pylint boundary passed.
+- Expanded stable boundary covering CloudDrive, config persistence, download runtime, transfer progress, Web auth, and Web server: mypy `Success: no issues found in 6 source files`; Pylint error-only passed.
+- A non-blocking full touched-file mypy probe reported `66` historical dynamic/implicit-Optional errors only in `module/app.py`, `module/web.py`, and `module/download_entry.py`; Pylint likewise reported the existing dynamic `media_downloader` export inference errors in Web code. These were recorded rather than suppressed or expanded into unrelated legacy refactoring; Phase 8 owns the bounded enforceable boundary.
+- Black/isort checks passed for the new and fully rewritten modules, and `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/web_auth.py`, `module/web.py`, `config.example.yaml`: Added verifier/bootstrap persistence, login limiting, bounded sessions, secure-cookie configuration, and verifier-based login.
+- `module/cloud_drive.py`, `module/app.py`: Added explicit optional-Aligo validation, callable executor submission, async thread offload, and idempotent runtime-resource ownership.
+- `module/web_server.py`, `module/download_runtime.py`, `module/download_entry.py`: Added the owned Werkzeug listener, shared signal request, awaited task drainage, resilient cleanup, and one-time executor/loop closure.
+- `tests/module/test_web_auth.py`, `tests/module/test_web.py`, `tests/module/test_cloud_drive.py`, `tests/module/test_web_server.py`, `tests/module/test_app.py`, `tests/module/test_bot_manager.py`, `tests/test_media_downloader.py`, `tests/test_web_csrf_contract.py`: Added authentication, adapter, server, signal, shutdown, finalizer, cleanup-failure, test-isolation, and CSRF compatibility regressions.
+- `README.md`, `README_CN.md`, `docs/web-control-console.md`, `docs/superpowers/plans/2026-07-30-architecture-hardening-follow-up.md`: Documented the Phase 7 operational contracts and marked the phase complete.
+- `progress.md`: Recorded Phase 7 red-green, regression, static-boundary, and rollback evidence.
+
+Rollback:
+- Revert the Phase 7 commit. No database schema or persisted task migration is introduced. If the new authentication code has already migrated a real auth file, stop the service, preserve that file as evidence, set an explicit `web_login_secret`, and then roll back because older code cannot authenticate from the password-hash field alone.

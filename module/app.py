@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from typing import Callable, List, Optional, Union
 
@@ -489,6 +490,7 @@ class Application:
         self.language = Language.EN
         self.after_upload_telegram_delete: bool = True
         self.web_login_secret: str = ""
+        self.web_secure_cookie: bool = False
         self.debug_web: bool = False
         self.enable_web: bool = False
         self.log_level: str = "INFO"
@@ -508,6 +510,9 @@ class Application:
         self.executor = ThreadPoolExecutor(
             min(32, (os.cpu_count() or 0) + 4), thread_name_prefix="multi_task"
         )
+        self._runtime_resource_lock = threading.RLock()
+        self._executor_shutdown = False
+        self._event_loop_closed = False
 
     # pylint: disable = R0915
     def assign_config(self, _config: dict) -> bool:
@@ -613,6 +618,9 @@ class Application:
 
         self.web_login_secret = str(
             _config.get("web_login_secret", self.web_login_secret)
+        )
+        self.web_secure_cookie = bool(
+            _config.get("web_secure_cookie", self.web_secure_cookie)
         )
         self.debug_web = _config.get("debug_web", self.debug_web)
         self.enable_web = _config.get("enable_web", self.enable_web)
@@ -783,8 +791,11 @@ class Application:
         elif self.cloud_drive_config.upload_adapter == "aligo":
             ret = await self.loop.run_in_executor(
                 self.executor,
-                CloudDrive.aligo_upload_file(
-                    self.cloud_drive_config, self.save_path, local_file_path
+                partial(
+                    CloudDrive.aligo_upload_file,
+                    self.cloud_drive_config,
+                    self.save_path,
+                    local_file_path,
                 ),
             )
 
@@ -1010,6 +1021,18 @@ class Application:
         if not os.path.exists(self.session_file_path):
             os.makedirs(self.session_file_path)
         set_language(self.language)
+
+    def close_runtime_resources(self) -> None:
+        """Shut down the owned executor and event loop exactly once."""
+
+        with self._runtime_resource_lock:
+            if not self._executor_shutdown:
+                self.executor.shutdown(wait=True, cancel_futures=True)
+                self._executor_shutdown = True
+            if not self._event_loop_closed:
+                if not self.loop.is_closed():
+                    self.loop.close()
+                self._event_loop_closed = True
 
     def set_caption_name(
         self, chat_id: Union[int, str], media_group_id: Optional[str], caption: str

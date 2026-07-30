@@ -1,6 +1,7 @@
 """Tests for the unified management/resource Bot lifecycle."""
 
 import asyncio
+import signal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -322,7 +323,7 @@ def test_runtime_uses_single_bot_entry_when_only_resource_token_is_set():
         stop_download_bot=stop_bot,
         add_download_task=lambda *args: None,
         download_chat_task=lambda *args: None,
-        exec_loop=lambda: None,
+        exec_loop=lambda _shutdown_request: None,
         print_performance_stats=lambda: None,
     )
 
@@ -331,3 +332,158 @@ def test_runtime_uses_single_bot_entry_when_only_resource_token_is_set():
     assert events[:2] == ["pre_run", "task_store.initialize"]
     assert "bot.start" in events
     assert "bot.stop" in events
+
+
+def _lifecycle_runtime(events, **overrides):
+    async def noop_async(*_args):
+        return None
+
+    values = {
+        "logger": SimpleNamespace(
+            info=lambda *args: None,
+            success=lambda *args: None,
+            warning=lambda *args: None,
+            exception=lambda *args: None,
+        ),
+        "translate": lambda value: value,
+        "initialize_task_store": lambda: events.append("task_store.initialize"),
+        "init_web": lambda *args: None,
+        "set_max_concurrent_transmissions": lambda *args: None,
+        "start_server": noop_async,
+        "stop_server": noop_async,
+        "start_channel_library_service": lambda *args: None,
+        "stop_channel_library_service": lambda *args: events.append("channel.stop"),
+        "download_all_chat": noop_async,
+        "periodic_progress_refresh": noop_async,
+        "worker": noop_async,
+        "start_download_bot": noop_async,
+        "stop_download_bot": noop_async,
+        "add_download_task": lambda *args: None,
+        "download_chat_task": lambda *args: None,
+        "exec_loop": lambda shutdown_request: None,
+        "print_performance_stats": lambda: None,
+    }
+    values.update(overrides)
+    return DownloadRuntime(**values)
+
+
+class _LifecycleApplication:
+    enable_web = False
+    max_concurrent_transmissions = 1
+    max_download_task = 0
+    bot_token = ""
+    resource_bot_token = ""
+    total_download_task = 0
+    cloud_drive_config = SimpleNamespace(total_upload_success_file_count=0)
+
+    def __init__(self, events):
+        self.events = events
+        self.loop = asyncio.new_event_loop()
+        self.is_running = True
+
+    def pre_run(self):
+        self.events.append("pre_run")
+
+    def update_config(self):
+        self.events.append("update_config")
+
+    def close_runtime_resources(self):
+        self.events.append("resources.close")
+        self.loop.close()
+
+
+def test_runtime_awaits_cancelled_worker_finalizers_before_closing_resources():
+    events = []
+    app = _LifecycleApplication(events)
+    app.max_download_task = 1
+
+    async def blocking_task(name):
+        try:
+            events.append(f"{name}.start")
+            await asyncio.Event().wait()
+        finally:
+            events.append(f"{name}.finalized")
+
+    def exec_loop(_shutdown_request):
+        app.loop.run_until_complete(asyncio.sleep(0))
+
+    runtime = _lifecycle_runtime(
+        events,
+        download_all_chat=lambda *_args: blocking_task("download"),
+        periodic_progress_refresh=lambda: blocking_task("progress"),
+        worker=lambda *_args: blocking_task("worker"),
+        exec_loop=exec_loop,
+    )
+
+    run_application(app, object(), runtime)
+
+    assert "worker.finalized" in events
+    assert events.index("worker.finalized") < events.index("resources.close")
+
+
+def test_sigint_and_sigterm_share_one_shutdown_request(monkeypatch):
+    import module.download_runtime as runtime_module
+
+    events = []
+    app = _LifecycleApplication(events)
+    installed = {}
+    previous = {
+        signal.SIGINT: object(),
+        signal.SIGTERM: object(),
+    }
+
+    def fake_signal(signum, handler):
+        old_handler = installed.get(signum, previous[signum])
+        installed[signum] = handler
+        return old_handler
+
+    monkeypatch.setattr(runtime_module.signal, "signal", fake_signal)
+
+    def exec_loop(shutdown_request):
+        assert installed[signal.SIGINT] is installed[signal.SIGTERM]
+        installed[signal.SIGTERM](signal.SIGTERM, None)
+        app.loop.run_until_complete(shutdown_request.wait())
+        events.append("shutdown.requested")
+
+    runtime = _lifecycle_runtime(events, exec_loop=exec_loop)
+
+    run_application(app, object(), runtime)
+
+    assert "shutdown.requested" in events
+    assert installed == previous
+
+
+def test_web_server_stops_before_runtime_resources_close():
+    events = []
+    app = _LifecycleApplication(events)
+    app.enable_web = True
+
+    class RecordingWebServer:
+        def stop(self, timeout):
+            events.append(("web.stop", timeout))
+
+    runtime = _lifecycle_runtime(
+        events,
+        init_web=lambda *_args: RecordingWebServer(),
+    )
+
+    run_application(app, object(), runtime)
+
+    assert events.index(("web.stop", 5)) < events.index("resources.close")
+
+
+def test_config_flush_failure_does_not_skip_runtime_resource_close():
+    events = []
+    app = _LifecycleApplication(events)
+
+    def fail_update_config():
+        events.append("update_config.failed")
+        raise OSError("disk unavailable")
+
+    app.update_config = fail_update_config
+    runtime = _lifecycle_runtime(events)
+
+    run_application(app, object(), runtime)
+
+    assert "update_config.failed" in events
+    assert "resources.close" in events

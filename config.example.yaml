@@ -28,6 +28,8 @@ enable_web: false
 web_host: 0.0.0.0
 web_port: 5000
 # web_login_secret: set-a-strong-unique-password
+# Set true only when the Web console is served over HTTPS.
+web_secure_cookie: false
 channel_library:
   # Packages wait until their full known size fits while this much free disk remains.
   min_free_disk_bytes: 3221225472

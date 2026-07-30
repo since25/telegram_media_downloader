@@ -389,6 +389,7 @@ max_download_task: 5
 web_host: 127.0.0.1
 web_port: 5000
 web_login_secret: 请设置高强度且唯一的密码
+web_secure_cookie: false
 allowed_user_ids:
 - 'me'
 date_format: '%Y_%m'
@@ -418,7 +419,7 @@ enable_download_txt: false
 - **upload_drive** - 您可以将文件上传到云盘
   - `enable_upload_file` - [必填]启用上传文件，默认为`false`
   - `remote_dir` - [必填]你上传的地方
-  - `upload_adapter` - [必填]上传文件适配器，可以为`rclone`,`aligo`。如果为`rclone`，则支持rclone所有支持上传的服务器，如果为aligo，则支持上传阿里云盘
+  - `upload_adapter` - [必填]上传文件适配器，可以为`rclone`,`aligo`。如果为`rclone`，则支持rclone所有支持上传的服务器；如果为 `aligo`，则支持上传阿里云盘。Aligo 是可选依赖，`requirements.txt` 不会自动安装；请先执行 `pip install aligo==5.4.0` 安装已审核的固定版本，选择适配器后重启服务。缺少该包时启动会给出明确错误。
   - `rclone_path`，如果配置`upload_adapter`为`rclone`则为必填，`rclone`的可执行目录，查阅 [如何使用rclone](https://github.com/tangyoha/telegram_media_downloader/wiki/Rclone)
   - `before_upload_file_zip` - 上传前压缩文件，默认为`false`
   - `after_upload_file_delete` - 上传成功后删除文件，默认为`false`
@@ -433,6 +434,14 @@ enable_download_txt: false
 - **web_port** - web界面端口
 - **language** - 应用语言，默认为英文(`EN`),可选`ZH`（中文）,`RU`,`UA`
 - **web_login_secret** - 网页登录密码。请使用高强度且唯一的值；Web 控制台暴露到本机以外时应通过 HTTPS 访问。
+- **web_secure_cookie** - 仅在 Web 控制台通过 HTTPS 提供服务时设为 `true`，修改后重启。生产 HTTPS 部署应启用；直接 HTTP 访问必须保持 `false`，否则浏览器不会回传会话 Cookie。
+
+Web 认证文件保存密码校验值，不再保存配置密码明文。已有的明文
+`.web_auth.json` 会在启动时迁移，原密码仍可使用。未配置 `web_login_secret`
+时，系统生成的引导密码只会保留到首次成功登录，随后原子删除。忘记密码时应先
+停止服务，在 `config.yaml` 中设置新的 `web_login_secret`，再重启。备份时应把
+`.web_auth.json` 与其他状态文件一起保存；回滚到旧版本时请显式配置
+`web_login_secret`，因为旧代码不能读取新的密码哈希字段。
 - **log_level** - 默认日志等级，请参阅 `logging._nameToLevel`
 - **forward_limit** - 限制每分钟转发次数，默认为33，默认请不要修改该参数
 - **allowed_user_ids** - 允许哪些人使用机器人，默认登录账号可以使用，带@的名称请加单引号
