@@ -2815,3 +2815,26 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, return code to commit `66aecdc`, and restart. The backup at `/root/telegram_media_downloader/backups/release-20260730-044707-album-stream-fix` is available if configuration, sessions, or databases independently require restoration; this code-only fix does not require database rollback.
+
+## 2026-07-30 - Task: Design architecture hardening
+
+### What was done
+
+- Defined the task-count, single-result, side-effect isolation, persistence, thread-ownership, sampled-progress, and reproducible-build invariants for the production downloader.
+- Limited the remediation to four independently reviewable phases and explicitly preserved the stable channel-library, outbox, disk-admission, restart-reconciliation, and resource-delivery subsystems.
+- Defined the final adversarial-review, production backup, deployment, acceptance, and rollback gates.
+
+### Testing
+
+- Inspected the current clean `master` worktree, recent deployment history, production handoff checklist, task lifecycle, Web state, task store, Rclone adapter, Docker files, dependencies, and runtime declarations.
+- Confirmed the design maps each audited defect to an explicit invariant and verification gate.
+- Documentation-only change; implementation regressions are deferred to the phase-specific red-green test cycles.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-07-30-architecture-hardening-design.md`: Added the approved surgical hardening design, invariants, phase boundaries, verification strategy, and deployment rollback policy.
+- `progress.md`: Recorded the design scope and evidence.
+
+Rollback:
+- Revert the architecture-hardening design commit; no runtime, schema, configuration, or production state changes are involved.
