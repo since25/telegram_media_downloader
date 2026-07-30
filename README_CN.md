@@ -105,7 +105,7 @@
 
 执行 `/bind` 后，用户只需把资源 Bot 添加到自己的目标频道，设为管理员并授予“发布消息”权限；不需要把后台主账号加入用户频道。绑定成功后，搜索结果会显示稳定资源包和“一键发布”按钮。
 
-发布时，后台主账号凭来源频道权限读取并下载资源，资源 Bot 再把本地临时文件上传到用户频道。因此资源 Bot 本身不需要加入来源频道；即使来源频道禁止原生转发，只要主账号仍可读取和下载，也可以走下载后上传路径。任务全局串行执行，并按“一个兼容媒体组或单条消息”为单位循环：下载本组、上传本组、立即删除本组本地文件，再处理下一组。兼容相册保持完整，每组最多 10 个媒体文件，临时磁盘占用因此接近当前组而不是整个资源包。后续组失败时，任务会以 `partial_upload` 保留已发布数量且不会自动重试，以免频道出现重复内容。
+发布时，后台主账号凭来源频道权限读取并下载资源，资源 Bot 按“一个兼容媒体组或单条消息”为单位上传到私有临时频道，上传成功后立即删除本组本地文件；整个资源包暂存完成后，再由 Telegram 服务端按组复制到用户频道。因此资源 Bot 本身不需要加入来源频道，临时磁盘占用接近当前组而不是整个资源包，下载或暂存失败也不会让用户频道出现半个资源包。兼容相册保持完整，每组最多 10 个媒体文件。目标频道复制中途失败时，任务会以 `partial_upload` 保留已发布数量且不会自动重试，以免重复内容。
 
 资源 Bot 使用独立的 `resource_bot.sqlite3` 保存激活、绑定和发布任务状态。Web 控制台的独立“发布”页可查看排队位置、下载/上传文件数、实时速度和结果，并可取消排队任务或清理终态历史；不会自动重试部分上传。完整生产接管步骤见 [`docs/resource-bot-server-handoff.md`](docs/resource-bot-server-handoff.md)。
 
@@ -326,6 +326,7 @@ api_hash: your_api_hash
 api_id: your_api_id
 bot_token: your_bot_token
 resource_bot_token: your_resource_bot_token
+resource_staging_chat_id: -1001234567890
 chat:
 - chat_id: telegram_chat_id
   last_read_message_id: 0
@@ -378,6 +379,7 @@ enable_download_txt: false
 - **api_id** - 您从电报应用程序获得的 api_id
 - **bot_token** - 你的机器人凭证
 - **resource_bot_token** - 可选资源 Bot 凭证。配置后与管理 Bot 在同一应用生命周期内运行；不得在没有 `bot_token` 时单独配置
+- **resource_staging_chat_id** - 私有暂存频道 ID；资源 Bot 必须拥有发布和删除消息的管理员权限
 - **chat** -  多频道
   - `chat_id` -  您要下载媒体的聊天/频道的 ID。你从上述步骤中得到的。
   - `download_filter` - 下载过滤器, 查阅 [如何使用过滤器](https://github.com/tangyoha/telegram_media_downloader/wiki/%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8%E8%BF%87%E6%BB%A4%E5%99%A8)

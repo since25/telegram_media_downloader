@@ -2700,3 +2700,35 @@ Changed files:
 
 Rollback:
 - Revert this implementation commit and restart `tg-downloader.service`; no schema, configuration, activation, binding, or existing delivery-history data changes are required.
+
+## 2026-07-30 - Task: Stage complete resource packages before channel publication
+
+### What was done
+
+- Diagnosed production package `33383`: all 30 files downloaded, the first destination album upload failed at `0/30`, target-channel Bot permissions remained valid, temporary files were cleaned, and the service remained healthy.
+- Replaced direct group publication with a private staging-channel pipeline: download one compatible group, stage it, immediately delete local files, then copy all staged groups to the user channel only after the complete package is ready.
+- Preserved compatible Telegram albums through Pyrogram server-side media-group copy and kept the existing 10-item group limit.
+- Added schema-3 staging manifests containing the exact temporary message IDs, plus startup and terminal cleanup so interrupted work does not leave untracked staging content.
+- Required a configured private staging channel where the resource Bot can publish and delete messages, and added safe Telegram exception-type logging for staging/copy failures.
+- Kept destination-copy partial failures as non-retryable `partial_upload`; download or staging failures before copying leave the user channel untouched.
+
+### Testing
+
+- RED verification: staging-flow tests initially failed because the delivery service had no staging-channel interface.
+- Resource store, delivery, Bot, lifecycle, command, and application regressions -> `63 passed`.
+- Complete suite with isolated `TMD_TASK_DB_PATH` and `TMD_RESOURCE_BOT_DB_PATH` -> `624 passed, 1 skipped`.
+- Confirmed the installed Pyrogram client exposes `copy_media_group`, `copy_message`, and `delete_messages`.
+- Changed modules compiled and `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/resource_delivery.py`: Added staged group upload, deferred destination copy, exact-message cleanup, permission checks, and safer failure logging.
+- `module/resource_bot_store.py`: Migrated to schema 3 and persisted staging manifests.
+- `module/app.py`, `module/bot.py`, and `config.example.yaml`: Added and enforced `resource_staging_chat_id`.
+- `tests/module/`: Added staging order, no-early-publication, partial-copy, migration, and recovered-cleanup coverage.
+- `README.md`, `README_CN.md`, and `docs/`: Documented configuration, lifecycle, acceptance, and rollback behavior.
+- `progress.md`: Recorded the production diagnosis, implementation, and verification evidence.
+
+Rollback:
+- Stop `tg-downloader.service`, preserve the schema-3 resource database, restore the pre-deploy schema-2 resource database and configuration backup, return code to the pre-deploy commit, and restart. Other databases do not require rollback.

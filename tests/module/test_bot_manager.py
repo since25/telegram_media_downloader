@@ -79,10 +79,12 @@ class FakeDeliveryService:
         channel_store,
         *,
         temp_root,
+        staging_chat_id,
         events,
     ):
         self.events = events
         self.temp_root = Path(temp_root)
+        self.staging_chat_id = int(staging_chat_id)
 
     async def start(self):
         self.events.append("delivery.start")
@@ -95,6 +97,7 @@ def app_config(*, admin_token="admin", resource_token=""):
     return SimpleNamespace(
         bot_token=admin_token,
         resource_bot_token=resource_token,
+        resource_staging_chat_id=-1009,
         resource_bot_store=None,
         channel_library_service=SimpleNamespace(store=object()),
         temp_save_path="/tmp/resource-bot-test",

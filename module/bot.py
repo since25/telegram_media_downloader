@@ -472,6 +472,10 @@ class BotManager:
                 download_chat_task,
             )
             if app.resource_bot_token:
+                if not app.resource_staging_chat_id:
+                    raise ValueError(
+                        "resource_staging_chat_id requires a channel ID"
+                    )
                 self.resource_store = self.store_factory(
                     self.db_path_resolver()
                 )
@@ -501,6 +505,7 @@ class BotManager:
                     channel_store,
                     temp_root=Path(app.temp_save_path)
                     / "resource-deliveries",
+                    staging_chat_id=app.resource_staging_chat_id,
                 )
                 self.resource_role.delivery_service = self.delivery_service
                 await self.delivery_service.start()

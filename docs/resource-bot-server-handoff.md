@@ -5,12 +5,14 @@ does not contain the real Bot token and was not executed during local implementa
 
 ## Configuration delta
 
-Keep the existing management Bot token and add exactly one sibling setting to the
+Keep the existing management Bot token and add the resource Bot plus private staging
+channel settings to the
 production `config.yaml`:
 
 ```yaml
 bot_token: existing_management_bot_token
 resource_bot_token: new_resource_bot_token
+resource_staging_chat_id: -1001234567890
 ```
 
 Do not copy `.env.new` to the server or make the application load it. Read the value
@@ -94,8 +96,8 @@ verify Python imports and dependencies:
 .venv/bin/pip check
 ```
 
-Edit `config.yaml` with a protected editor and add `resource_bot_token`. Then verify only
-that both keys exist and are non-empty without printing either value:
+Edit `config.yaml` with a protected editor and add both resource settings. Then verify
+the tokens without printing either value and print only the staging channel ID:
 
 ```bash
 .venv/bin/python - <<'PY'
@@ -106,6 +108,7 @@ config = YAML(typ="safe").load(Path("config.yaml").read_text(encoding="utf-8"))
 for key in ("bot_token", "resource_bot_token"):
     value = str(config.get(key) or "")
     print(key, "configured" if value else "missing")
+print("resource_staging_chat_id", int(config.get("resource_staging_chat_id") or 0))
 PY
 ```
 
@@ -125,7 +128,7 @@ PY
 stat -c '%A %n' resource_bot.sqlite3 2>/dev/null || stat -f '%Sp %N' resource_bot.sqlite3
 ```
 
-Expected values are schema `2`, integrity `ok`, and owner-only file permissions.
+Expected values are schema `3`, integrity `ok`, and owner-only file permissions.
 
 ## Start and service checks
 
@@ -151,16 +154,19 @@ Perform these steps with a disposable activation key and a controlled target cha
 4. Run `/bind`.
 5. Add only the resource Bot to the controlled target channel. Make it an administrator
    with permission to publish messages. The backend main account does not need to join.
+   Also add the resource Bot to the configured private staging channel with permission
+   to publish and delete messages.
 6. Confirm the resource Bot privately reports the successful channel binding. Run
    `/channel` and verify the title/ID.
 7. Run `/search <known keyword>` and confirm only stable indexed packages appear, five
    per page, with source, date, media count, size, and publish buttons.
-8. Publish a one-file package. Confirm the task is queued, the main account downloads the
-   source, and the resource Bot uploads it to the target channel.
-9. Publish a known photo/video album. Confirm ordering and album grouping are preserved.
-10. Publish a package containing at least two groups. Confirm the first group appears in
-    the target channel before the second group starts downloading, and confirm the first
-    group's local temporary files are removed before the second group starts.
+8. Publish a one-file package. Confirm the task is queued, staged, copied to the target,
+   and removed from the staging channel.
+9. Publish a known photo/video album. Confirm ordering and album grouping are preserved
+   in both staging and target channels.
+10. Publish a package containing at least two groups. Confirm local files for the first
+    group are removed before the second group downloads, and confirm nothing appears in
+    the target channel until the complete package has been staged.
 11. Click one publish button twice. Confirm only one persistent delivery job is created.
 12. Temporarily remove the resource Bot's publish permission. Confirm publishing is
     refused and the binding becomes permission-lost; restore permission and bind again.
@@ -197,12 +203,11 @@ For a code/configuration rollback:
    `web_tasks.sqlite3`, `config.yaml`, and sessions as a new rollback point.
 3. Return the checkout to the recorded pre-deploy commit using the normal non-destructive
    release procedure.
-4. Restore the backed-up `config.yaml`, or remove only `resource_bot_token` while keeping
-   the existing `bot_token`.
+4. Restore the backed-up `config.yaml`, including the previous resource settings.
 5. Restart the service and verify the original management Bot and Web/channel-library
    flows.
 
-The prior code does not use `resource_bot.sqlite3`, so it can remain preserved on disk.
-Do not delete it during an ordinary rollback. Restore a database backup only for
-confirmed corruption or an incompatible schema problem, with the service stopped and the
-current files retained first.
+Schema-2 code rejects the schema-3 resource database. A rollback to schema-2 code must
+preserve the current database separately and restore the pre-deploy schema-2 backup with
+the service stopped. Do not restore the other databases unless their integrity is
+independently in question.

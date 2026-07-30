@@ -74,22 +74,31 @@ class FakeMainClient:
 
 
 class FakeResourceClient:
-    def __init__(self, *, can_post=True, fail_upload_call=None):
+    def __init__(
+        self, *, can_post=True, fail_upload_call=None, fail_copy_call=None
+    ):
         self.me = SimpleNamespace(id=999)
         self.can_post = can_post
         self.fail_upload_call = fail_upload_call
+        self.fail_copy_call = fail_copy_call
         self.upload_calls = []
+        self.copy_calls = []
+        self.deleted_messages = []
         self.notifications = []
 
     async def get_chat_member(self, chat_id, user_id):
         assert user_id == self.me.id
         return SimpleNamespace(
             status=enums.ChatMemberStatus.ADMINISTRATOR,
-            privileges=SimpleNamespace(can_post_messages=self.can_post),
+            privileges=SimpleNamespace(
+                can_post_messages=self.can_post,
+                can_delete_messages=self.can_post,
+            ),
         )
 
     async def send_media_group(self, chat_id, media):
         await self._record("media_group", chat_id, media)
+        return [SimpleNamespace(id=1000 + index) for index, _ in enumerate(media)]
 
     async def send_photo(
         self, chat_id, file_name, caption=None, progress=None, progress_args=()
@@ -97,6 +106,7 @@ class FakeResourceClient:
         if progress is not None:
             await progress(10, 10, *progress_args)
         await self._record("photo", chat_id, file_name, caption)
+        return SimpleNamespace(id=1000 + len(self.upload_calls))
 
     async def send_video(
         self, chat_id, file_name, caption=None, progress=None, progress_args=()
@@ -104,6 +114,7 @@ class FakeResourceClient:
         if progress is not None:
             await progress(10, 10, *progress_args)
         await self._record("video", chat_id, file_name, caption)
+        return SimpleNamespace(id=1000 + len(self.upload_calls))
 
     async def send_audio(
         self, chat_id, file_name, caption=None, progress=None, progress_args=()
@@ -111,6 +122,7 @@ class FakeResourceClient:
         if progress is not None:
             await progress(10, 10, *progress_args)
         await self._record("audio", chat_id, file_name, caption)
+        return SimpleNamespace(id=1000 + len(self.upload_calls))
 
     async def send_document(
         self, chat_id, file_name, caption=None, progress=None, progress_args=()
@@ -118,6 +130,7 @@ class FakeResourceClient:
         if progress is not None:
             await progress(10, 10, *progress_args)
         await self._record("document", chat_id, file_name, caption)
+        return SimpleNamespace(id=1000 + len(self.upload_calls))
 
     async def send_voice(
         self, chat_id, file_name, caption=None, progress=None, progress_args=()
@@ -125,6 +138,7 @@ class FakeResourceClient:
         if progress is not None:
             await progress(10, 10, *progress_args)
         await self._record("voice", chat_id, file_name, caption)
+        return SimpleNamespace(id=1000 + len(self.upload_calls))
 
     async def send_video_note(
         self, chat_id, file_name, progress=None, progress_args=()
@@ -132,6 +146,16 @@ class FakeResourceClient:
         if progress is not None:
             await progress(10, 10, *progress_args)
         await self._record("video_note", chat_id, file_name)
+        return SimpleNamespace(id=1000 + len(self.upload_calls))
+
+    async def copy_media_group(self, chat_id, from_chat_id, message_id):
+        await self._copy("media_group", chat_id, from_chat_id, message_id)
+
+    async def copy_message(self, chat_id, from_chat_id, message_id):
+        await self._copy("message", chat_id, from_chat_id, message_id)
+
+    async def delete_messages(self, chat_id, message_ids):
+        self.deleted_messages.append((chat_id, list(message_ids)))
 
     async def send_message(self, chat_id, text):
         self.notifications.append((chat_id, text))
@@ -141,6 +165,12 @@ class FakeResourceClient:
         if self.fail_upload_call == call_number:
             raise RuntimeError("upload failed")
         self.upload_calls.append((kind, *args))
+
+    async def _copy(self, kind, *args):
+        call_number = len(self.copy_calls) + 1
+        if self.fail_copy_call == call_number:
+            raise RuntimeError("copy failed")
+        self.copy_calls.append((kind, *args))
 
 
 def package_item(
@@ -206,6 +236,7 @@ def make_service(
         resource_store,
         channel_store,
         temp_root=tmp_path / "deliveries",
+        staging_chat_id=-1009,
         activity_gate=NoopActivityGate(),
         sleep=lambda _seconds: asyncio.sleep(0),
     )
@@ -312,8 +343,8 @@ def test_delivery_downloads_uploads_and_cleans_one_group_at_a_time(
 
     class GroupAwareResourceClient(FakeResourceClient):
         async def send_media_group(self, chat_id, media):
-            events.append("upload:media_group")
-            await super().send_media_group(chat_id, media)
+            events.append("stage:media_group")
+            return await super().send_media_group(chat_id, media)
 
         async def send_document(
             self,
@@ -323,14 +354,24 @@ def test_delivery_downloads_uploads_and_cleans_one_group_at_a_time(
             progress=None,
             progress_args=(),
         ):
-            events.append("upload:document")
-            await super().send_document(
+            events.append("stage:document")
+            return await super().send_document(
                 chat_id,
                 file_name,
                 caption=caption,
                 progress=progress,
                 progress_args=progress_args,
             )
+
+        async def copy_media_group(self, chat_id, from_chat_id, message_id):
+            events.append("copy:media_group")
+            await super().copy_media_group(
+                chat_id, from_chat_id, message_id
+            )
+
+        async def copy_message(self, chat_id, from_chat_id, message_id):
+            events.append("copy:document")
+            await super().copy_message(chat_id, from_chat_id, message_id)
 
     async def scenario():
         items = [
@@ -358,9 +399,11 @@ def test_delivery_downloads_uploads_and_cleans_one_group_at_a_time(
         assert events == [
             "download:10",
             "download:11",
-            "upload:media_group",
+            "stage:media_group",
             "download:12",
-            "upload:document",
+            "stage:document",
+            "copy:media_group",
+            "copy:document",
         ]
         assert [call[0] for call in resource_client.upload_calls] == [
             "media_group",
@@ -438,10 +481,12 @@ def test_later_group_download_failure_is_reported_as_partial_upload(
         result = await service.process_job(job)
 
         assert [call[0] for call in resource_client.upload_calls] == ["document"]
+        assert resource_client.copy_calls == []
         assert result["status"] == "failed"
-        assert result["error_code"] == "partial_upload"
+        assert result["error_code"] == "download_failed"
         assert result["downloaded_items"] == 1
-        assert result["uploaded_items"] == 1
+        assert result["uploaded_items"] == 0
+        assert resource_client.deleted_messages
         assert not (tmp_path / "deliveries" / job["public_id"]).exists()
 
     run(scenario())
@@ -503,7 +548,7 @@ def test_partial_upload_is_reported_without_retry(tmp_path, resource_store):
         main_client = FakeMainClient(
             {(-2001, 10): message(10), (-2001, 11): message(11)}
         )
-        resource_client = FakeResourceClient(fail_upload_call=2)
+        resource_client = FakeResourceClient(fail_copy_call=2)
         service = make_service(
             tmp_path, resource_store, channel_store, main_client, resource_client
         )
@@ -511,10 +556,43 @@ def test_partial_upload_is_reported_without_retry(tmp_path, resource_store):
 
         result = await service.process_job(job)
 
-        assert len(resource_client.upload_calls) == 1
+        assert len(resource_client.upload_calls) == 2
         assert result["status"] == "failed"
         assert result["error_code"] == "partial_upload"
         assert result["uploaded_items"] == 1
+
+    run(scenario())
+
+
+def test_recovered_staging_manifest_is_deleted_and_cleared(
+    tmp_path, resource_store
+):
+    async def scenario():
+        channel_store = FakeChannelStore(items=[])
+        resource_client = FakeResourceClient()
+        service = make_service(
+            tmp_path,
+            resource_store,
+            channel_store,
+            FakeMainClient({}),
+            resource_client,
+        )
+        job = create_job(resource_store)
+        resource_store.set_staging_manifest(
+            job["id"],
+            [
+                {
+                    "first_message_id": 100,
+                    "item_count": 2,
+                    "message_ids": [100, 101],
+                }
+            ],
+        )
+
+        await service._cleanup_recovered_staging()
+
+        assert resource_client.deleted_messages == [(-1009, [100, 101])]
+        assert resource_store.list_staging_manifests() == []
 
     run(scenario())
 

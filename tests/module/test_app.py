@@ -40,6 +40,7 @@ def test_resource_bot_token_defaults_empty():
     app = Application("", "")
 
     assert app.resource_bot_token == ""
+    assert app.resource_staging_chat_id == 0
 
 
 def test_resource_bot_token_loads_from_config():
@@ -51,6 +52,7 @@ def test_resource_bot_token_loads_from_config():
             "api_hash": "",
             "bot_token": "admin-token",
             "resource_bot_token": "resource-token",
+            "resource_staging_chat_id": -1009,
             "media_types": [],
             "file_formats": {},
         }
@@ -58,6 +60,7 @@ def test_resource_bot_token_loads_from_config():
 
     assert app.bot_token == "admin-token"
     assert app.resource_bot_token == "resource-token"
+    assert app.resource_staging_chat_id == -1009
 
 
 class AppTestCase(unittest.TestCase):

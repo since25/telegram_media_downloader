@@ -89,12 +89,14 @@ to post messages.
 
 The main Telegram account reads and downloads source media; the resource Bot uploads the
 temporary files to the bound channel. The resource Bot therefore does not need access to
-private source channels. Delivery is globally serial and processes one compatible media
-group or single item at a time: download, upload, then immediately delete that group's
-local files before continuing. Compatible Telegram albums remain intact, with at most 10
-items per group, so temporary disk usage is bounded by the active group instead of the
-whole package. A later failure is reported as `partial_upload` with the published count
-and is not retried automatically, avoiding duplicate channel posts. State is stored
+private source channels. Delivery is globally serial and stages one compatible media
+group or single item at a time in a private staging channel: download, stage, then
+immediately delete that group's local files. After the whole package is staged, the Bot
+copies each group to the user's channel. Compatible Telegram albums remain intact, with
+at most 10 items per group, so temporary disk usage is bounded by the active group and
+download/staging failures publish nothing to the user's channel. A later destination
+copy failure is reported as `partial_upload` with the published count and is not retried
+automatically. State is stored
 separately in `resource_bot.sqlite3`. The Web console has an independent Publishing tab
 for queue position, download/upload item counts, live speeds, results, queued-job
 cancellation, and terminal-history cleanup. See
@@ -202,6 +204,7 @@ api_hash: your_api_hash
 api_id: your_api_id
 bot_token: your_bot_token
 resource_bot_token: your_resource_bot_token
+resource_staging_chat_id: -1001234567890
 chat:
 - chat_id: telegram_chat_id
   last_read_message_id: 0
@@ -263,6 +266,8 @@ enable_download_txt: false
 - **bot_token** - Your bot token
 - **resource_bot_token** - Optional activated-user resource Bot token. It shares the
   management Bot lifecycle and cannot be configured without `bot_token`.
+- **resource_staging_chat_id** - Private staging channel ID. The resource Bot must be an
+  administrator that can publish and delete messages.
 - **chat** - Chat list
   - `chat_id` -  The id of the chat/channel you want to download media. Which you get from the above-mentioned steps.
   - `download_filter` - Download filter, see [How to use Filter](https://github.com/tangyoha/telegram_media_downloader/wiki/How-to-use-Filter)

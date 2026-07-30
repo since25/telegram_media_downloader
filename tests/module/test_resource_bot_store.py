@@ -38,7 +38,7 @@ def test_initialize_creates_versioned_private_database(store):
         integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
 
     assert version == RESOURCE_BOT_SCHEMA_VERSION
-    assert version == 2
+    assert version == 3
     assert integrity == "ok"
     if os.name != "nt":
         assert (os.stat(store.path).st_mode & 0o777) == 0o600
@@ -94,8 +94,9 @@ def test_initialize_migrates_schema_v1_delivery_speed_columns(tmp_path):
         }
         version = connection.execute("PRAGMA user_version").fetchone()[0]
 
-    assert version == 2
+    assert version == 3
     assert {"download_speed", "upload_speed"} <= columns
+    assert "staging_manifest" in columns
 
 
 def test_activation_key_is_hashed_and_redeems_once(store):
@@ -315,3 +316,30 @@ def test_cancel_queued_and_clear_terminal_delivery_jobs(store):
     store.cancel_queued_delivery_job(second["public_id"])
 
     assert store.clear_terminal_delivery_jobs() == 2
+
+
+def test_staging_manifest_round_trips_and_clears(store):
+    activate_user(store, 200)
+    store.bind_channel(200, -1001, "Target", "target")
+    job, _ = create_job(store)
+    manifest = [
+        {
+            "first_message_id": 100,
+            "item_count": 2,
+            "message_ids": [100, 101],
+        }
+    ]
+
+    store.set_staging_manifest(job["id"], manifest)
+
+    assert store.list_staging_manifests() == [
+        {
+            "id": job["id"],
+            "public_id": job["public_id"],
+            "manifest": manifest,
+        }
+    ]
+
+    store.clear_staging_manifest(job["id"])
+
+    assert store.list_staging_manifests() == []

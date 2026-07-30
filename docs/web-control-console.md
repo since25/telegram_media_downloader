@@ -141,12 +141,14 @@ the acting user to be the channel owner/administrator, and the resource Bot to b
 administrator with `can_post_messages`.
 
 Publishing does not use Telegram native forward/copy. The main account refetches source
-messages under its source permissions, then the resource Bot uploads the temporary files
-to the bound destination. Delivery processes one compatible media group or single item
-at a time: download the group, upload it, delete its local files, then continue. This
+messages under its source permissions, then the resource Bot stages temporary files in a
+private staging channel. Delivery processes one compatible media group or single item
+at a time: download the group, stage it, delete its local files, then continue. After the
+whole package is staged, the Bot copies each group to the bound destination. This
 keeps private source access separate from destination-channel access, works when native
 forwarding is restricted but downloading remains permitted, and bounds temporary disk
-usage to the active group instead of the entire package. Compatible photo/video, audio,
+usage to the active group instead of the entire package and prevents download/staging
+failures from publishing a partial destination package. Compatible photo/video, audio,
 and document albums are preserved in groups of at most 10; unsupported album
 combinations are sent sequentially as single items.
 
@@ -154,10 +156,11 @@ combinations are sent sequentially as single items.
 `web_tasks.sqlite3`. It stores hashed activation keys, activated users, one-channel
 bindings, and persistent FIFO delivery jobs. Only one delivery job runs at a time.
 Queued jobs survive restart. A job interrupted before publishing anything is closed as
-`restart_interrupted`; once any group has been published, a later download, upload, or
-restart interruption is closed as `partial_upload`. Partial uploads retain their
+`restart_interrupted`; staging message IDs are persisted and cleaned after interruption.
+Once any group has been copied to the destination, a later copy or restart interruption
+is closed as `partial_upload`. Partial uploads retain their
 published count and are not retried automatically, preventing duplicate posts. Each
-successfully uploaded group's local files are removed before the next group starts, and
+successfully staged group's local files are removed before the next group starts, and
 the job directory is removed again after every terminal outcome as a safety cleanup.
 
 The Web console exposes these jobs on an independent **发布** tab rather than mixing
@@ -169,8 +172,8 @@ failed, and cancelled rows can be cleared individually or as terminal history; a
 downloads/uploads cannot be cancelled from this page, and partial uploads are never
 retried automatically.
 
-`resource_bot.sqlite3` schema version 2 adds `download_speed` and `upload_speed` byte-per-
-second samples to delivery jobs. Version-1 databases migrate additively on startup.
+`resource_bot.sqlite3` schema version 3 retains schema-2 speed fields and adds a persisted
+staging manifest for restart cleanup. Older databases migrate additively on startup.
 Speed persistence is throttled to approximately one update per second. Single uploads
 use Pyrogram progress callbacks; compatible albums remain media groups and measure
 upload reads without splitting the album.

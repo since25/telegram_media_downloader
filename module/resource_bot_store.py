@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
@@ -11,7 +12,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 
-RESOURCE_BOT_SCHEMA_VERSION = 2
+RESOURCE_BOT_SCHEMA_VERSION = 3
 ACTIVATION_STATUSES = frozenset({"available", "redeemed", "revoked"})
 USER_STATUSES = frozenset({"active", "revoked"})
 BINDING_STATUSES = frozenset({"active", "permission_lost", "unbound"})
@@ -122,6 +123,7 @@ class ResourceBotStore:
                     uploaded_items INTEGER NOT NULL DEFAULT 0,
                     download_speed INTEGER NOT NULL DEFAULT 0,
                     upload_speed INTEGER NOT NULL DEFAULT 0,
+                    staging_manifest TEXT,
                     error_code TEXT,
                     error_summary TEXT,
                     created_at REAL NOT NULL,
@@ -162,6 +164,13 @@ class ResourceBotStore:
                     """
                     ALTER TABLE resource_delivery_jobs
                     ADD COLUMN upload_speed INTEGER NOT NULL DEFAULT 0
+                    """
+                )
+            if "staging_manifest" not in job_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE resource_delivery_jobs
+                    ADD COLUMN staging_manifest TEXT
                     """
                 )
             connection.execute(
@@ -717,6 +726,48 @@ class ResourceBotStore:
                 (int(job_id),),
             ).fetchone()
         return dict(row)
+
+    def set_staging_manifest(
+        self, job_id: int, manifest: list[dict]
+    ) -> None:
+        payload = json.dumps(manifest, separators=(",", ":"))
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE resource_delivery_jobs
+                SET staging_manifest = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (payload, _now(), int(job_id)),
+            )
+
+    def list_staging_manifests(self) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, public_id, staging_manifest
+                FROM resource_delivery_jobs
+                WHERE staging_manifest IS NOT NULL
+                """
+            ).fetchall()
+        return [
+            {
+                "id": int(row["id"]),
+                "public_id": row["public_id"],
+                "manifest": json.loads(row["staging_manifest"]),
+            }
+            for row in rows
+        ]
+
+    def clear_staging_manifest(self, job_id: int) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE resource_delivery_jobs
+                SET staging_manifest = NULL WHERE id = ?
+                """,
+                (int(job_id),),
+            )
 
     def finish_delivery_job(
         self,

@@ -180,6 +180,7 @@ class ResourceDeliveryService:
         channel_store,
         *,
         temp_root: Path,
+        staging_chat_id: int,
         activity_gate=None,
         sleep=asyncio.sleep,
         clock=time.monotonic,
@@ -190,6 +191,7 @@ class ResourceDeliveryService:
         self.resource_store = resource_store
         self.channel_store = channel_store
         self.temp_root = Path(temp_root)
+        self.staging_chat_id = int(staging_chat_id)
         self.activity_gate = activity_gate or get_telegram_activity_gate()
         self.sleep = sleep
         self.clock = clock
@@ -203,6 +205,7 @@ class ResourceDeliveryService:
         if self.worker_task is not None and not self.worker_task.done():
             return
         self.resource_store.recover_interrupted_jobs()
+        await self._cleanup_recovered_staging()
         self.temp_root.mkdir(parents=True, exist_ok=True)
         self._wake_event = asyncio.Event()
         self._stopping = False
@@ -289,9 +292,12 @@ class ResourceDeliveryService:
         result = None
         downloaded_count = 0
         uploaded_count = 0
+        staged_groups: list[dict] = []
+        staged_message_ids: list[int] = []
         try:
             package = self._validated_package(job)
             await self._require_target_permission(job)
+            await self._require_staging_permission(job)
             items = self._prepare_items(job)
             if not items:
                 raise DeliveryError(
@@ -323,18 +329,63 @@ class ResourceDeliveryService:
                     upload_speed=0,
                 )
                 try:
-                    await self._upload_delivery_group(
-                        job, downloaded_group, uploaded_count
+                    staged_messages = await self._upload_delivery_group(
+                        job, downloaded_group
                     )
-                    uploaded_count += len(downloaded_group)
-                    self.resource_store.update_job_progress(
-                        job_id,
-                        status="uploading",
-                        uploaded_items=uploaded_count,
-                        upload_speed=0,
+                    if not staged_messages:
+                        raise DeliveryError(
+                            "staging_failed",
+                            "Resource staging upload returned no message",
+                        )
+                    message_ids = [
+                        int(message.id)
+                        for message in (
+                            staged_messages
+                            if isinstance(staged_messages, (list, tuple))
+                            else [staged_messages]
+                        )
+                    ]
+                    staged_groups.append(
+                        {
+                            "first_message_id": message_ids[0],
+                            "item_count": len(downloaded_group),
+                            "message_ids": message_ids,
+                        }
+                    )
+                    staged_message_ids.extend(message_ids)
+                    self.resource_store.set_staging_manifest(
+                        job_id, staged_groups
                     )
                 finally:
                     self._cleanup_group(downloaded_group)
+            for staged_group in staged_groups:
+                self._require_local_authorization(job)
+                staging_message_id = int(
+                    staged_group["first_message_id"]
+                )
+                item_count = int(staged_group["item_count"])
+                try:
+                    await self._copy_staged_group(
+                        job, staging_message_id, item_count
+                    )
+                except Exception as error:
+                    logger.warning(
+                        "Resource staged copy failed: job={} type={}",
+                        job["public_id"],
+                        error.__class__.__name__,
+                    )
+                    code = "partial_upload" if uploaded_count else "upload_failed"
+                    raise DeliveryError(
+                        code,
+                        f"Resource upload stopped after {uploaded_count} items",
+                    ) from error
+                uploaded_count += item_count
+                self.resource_store.update_job_progress(
+                    job_id,
+                    status="uploading",
+                    uploaded_items=uploaded_count,
+                    upload_speed=0,
+                )
             result = self.resource_store.finish_delivery_job(job_id, "completed")
             logger.info(
                 "Resource delivery {} completed: package={} items={}",
@@ -390,11 +441,43 @@ class ResourceDeliveryService:
                 error_summary,
             )
         finally:
+            if staged_message_ids:
+                try:
+                    await self.resource_client.delete_messages(
+                        self.staging_chat_id, staged_message_ids
+                    )
+                    self.resource_store.clear_staging_manifest(job_id)
+                except Exception as error:
+                    logger.warning(
+                        "Resource staging cleanup failed: job={} type={}",
+                        job["public_id"],
+                        error.__class__.__name__,
+                    )
             shutil.rmtree(job_dir, ignore_errors=True)
         if result is not None:
             await self._notify_user(result)
             return result
         return self.resource_store.get_delivery_job(job_id)
+
+    async def _cleanup_recovered_staging(self) -> None:
+        for row in self.resource_store.list_staging_manifests():
+            message_ids = [
+                int(message_id)
+                for group in row["manifest"]
+                for message_id in group["message_ids"]
+            ]
+            try:
+                await self.resource_client.delete_messages(
+                    self.staging_chat_id, message_ids
+                )
+            except Exception as error:
+                logger.warning(
+                    "Recovered staging cleanup failed: job={} type={}",
+                    row["public_id"],
+                    error.__class__.__name__,
+                )
+                continue
+            self.resource_store.clear_staging_manifest(int(row["id"]))
 
     def _validated_package(self, job: dict) -> dict:
         if self.channel_store is None:
@@ -441,6 +524,41 @@ class ResourceDeliveryService:
             raise DeliveryError(
                 "target_permission_lost",
                 "Resource Bot can no longer post to the target channel",
+            )
+
+    async def _require_staging_permission(self, job: dict) -> None:
+        if self.staging_chat_id == int(job["target_chat_id"]):
+            raise DeliveryError(
+                "staging_invalid",
+                "Resource staging channel must differ from the target channel",
+            )
+        try:
+            member = await self.resource_client.get_chat_member(
+                self.staging_chat_id, int(self.resource_client.me.id)
+            )
+        except Exception as error:
+            logger.warning(
+                "Resource staging permission check failed: {}",
+                error.__class__.__name__,
+            )
+            member = None
+        privileges = getattr(member, "privileges", None)
+        can_post = bool(
+            member
+            and (
+                member.status == enums.ChatMemberStatus.OWNER
+                or (
+                    member.status == enums.ChatMemberStatus.ADMINISTRATOR
+                    and privileges
+                    and privileges.can_post_messages
+                    and privileges.can_delete_messages
+                )
+            )
+        )
+        if not can_post:
+            raise DeliveryError(
+                "staging_permission_lost",
+                "Resource Bot cannot post to the staging channel",
             )
 
     def _require_local_authorization(self, job: dict) -> None:
@@ -579,32 +697,64 @@ class ResourceDeliveryService:
         self,
         job: dict,
         group: list[PreparedDeliveryItem],
-        uploaded_before: int,
-    ) -> None:
+    ):
         self._require_local_authorization(job)
         try:
-            await self._upload_group(
-                int(job["target_chat_id"]), group, int(job["id"])
+            return await self._upload_group(
+                self.staging_chat_id, group, int(job["id"])
             )
         except pyrogram.errors.FloodWait as error:
             await self.sleep(error.value)
             self._require_local_authorization(job)
             try:
-                await self._upload_group(
-                    int(job["target_chat_id"]), group, int(job["id"])
+                return await self._upload_group(
+                    self.staging_chat_id, group, int(job["id"])
                 )
             except Exception as retry_error:
-                code = "partial_upload" if uploaded_before else "upload_failed"
+                logger.warning(
+                    "Resource staging upload failed: job={} type={}",
+                    job["public_id"],
+                    retry_error.__class__.__name__,
+                )
+                code = "staging_failed"
                 raise DeliveryError(
                     code,
-                    f"Resource upload stopped after {uploaded_before} items",
+                    "Resource staging upload failed",
                 ) from retry_error
         except Exception as error:
-            code = "partial_upload" if uploaded_before else "upload_failed"
+            logger.warning(
+                "Resource staging upload failed: job={} type={}",
+                job["public_id"],
+                error.__class__.__name__,
+            )
             raise DeliveryError(
-                code,
-                f"Resource upload stopped after {uploaded_before} items",
+                "staging_failed",
+                "Resource staging upload failed",
             ) from error
+
+    async def _copy_staged_group(
+        self, job: dict, staging_message_id: int, item_count: int
+    ) -> None:
+        async def copy_once() -> None:
+            if item_count > 1:
+                await self.resource_client.copy_media_group(
+                    int(job["target_chat_id"]),
+                    self.staging_chat_id,
+                    staging_message_id,
+                )
+            else:
+                await self.resource_client.copy_message(
+                    int(job["target_chat_id"]),
+                    self.staging_chat_id,
+                    staging_message_id,
+                )
+
+        try:
+            await copy_once()
+        except pyrogram.errors.FloodWait as error:
+            await self.sleep(error.value)
+            self._require_local_authorization(job)
+            await copy_once()
 
     @staticmethod
     def _cleanup_group(items: list[PreparedDeliveryItem]) -> None:
@@ -631,11 +781,12 @@ class ResourceDeliveryService:
                     stream = _TrackedUploadFile(item.local_path, tracker)
                     streams.append(stream)
                     media.append(self._input_media(item, stream))
-                await self.resource_client.send_media_group(target_chat_id, media)
+                return await self.resource_client.send_media_group(
+                    target_chat_id, media
+                )
             finally:
                 for stream in streams:
                     stream.close()
-            return
         item = group[0]
         path = str(item.local_path)
         tracker = self._speed_tracker(job_id, "upload_speed")
@@ -644,27 +795,27 @@ class ResourceDeliveryService:
             tracker.observe(current, total)
 
         if item.media_type == "photo":
-            await self.resource_client.send_photo(
+            return await self.resource_client.send_photo(
                 target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "video":
-            await self.resource_client.send_video(
+            return await self.resource_client.send_video(
                 target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "audio":
-            await self.resource_client.send_audio(
+            return await self.resource_client.send_audio(
                 target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "document":
-            await self.resource_client.send_document(
+            return await self.resource_client.send_document(
                 target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "voice":
-            await self.resource_client.send_voice(
+            return await self.resource_client.send_voice(
                 target_chat_id, path, caption=item.caption, progress=progress
             )
         elif item.media_type == "video_note":
-            await self.resource_client.send_video_note(
+            return await self.resource_client.send_video_note(
                 target_chat_id, path, progress=progress
             )
         else:

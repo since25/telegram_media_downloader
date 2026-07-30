@@ -2,6 +2,8 @@ api_hash: your_api_hash
 api_id: your_api_id
 bot_token: your_bot_token
 resource_bot_token: your_resource_bot_token
+# Private staging channel where the resource Bot is an administrator.
+resource_staging_chat_id: -1001234567890
 chat:
 - chat_id: telegram_chat_id
   last_read_message_id: 0
