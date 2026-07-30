@@ -289,9 +289,49 @@ def run(coroutine):
     return asyncio.run(coroutine)
 
 
-def test_delivery_downloads_all_items_then_uploads_with_resource_bot(
+def test_delivery_downloads_uploads_and_cleans_one_group_at_a_time(
     tmp_path, resource_store
 ):
+    events = []
+
+    class GroupAwareMainClient(FakeMainClient):
+        async def download_media(
+            self, message, file_name, progress=None, progress_args=()
+        ):
+            if message.id == 12:
+                job_dir = Path(file_name).parent
+                assert not (job_dir / "0000-10-photo.jpg").exists()
+                assert not (job_dir / "0001-11-video.mp4").exists()
+            events.append(f"download:{message.id}")
+            return await super().download_media(
+                message,
+                file_name,
+                progress=progress,
+                progress_args=progress_args,
+            )
+
+    class GroupAwareResourceClient(FakeResourceClient):
+        async def send_media_group(self, chat_id, media):
+            events.append("upload:media_group")
+            await super().send_media_group(chat_id, media)
+
+        async def send_document(
+            self,
+            chat_id,
+            file_name,
+            caption=None,
+            progress=None,
+            progress_args=(),
+        ):
+            events.append("upload:document")
+            await super().send_document(
+                chat_id,
+                file_name,
+                caption=caption,
+                progress=progress,
+                progress_args=progress_args,
+            )
+
     async def scenario():
         items = [
             package_item(0, 10, "photo", media_group_id="a", caption="Album"),
@@ -299,7 +339,7 @@ def test_delivery_downloads_all_items_then_uploads_with_resource_bot(
             package_item(2, 12, "document", file_name="notes.pdf"),
         ]
         channel_store = FakeChannelStore(items=items)
-        main_client = FakeMainClient(
+        main_client = GroupAwareMainClient(
             {
                 (-2001, item["source_message_id"]): message(
                     item["source_message_id"]
@@ -307,7 +347,7 @@ def test_delivery_downloads_all_items_then_uploads_with_resource_bot(
                 for item in items
             }
         )
-        resource_client = FakeResourceClient()
+        resource_client = GroupAwareResourceClient()
         service = make_service(
             tmp_path, resource_store, channel_store, main_client, resource_client
         )
@@ -315,7 +355,13 @@ def test_delivery_downloads_all_items_then_uploads_with_resource_bot(
 
         result = await service.process_job(job)
 
-        assert main_client.download_calls == [10, 11, 12]
+        assert events == [
+            "download:10",
+            "download:11",
+            "upload:media_group",
+            "download:12",
+            "upload:document",
+        ]
         assert [call[0] for call in resource_client.upload_calls] == [
             "media_group",
             "document",
@@ -334,8 +380,20 @@ def test_download_failure_starts_no_upload_and_cleans_temp(
 ):
     async def scenario():
         items = [
-            package_item(0, 10, "document", file_name="one.bin"),
-            package_item(1, 11, "document", file_name="two.bin"),
+            package_item(
+                0,
+                10,
+                "document",
+                media_group_id="documents",
+                file_name="one.bin",
+            ),
+            package_item(
+                1,
+                11,
+                "document",
+                media_group_id="documents",
+                file_name="two.bin",
+            ),
         ]
         channel_store = FakeChannelStore(items=items)
         main_client = FakeMainClient(
@@ -353,6 +411,37 @@ def test_download_failure_starts_no_upload_and_cleans_temp(
         assert resource_client.upload_calls == []
         assert result["status"] == "failed"
         assert result["error_code"] == "download_failed"
+        assert not (tmp_path / "deliveries" / job["public_id"]).exists()
+
+    run(scenario())
+
+
+def test_later_group_download_failure_is_reported_as_partial_upload(
+    tmp_path, resource_store
+):
+    async def scenario():
+        items = [
+            package_item(0, 10, "document", file_name="one.bin"),
+            package_item(1, 11, "voice", file_name="two.ogg"),
+        ]
+        channel_store = FakeChannelStore(items=items)
+        main_client = FakeMainClient(
+            {(-2001, 10): message(10), (-2001, 11): message(11)},
+            fail_download_message_id=11,
+        )
+        resource_client = FakeResourceClient()
+        service = make_service(
+            tmp_path, resource_store, channel_store, main_client, resource_client
+        )
+        job = create_job(resource_store, total_items=2)
+
+        result = await service.process_job(job)
+
+        assert [call[0] for call in resource_client.upload_calls] == ["document"]
+        assert result["status"] == "failed"
+        assert result["error_code"] == "partial_upload"
+        assert result["downloaded_items"] == 1
+        assert result["uploaded_items"] == 1
         assert not (tmp_path / "deliveries" / job["public_id"]).exists()
 
     run(scenario())

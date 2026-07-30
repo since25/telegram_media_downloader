@@ -287,6 +287,8 @@ class ResourceDeliveryService:
         job_id = int(job["id"])
         job_dir = self.temp_root / str(job["public_id"])
         result = None
+        downloaded_count = 0
+        uploaded_count = 0
         try:
             package = self._validated_package(job)
             await self._require_target_permission(job)
@@ -296,16 +298,43 @@ class ResourceDeliveryService:
                     "source_message_missing", "Resource package has no media items"
                 )
             job_dir.mkdir(parents=True, exist_ok=True)
-            downloaded = await self._download_all(job, items, job_dir)
-            self.resource_store.update_job_progress(
-                job_id,
-                status="uploading",
-                downloaded_items=len(downloaded),
-                uploaded_items=0,
-                download_speed=0,
-                upload_speed=0,
-            )
-            uploaded_count = await self._upload_all(job, downloaded)
+            for group in build_delivery_groups(items):
+                self.resource_store.update_job_progress(
+                    job_id,
+                    status="downloading",
+                    downloaded_items=downloaded_count,
+                    uploaded_items=uploaded_count,
+                    download_speed=0,
+                    upload_speed=0,
+                )
+                downloaded_group = await self._download_group(
+                    job,
+                    group,
+                    job_dir,
+                    downloaded_count,
+                )
+                downloaded_count += len(downloaded_group)
+                self.resource_store.update_job_progress(
+                    job_id,
+                    status="uploading",
+                    downloaded_items=downloaded_count,
+                    uploaded_items=uploaded_count,
+                    download_speed=0,
+                    upload_speed=0,
+                )
+                try:
+                    await self._upload_delivery_group(
+                        job, downloaded_group, uploaded_count
+                    )
+                    uploaded_count += len(downloaded_group)
+                    self.resource_store.update_job_progress(
+                        job_id,
+                        status="uploading",
+                        uploaded_items=uploaded_count,
+                        upload_speed=0,
+                    )
+                finally:
+                    self._cleanup_group(downloaded_group)
             result = self.resource_store.finish_delivery_job(job_id, "completed")
             logger.info(
                 "Resource delivery {} completed: package={} items={}",
@@ -314,26 +343,51 @@ class ResourceDeliveryService:
                 uploaded_count,
             )
         except DeliveryError as error:
+            if uploaded_count and error.code != "partial_upload":
+                logger.warning(
+                    "Resource delivery {} became partial after {} items: {}",
+                    job["public_id"],
+                    uploaded_count,
+                    error.code,
+                )
+                error = DeliveryError(
+                    "partial_upload",
+                    f"Resource delivery stopped after {uploaded_count} items",
+                )
             result = self.resource_store.finish_delivery_job(
                 job_id, "failed", error.code, error.summary
             )
         except asyncio.CancelledError:
+            error_code = (
+                "partial_upload" if uploaded_count else "restart_interrupted"
+            )
+            error_summary = (
+                f"Resource delivery stopped after {uploaded_count} items"
+                if uploaded_count
+                else "Resource delivery was interrupted before completion"
+            )
             self.resource_store.finish_delivery_job(
                 job_id,
                 "failed",
-                "restart_interrupted",
-                "Resource delivery was interrupted before completion",
+                error_code,
+                error_summary,
             )
             raise
         except Exception as error:
             logger.exception(
                 "Unexpected resource delivery failure for {}", job["public_id"]
             )
+            error_code = "partial_upload" if uploaded_count else "delivery_failed"
+            error_summary = (
+                f"Resource delivery stopped after {uploaded_count} items"
+                if uploaded_count
+                else f"Resource delivery failed ({error.__class__.__name__})"
+            )
             result = self.resource_store.finish_delivery_job(
                 job_id,
                 "failed",
-                "delivery_failed",
-                f"Resource delivery failed ({error.__class__.__name__})",
+                error_code,
+                error_summary,
             )
         finally:
             shutil.rmtree(job_dir, ignore_errors=True)
@@ -434,11 +488,12 @@ class ResourceDeliveryService:
             )
         return prepared
 
-    async def _download_all(
+    async def _download_group(
         self,
         job: dict,
         items: list[PreparedDeliveryItem],
         job_dir: Path,
+        downloaded_before: int,
     ) -> list[PreparedDeliveryItem]:
         downloaded: list[PreparedDeliveryItem] = []
         async with self.activity_gate.download_permit():
@@ -474,7 +529,7 @@ class ResourceDeliveryService:
                 )
                 self.resource_store.update_job_progress(
                     int(job["id"]),
-                    downloaded_items=len(downloaded),
+                    downloaded_items=downloaded_before + len(downloaded),
                     download_speed=0,
                 )
         return downloaded
@@ -520,43 +575,46 @@ class ResourceDeliveryService:
             except pyrogram.errors.FloodWait as error:
                 await self.sleep(error.value)
 
-    async def _upload_all(
-        self, job: dict, items: list[PreparedDeliveryItem]
-    ) -> int:
-        uploaded = 0
-        for group in build_delivery_groups(items):
+    async def _upload_delivery_group(
+        self,
+        job: dict,
+        group: list[PreparedDeliveryItem],
+        uploaded_before: int,
+    ) -> None:
+        self._require_local_authorization(job)
+        try:
+            await self._upload_group(
+                int(job["target_chat_id"]), group, int(job["id"])
+            )
+        except pyrogram.errors.FloodWait as error:
+            await self.sleep(error.value)
             self._require_local_authorization(job)
             try:
                 await self._upload_group(
                     int(job["target_chat_id"]), group, int(job["id"])
                 )
-            except pyrogram.errors.FloodWait as error:
-                await self.sleep(error.value)
-                self._require_local_authorization(job)
-                try:
-                    await self._upload_group(
-                        int(job["target_chat_id"]), group, int(job["id"])
-                    )
-                except Exception as retry_error:
-                    code = "partial_upload" if uploaded else "upload_failed"
-                    raise DeliveryError(
-                        code,
-                        f"Resource upload stopped after {uploaded} items",
-                    ) from retry_error
-            except Exception as error:
-                code = "partial_upload" if uploaded else "upload_failed"
+            except Exception as retry_error:
+                code = "partial_upload" if uploaded_before else "upload_failed"
                 raise DeliveryError(
                     code,
-                    f"Resource upload stopped after {uploaded} items",
-                ) from error
-            uploaded += len(group)
-            self.resource_store.update_job_progress(
-                int(job["id"]),
-                status="uploading",
-                uploaded_items=uploaded,
-                upload_speed=0,
-            )
-        return uploaded
+                    f"Resource upload stopped after {uploaded_before} items",
+                ) from retry_error
+        except Exception as error:
+            code = "partial_upload" if uploaded_before else "upload_failed"
+            raise DeliveryError(
+                code,
+                f"Resource upload stopped after {uploaded_before} items",
+            ) from error
+
+    @staticmethod
+    def _cleanup_group(items: list[PreparedDeliveryItem]) -> None:
+        for item in items:
+            if item.local_path is None:
+                continue
+            try:
+                item.local_path.unlink()
+            except FileNotFoundError:
+                continue
 
     async def _upload_group(
         self,

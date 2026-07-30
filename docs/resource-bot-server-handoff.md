@@ -158,10 +158,13 @@ Perform these steps with a disposable activation key and a controlled target cha
 8. Publish a one-file package. Confirm the task is queued, the main account downloads the
    source, and the resource Bot uploads it to the target channel.
 9. Publish a known photo/video album. Confirm ordering and album grouping are preserved.
-10. Click one publish button twice. Confirm only one persistent delivery job is created.
-11. Temporarily remove the resource Bot's publish permission. Confirm publishing is
+10. Publish a package containing at least two groups. Confirm the first group appears in
+    the target channel before the second group starts downloading, and confirm the first
+    group's local temporary files are removed before the second group starts.
+11. Click one publish button twice. Confirm only one persistent delivery job is created.
+12. Temporarily remove the resource Bot's publish permission. Confirm publishing is
     refused and the binding becomes permission-lost; restore permission and bind again.
-12. Run `/revoke_resource_user <telegram_user_id>` in the management Bot and confirm new
+13. Run `/revoke_resource_user <telegram_user_id>` in the management Bot and confirm new
     searches/publishes are rejected.
 
 Inspect state without exposing activation hashes or tokens:

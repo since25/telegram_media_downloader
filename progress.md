@@ -2671,3 +2671,32 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, preserve the current schema-2 resource database separately, restore `config.yaml`, sessions as needed, and `resource_bot.sqlite3` from `/root/telegram_media_downloader/backups/release-20260729-204948-publishing-page`, reset the code to commit `116bf21`, and restart the service. Do not restore the other databases unless their integrity is independently in question.
+
+## 2026-07-30 - Task: Stream resource publishing by media group
+
+### What was done
+
+- Changed resource delivery from downloading an entire package before upload to processing one compatible media group or single item at a time.
+- Preserved compatible Telegram albums with the existing 10-item group limit, uploaded each group before downloading the next, and deleted each successfully uploaded group's local files immediately.
+- Kept cumulative project-level download/upload item counts and live transfer speeds across group transitions.
+- Marked failures after any successful group as `partial_upload`, retained the published count, and kept partial jobs non-retryable to avoid duplicate channel posts.
+- Documented the reduced temporary-disk footprint, partial-publication semantics, and live acceptance steps.
+
+### Testing
+
+- RED verification: the group-order test failed because the second group started downloading while the first group's files still existed; the later-group failure test observed no upload before the download failure.
+- Resource delivery worker tests -> `15 passed`.
+- Resource store, delivery, Bot, lifecycle, and command regressions -> `56 passed`.
+- Complete suite with isolated `TMD_TASK_DB_PATH` and `TMD_RESOURCE_BOT_DB_PATH` -> `622 passed, 1 skipped`.
+- Changed modules compiled, `check_imports.py` passed, and `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/resource_delivery.py`: Added per-group download/upload/cleanup sequencing and cumulative partial-upload failure handling.
+- `tests/module/test_resource_delivery.py`: Added ordering, immediate cleanup, and later-group download-failure regressions.
+- `README.md`, `README_CN.md`, and `docs/`: Documented the group pipeline, bounded temporary disk use, and acceptance behavior.
+- `progress.md`: Recorded implementation and verification evidence.
+
+Rollback:
+- Revert this implementation commit and restart `tg-downloader.service`; no schema, configuration, activation, binding, or existing delivery-history data changes are required.

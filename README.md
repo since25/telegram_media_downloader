@@ -89,11 +89,15 @@ to post messages.
 
 The main Telegram account reads and downloads source media; the resource Bot uploads the
 temporary files to the bound channel. The resource Bot therefore does not need access to
-private source channels. Delivery is globally serial and preserves compatible Telegram
-media groups. A partial upload is reported without automatic retry to avoid duplicate
-channel posts. State is stored separately in `resource_bot.sqlite3`. The Web console has
-an independent Publishing tab for queue position, download/upload item counts, live
-speeds, results, queued-job cancellation, and terminal-history cleanup. See
+private source channels. Delivery is globally serial and processes one compatible media
+group or single item at a time: download, upload, then immediately delete that group's
+local files before continuing. Compatible Telegram albums remain intact, with at most 10
+items per group, so temporary disk usage is bounded by the active group instead of the
+whole package. A later failure is reported as `partial_upload` with the published count
+and is not retried automatically, avoiding duplicate channel posts. State is stored
+separately in `resource_bot.sqlite3`. The Web console has an independent Publishing tab
+for queue position, download/upload item counts, live speeds, results, queued-job
+cancellation, and terminal-history cleanup. See
 [`docs/resource-bot-server-handoff.md`](docs/resource-bot-server-handoff.md) for the
 production handoff.
 

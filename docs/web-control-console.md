@@ -140,20 +140,25 @@ belong to one active resource user. Binding requires a pending private `/bind` r
 the acting user to be the channel owner/administrator, and the resource Bot to be an
 administrator with `can_post_messages`.
 
-Publishing does not use Telegram native forward/copy. The main account refetches and
-downloads every package item under its source permissions, then the resource Bot uploads
-the complete local set to the bound destination. This keeps private source access
-separate from destination-channel access and also works when native forwarding is
-restricted but downloading remains permitted. Compatible photo/video, audio, and
-document albums are preserved; unsupported album combinations are sent sequentially.
+Publishing does not use Telegram native forward/copy. The main account refetches source
+messages under its source permissions, then the resource Bot uploads the temporary files
+to the bound destination. Delivery processes one compatible media group or single item
+at a time: download the group, upload it, delete its local files, then continue. This
+keeps private source access separate from destination-channel access, works when native
+forwarding is restricted but downloading remains permitted, and bounds temporary disk
+usage to the active group instead of the entire package. Compatible photo/video, audio,
+and document albums are preserved in groups of at most 10; unsupported album
+combinations are sent sequentially as single items.
 
 `resource_bot.sqlite3` is independent from `channel_library.sqlite3` and
 `web_tasks.sqlite3`. It stores hashed activation keys, activated users, one-channel
 bindings, and persistent FIFO delivery jobs. Only one delivery job runs at a time.
-Queued jobs survive restart; a job interrupted while downloading or uploading is closed
-as `restart_interrupted` and is not retried automatically. Partial uploads retain their
-published count and are also not retried automatically, preventing duplicate posts.
-Temporary files are removed after every terminal outcome.
+Queued jobs survive restart. A job interrupted before publishing anything is closed as
+`restart_interrupted`; once any group has been published, a later download, upload, or
+restart interruption is closed as `partial_upload`. Partial uploads retain their
+published count and are not retried automatically, preventing duplicate posts. Each
+successfully uploaded group's local files are removed before the next group starts, and
+the job directory is removed again after every terminal outcome as a safety cleanup.
 
 The Web console exposes these jobs on an independent **发布** tab rather than mixing
 them into the download Tasks page. It polls once per second and shows package-level
