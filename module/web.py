@@ -170,6 +170,13 @@ def get_flask_app() -> Flask:
     return _flask_app
 
 
+@_flask_app.route("/healthz")
+def healthz():
+    """Return minimal process readiness without operational details."""
+
+    return jsonify({"status": "ok"})
+
+
 def _web_auth_file_path() -> Path:
     """Return the local auth file path."""
 

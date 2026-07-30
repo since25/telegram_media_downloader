@@ -506,9 +506,9 @@ git commit -m "fix: restore runtime ownership invariants"
 - Blocking mypy/Pylint coverage includes `transfer_progress.py`, `config_persistence.py`,
   `web_auth.py`, `web_server.py`, and touched ownership call sites.
 
-- [ ] Add a failing runtime contract for the expanded boundary.
-- [ ] Fix only errors in files changed by Phases 5-7.
-- [ ] Keep historical unrelated errors documented rather than suppressed.
+- [x] Add a failing runtime contract for the expanded boundary.
+- [x] Fix only errors in files changed by Phases 5-7.
+- [x] Keep historical unrelated errors documented rather than suppressed.
 
 ### Task 8.2: Add a minimal health contract
 
@@ -523,9 +523,9 @@ git commit -m "fix: restore runtime ownership invariants"
 - `GET /healthz` returns only process readiness and no secrets.
 - Docker health check calls the local endpoint.
 
-- [ ] Add failing endpoint and Docker contract tests.
-- [ ] Implement the bounded response and health command.
-- [ ] Verify login-protected operational APIs remain protected.
+- [x] Add failing endpoint and Docker contract tests.
+- [x] Implement the bounded response and health command.
+- [x] Verify login-protected operational APIs remain protected.
 
 ### Task 8.3: Finish reproducible and least-privilege container inputs
 
@@ -543,18 +543,18 @@ git commit -m "fix: restore runtime ownership invariants"
 - The runtime user and writable directories have an explicit migration contract.
 - Existing host state is never silently made inaccessible.
 
-- [ ] Add failing mutable-base and root-runtime contracts.
-- [ ] Resolve and record the reviewed base digest.
-- [ ] Add the least-privilege user only with verified ownership instructions.
-- [ ] Build and smoke-test the image when a Docker daemon is available; otherwise keep
+- [x] Add failing mutable-base and root-runtime contracts.
+- [x] Resolve and record the reviewed base digest.
+- [x] Add the least-privilege user only with verified ownership instructions.
+- [x] Build and smoke-test the image when a Docker daemon is available; otherwise keep
   the environment gap explicit and require CI build evidence before deployment.
 
 ### Phase 8 verification and commit
 
-- [ ] Run runtime, Docker, dependency, health, static, and full tests.
-- [ ] Run all pre-commit hooks, imports, compilation, dependency, Compose, build, and diff checks.
-- [ ] Append `progress.md`.
-- [ ] Commit as `chore: tighten module and container boundaries`.
+- [x] Run runtime, Docker, dependency, health, static, and full tests.
+- [x] Run all pre-commit hooks, imports, compilation, dependency, Compose, build, and diff checks.
+- [x] Append `progress.md`.
+- [x] Commit as `chore: tighten module and container boundaries`.
 
 ---
 

@@ -333,18 +333,31 @@ Every route rejects undocumented query keys, JSON fields, and request bodies wit
 
 The checked-in Docker Compose contract mounts the host `./state` directory at
 `/app/state` and sets `TMD_TASK_DB_PATH`, `TMD_CHANNEL_LIBRARY_DB_PATH`,
-`TMD_RESOURCE_BOT_DB_PATH`, and `TMD_WEB_AUTH_FILE` to files inside that mount. Container
-replacement therefore preserves task history, the channel index, resource-delivery
-state, and the Web credential verifier. Existing Docker installations must stop the
-container, migrate each SQLite database through the SQLite backup API, verify
-`PRAGMA integrity_check`, and move the Web auth file before starting the new mount.
+`TMD_RESOURCE_BOT_DB_PATH`, `TMD_WEB_AUTH_FILE`, `TMD_CONFIG_PATH`, and
+`TMD_DATA_PATH` to files inside that mount. Container replacement therefore preserves
+configuration, task history, the channel index, resource-delivery state, and the Web
+credential verifier while allowing atomic YAML replacement inside a directory mount.
+Existing Docker installations must stop the container, migrate each SQLite database
+through the SQLite backup API, verify `PRAGMA integrity_check`, and move configuration,
+data, and the Web auth file before starting the new mount.
 
 The Docker runtime image copies Rclone and Python packages only from its local named
 compile stage. `.dockerignore` excludes real configuration, sessions, databases,
 downloads, logs, temporary files, and Web credentials. The Pyrogram source URL is pinned
-to an immutable commit and SHA-256. Rclone mkdir/copy operations use argument arrays
-without a shell; directory cache entries are created only after mkdir succeeds, and file
-deletion/upload counters advance only when the copy process exits with code `0`.
+to an immutable commit and SHA-256. The Python base image uses the reviewed
+multi-architecture digest, Alpine package versions are explicit, and the runtime uses
+UID/GID 10001 by default instead of root. Compose can override those IDs through
+`TMD_UID`/`TMD_GID`; operators must stop and back up the old container, move config/data
+into `state/`, copy Rclone config into the project-local `rclone/` mount, and `chown -R`
+every writable mount before starting the new image. Rclone mkdir/copy operations use
+argument arrays without a shell; directory cache entries are created only after mkdir
+succeeds, and file deletion/upload counters advance only when the copy process exits
+with code `0`.
+
+`GET /healthz` is public and returns only `{"status":"ok"}`. It does not expose task,
+system, configuration, or credential data; operational endpoints remain login-protected.
+The image and Compose health checks call this endpoint on `127.0.0.1:5000`, so container
+deployments must use `enable_web: true` and bind the Web listener to `0.0.0.0`.
 
 The optional Aligo adapter is not installed by the base requirements. Install the
 reviewed pinned package with `pip install aligo==5.4.0`, select `upload_adapter: aligo`,
@@ -356,8 +369,10 @@ The supported production and development interpreter is Python 3.11. Package met
 CI, `Makefile`, pre-commit hooks, and development dependencies use that same contract.
 `make static_type_check` and the blocking Pylint hook cover the task-state, lifecycle,
 progress, admission, Telegram-activity, Rclone, and Web command boundaries stabilized by
-the architecture hardening work. Older dynamic application areas remain outside that
-blocking type boundary until they can be migrated with dedicated tests.
+the architecture hardening work, including configuration persistence, download runtime
+and transfer, transfer progress, Web authentication, and owned Web serving. Older dynamic
+application areas remain outside that blocking type boundary until they can be migrated
+with dedicated tests.
 
 Before an upgrade or rollback that could affect these stores:
 

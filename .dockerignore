@@ -13,6 +13,7 @@ __pycache__/
 config.yaml
 data.yaml
 sessions/
+rclone/
 state/
 downloads/
 log/

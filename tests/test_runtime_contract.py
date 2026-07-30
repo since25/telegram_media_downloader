@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from ruamel.yaml import YAML
@@ -133,3 +136,58 @@ def test_development_and_pre_commit_tools_are_aligned():
         if hook["id"] == "pylint"
     )
     assert pylint_hook.get("language") != "system"
+
+
+def test_architecture_hardening_modules_are_in_blocking_static_boundary():
+    expected_paths = {
+        "module/config_persistence.py",
+        "module/download_runtime.py",
+        "module/download_transfer.py",
+        "module/transfer_progress.py",
+        "module/web_auth.py",
+        "module/web_server.py",
+    }
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    config = _load_yaml(".pre-commit-config.yaml")
+
+    for path in expected_paths:
+        assert path in makefile
+
+    expected_stems = {Path(path).stem for path in expected_paths}
+    for hook_id in ("mypy", "pylint"):
+        hook = next(
+            hook
+            for entry in config["repos"]
+            for hook in entry["hooks"]
+            if hook["id"] == hook_id
+        )
+        file_pattern = hook["files"]
+        for stem in expected_stems:
+            assert stem in file_pattern
+
+
+def test_runtime_config_paths_support_directory_mounts(tmp_path):
+    config_path = tmp_path / "state" / "config.yaml"
+    data_path = tmp_path / "state" / "data.yaml"
+    environment = os.environ.copy()
+    environment["TMD_CONFIG_PATH"] = str(config_path)
+    environment["TMD_DATA_PATH"] = str(data_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from module.download_entry import app;"
+                "print(app.config_file);"
+                "print(app.app_data_file)"
+            ),
+        ],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    assert result.stdout.splitlines()[-2:] == [str(config_path), str(data_path)]

@@ -1,9 +1,8 @@
-version: "3.3"
-
 services:
   telegram_media_downloader:
     image: tangyoha/telegram_media_downloader:latest
     build: .
+    user: "${TMD_UID:-10001}:${TMD_GID:-10001}"
     ports:
       # Here is what you need to edit
       - "5000:5000"
@@ -11,20 +10,30 @@ services:
     #  - http_proxy=http://192.168.101.30:10811
     #  - https_proxy=http://192.168.101.30:10811
     environment:
+      TMD_CONFIG_PATH: /app/state/config.yaml
+      TMD_DATA_PATH: /app/state/data.yaml
       TMD_TASK_DB_PATH: /app/state/web_tasks.sqlite3
       TMD_CHANNEL_LIBRARY_DB_PATH: /app/state/channel_library.sqlite3
       TMD_RESOURCE_BOT_DB_PATH: /app/state/resource_bot.sqlite3
       TMD_WEB_AUTH_FILE: /app/state/.web_auth.json
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3).close()
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
     volumes:
       # Here is what you need to edit
       - "./downloads/:/app/downloads/"
 
       # Rclone
-      - "$HOME/.config/rclone/:$HOME/.config/rclone/"
+      - "./rclone/:/home/app/.config/rclone/"
 
       # The following is what you don't need to edit
-      - "./config.yaml:/app/config.yaml"
-      - "./data.yaml:/app/data.yaml"
       - "./log/:/app/log/"
       - "./sessions/:/app/sessions"
       - "./temp/:/app/temp"

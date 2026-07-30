@@ -253,44 +253,59 @@ pip3 install -r requirements.txt
 确保安装了 **docker** 和 **docker-compose**
 ```sh
 docker pull tangyoha/telegram_media_downloader:latest
-mkdir -p ~/app/log ~/app/state && cd ~/app
+mkdir -p ~/app/{downloads,log,rclone,sessions,state,temp} && cd ~/app
 wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/docker-compose.yaml -O docker-compose.yaml
-wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/config.example.yaml -O config.example.yaml
-wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/data.example.yaml -O data.yaml
-# 复制配置文件示例为实际配置文件
-cp config.example.yaml config.yaml
+wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/config.example.yaml -O state/config.yaml
+wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/data.example.yaml -O state/data.yaml
+printf 'TMD_UID=%s\nTMD_GID=%s\n' "$(id -u)" "$(id -g)" > .env
+sudo chown -R "$(id -u):$(id -g)" downloads log rclone sessions state temp
 # 编辑配置文件
-vi config.yaml
+# 容器健康检查要求 enable_web: true、web_host: 0.0.0.0
+vi state/config.yaml
+# 可选：把已有 Rclone 配置复制到项目内挂载目录
+cp "$HOME/.config/rclone/rclone.conf" rclone/rclone.conf
 
 # 第一次需要前台启动
 # 输入你的电话号码和密码，然后退出(ctrl + c)
-docker-compose run --rm telegram_media_downloader
+docker compose run --rm telegram_media_downloader
 
 # 执行完以上操作后，后面的所有启动都在后台启动
-docker-compose up -d
+docker compose up -d
 
 ＃ 升级
 docker pull tangyoha/telegram_media_downloader:latest
 cd ~/app
-docker-compose down
-docker-compose up -d
+docker compose down
+docker compose up -d
 ```
 
-Compose 会把宿主机 `./state` 挂载到容器 `/app/state`，并在其中保存
-`web_tasks.sqlite3`、`channel_library.sqlite3`、`resource_bot.sqlite3` 和
-`.web_auth.json`。备份时应把该目录与 `config.yaml`、`sessions/` 一并保存。已有
-Docker 部署升级前必须先停止容器，三个数据库使用 SQLite backup API 迁移，不能在
-WAL 仍有写入时直接复制；原有 Web 认证文件应在新 Compose 启动前移入 `state/`。
+镜像默认以非 root 用户运行。Compose 从 `.env` 读取 `TMD_UID` 和 `TMD_GID`，
+使挂载文件继续由宿主机操作用户拥有；所有可写目录都必须允许该数值用户访问。
+宿主机整个 `./state` 目录挂载到容器 `/app/state`，其中保存
+`state/config.yaml`、`state/data.yaml`、三个 SQLite 数据库和
+`.web_auth.json`，从而允许配置在同一目录挂载内原子替换。
+
+已有 Docker 部署迁移时必须先停止容器并完整备份。三个数据库使用 SQLite backup
+API 迁移并确认 `PRAGMA integrity_check` 返回 `ok`，不能直接复制仍有 WAL 写入的
+数据库。随后把 `config.yaml` 移到 `state/config.yaml`、`data.yaml` 移到
+`state/data.yaml`、Web 认证文件移入 `state/`，把 Rclone 配置复制到
+`./rclone/`，写入所选 `TMD_UID`/`TMD_GID` 的 `.env`，并对 `downloads`、`log`、
+`rclone`、`sessions`、`state`、`temp` 执行 `chown -R` 后再启动非 root 容器。
+保留停机时的迁移前目录作为回滚点。
 
 发布镜像只从当前检出的源码和 Dockerfile 内本地 `compile-image` 阶段构建。真实的
 `config.yaml`、`data.yaml`、会话、数据库、下载文件、日志和 Web 认证信息都会被
-排除在构建上下文之外，必须在运行时挂载。Pyrogram 分支固定到不可变提交和归档
-校验值；Rclone 使用参数数组启动，上传是否成功只依据进程退出码，不再依赖可读
-进度文本。
+排除在构建上下文之外，必须在运行时挂载。Python 基础镜像固定到已审核的多架构
+digest，Alpine 构建和运行包固定版本；Pyrogram 分支固定到不可变提交和归档校验
+值。Rclone 使用参数数组启动，上传是否成功只依据进程退出码，不再依赖可读进度
+文本。容器健康检查要求 `enable_web: true`，在本地 5000 端口调用公开且最小化的
+`/healthz` 端点。
 
 容器中的状态路径通过以下环境变量明确指定，必要时可以覆盖：
 
 ```yaml
+TMD_CONFIG_PATH: /app/state/config.yaml
+TMD_DATA_PATH: /app/state/data.yaml
 TMD_TASK_DB_PATH: /app/state/web_tasks.sqlite3
 TMD_CHANNEL_LIBRARY_DB_PATH: /app/state/channel_library.sqlite3
 TMD_RESOURCE_BOT_DB_PATH: /app/state/resource_bot.sqlite3

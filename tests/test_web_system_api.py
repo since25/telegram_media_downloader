@@ -1,8 +1,39 @@
 """Tests for GET /api/system metrics endpoint."""
+
 import json
 from types import SimpleNamespace
 
 import module.web as web
+
+
+def test_healthz_is_public_and_returns_only_process_readiness():
+    app = web.get_flask_app()
+    app.config["TESTING"] = True
+    old_login_disabled = app.config.get("LOGIN_DISABLED")
+    app.config["LOGIN_DISABLED"] = False
+    try:
+        with app.test_client() as client:
+            resp = client.get("/healthz")
+    finally:
+        app.config["LOGIN_DISABLED"] = old_login_disabled
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"status": "ok"}
+
+
+def test_system_metrics_remain_login_protected():
+    app = web.get_flask_app()
+    app.config["TESTING"] = True
+    old_login_disabled = app.config.get("LOGIN_DISABLED")
+    app.config["LOGIN_DISABLED"] = False
+    try:
+        with app.test_client() as client:
+            resp = client.get("/api/system")
+    finally:
+        app.config["LOGIN_DISABLED"] = old_login_disabled
+
+    assert resp.status_code == 302
+    assert "/login" in resp.headers["Location"]
 
 
 def test_system_metrics_shape(monkeypatch):

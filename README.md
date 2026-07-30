@@ -138,44 +138,62 @@ pip3 install -r requirements.txt
 Make sure you have **docker** and **docker-compose** installed
 ```sh
 docker pull tangyoha/telegram_media_downloader:latest
-mkdir -p ~/app/log ~/app/state && cd ~/app
+mkdir -p ~/app/{downloads,log,rclone,sessions,state,temp} && cd ~/app
 wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/docker-compose.yaml -O docker-compose.yaml
-wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/config.example.yaml -O config.yaml
-wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/data.example.yaml -O data.yaml
-# vi config.yaml and docker-compose.yaml
-vi config.yaml
+wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/config.example.yaml -O state/config.yaml
+wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/data.example.yaml -O state/data.yaml
+printf 'TMD_UID=%s\nTMD_GID=%s\n' "$(id -u)" "$(id -g)" > .env
+sudo chown -R "$(id -u):$(id -g)" downloads log rclone sessions state temp
+# Set enable_web: true and web_host: 0.0.0.0 for the container health check.
+vi state/config.yaml
+# Optional: copy an existing Rclone configuration into the project-local mount.
+cp "$HOME/.config/rclone/rclone.conf" rclone/rclone.conf
 
 # The first time you need to start the foreground
 # enter your phone number and code, then exit(ctrl + c)
-docker-compose run --rm telegram_media_downloader
+docker compose run --rm telegram_media_downloader
 
 # After performing the above operations, all subsequent startups will start in the background
-docker-compose up -d
+docker compose up -d
 
 # Upgrade
 docker pull tangyoha/telegram_media_downloader:latest
 cd ~/app
-docker-compose down
-docker-compose up -d
+docker compose down
+docker compose up -d
 ```
 
-The Compose file mounts `./state` at `/app/state` and stores
-`web_tasks.sqlite3`, `channel_library.sqlite3`, `resource_bot.sqlite3`, and
-`.web_auth.json` there. Back up this directory together with `config.yaml` and
-`sessions/`. For an existing Docker installation, stop the container first and migrate
-the three databases with the SQLite backup API; do not copy a live WAL database. Move
-the existing Web auth file into `state/` before starting the new Compose definition.
+The image runs without root privileges. Compose reads `TMD_UID` and `TMD_GID` from
+`.env` so mounted files remain owned by the host operator. Every writable mount must be
+accessible to that numeric user. The whole `./state` directory is mounted at
+`/app/state`; it stores `state/config.yaml`, `state/data.yaml`, all three SQLite
+databases, and `.web_auth.json`, allowing atomic configuration replacement inside one
+directory mount.
+
+For an existing Docker installation, stop the container and back it up before changing
+ownership. Migrate each live SQLite database with the SQLite backup API and verify
+`PRAGMA integrity_check`; do not copy a live WAL database. Then move `config.yaml` to
+`state/config.yaml`, `data.yaml` to `state/data.yaml`, and the Web auth file into
+`state/`. Copy Rclone configuration into `./rclone/`, create `.env` with the chosen
+`TMD_UID`/`TMD_GID`, and run `chown -R` over `downloads`, `log`, `rclone`, `sessions`,
+`state`, and `temp` before starting the non-root container. Keep the stopped pre-migration
+directory as the rollback point.
 
 The published runtime image is built only from the checked-out source and its local
 `compile-image` stage. Real `config.yaml`, `data.yaml`, sessions, databases, downloads,
 logs, and Web credentials are excluded from the build context and must be mounted at
-runtime. The Pyrogram fork is pinned to an immutable commit/archive checksum. Rclone
-commands are executed as argument arrays, and upload success is determined by the
-process exit code rather than a human-readable progress line.
+runtime. The Python base image is pinned to the reviewed multi-architecture digest and
+the Alpine build/runtime packages are version-pinned. The Pyrogram fork is pinned to an
+immutable commit/archive checksum. Rclone commands are executed as argument arrays, and
+upload success is determined by the process exit code rather than a human-readable
+progress line. The container health check requires `enable_web: true`, listens locally
+on port 5000, and calls the public minimal `/healthz` endpoint.
 
 The container paths are explicit and may be overridden when needed:
 
 ```yaml
+TMD_CONFIG_PATH: /app/state/config.yaml
+TMD_DATA_PATH: /app/state/data.yaml
 TMD_TASK_DB_PATH: /app/state/web_tasks.sqlite3
 TMD_CHANNEL_LIBRARY_DB_PATH: /app/state/channel_library.sqlite3
 TMD_RESOURCE_BOT_DB_PATH: /app/state/resource_bot.sqlite3

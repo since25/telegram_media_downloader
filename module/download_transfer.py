@@ -134,6 +134,8 @@ def _flood_wait_seconds(error: BaseException) -> int:
     value = getattr(error, "value", None)
     if value is None:
         value = getattr(error, "seconds", None)
+    if value is None:
+        return 0
     try:
         return max(int(value), 0)
     except (TypeError, ValueError):

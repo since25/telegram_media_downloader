@@ -311,8 +311,8 @@ logging.basicConfig(
     handlers=[RichHandler()],
 )
 
-CONFIG_NAME = "config.yaml"
-DATA_FILE_NAME = "data.yaml"
+CONFIG_NAME = os.environ.get("TMD_CONFIG_PATH", "config.yaml")
+DATA_FILE_NAME = os.environ.get("TMD_DATA_PATH", "data.yaml")
 APPLICATION_NAME = "media_downloader"
 app = Application(CONFIG_NAME, DATA_FILE_NAME, APPLICATION_NAME)
 

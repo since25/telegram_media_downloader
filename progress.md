@@ -3144,3 +3144,39 @@ Changed files:
 
 Rollback:
 - Revert the Phase 7 commit. No database schema or persisted task migration is introduced. If the new authentication code has already migrated a real auth file, stop the service, preserve that file as evidence, set an explicit `web_login_secret`, and then roll back because older code cannot authenticate from the password-hash field alone.
+
+## 2026-07-30 - Task: Phase 8 bounded module, static, and container cleanup
+
+### What was done
+
+- Expanded the blocking mypy/Pylint boundary from nine to fifteen stable modules, adding configuration persistence, download runtime/transfer, transfer progress, Web authentication, and owned Web serving without pulling legacy dynamic application files into the gate.
+- Added a public minimal `GET /healthz` readiness endpoint while preserving authentication on operational metrics, and wired matching Dockerfile and Compose health checks.
+- Pinned the Python 3.11.9 Alpine multi-architecture base to reviewed digest `sha256:f9ce6fe33d9a5499e35c976df16d24ae80f6ef0a28be5433140236c2ca482686`; pinned GCC, musl development headers, and Rclone package versions; and verified active Python requirements are exact-version or SHA-256 pinned.
+- Added a default UID/GID 10001 non-root runtime user plus Compose `TMD_UID`/`TMD_GID` overrides. Moved Docker configuration/data paths into the whole `state/` directory mount so atomic YAML replacement remains valid, changed Rclone configuration to a project-local mount, and excluded that credential directory from the build context.
+- Documented first-install and stopped-service migration steps, ownership changes, health prerequisites, backup requirements, and rollback boundaries in English, Chinese, and operations guidance.
+
+### Testing
+
+- RED static boundary: `tests/test_runtime_contract.py::test_architecture_hardening_modules_are_in_blocking_static_boundary` failed because the new modules were absent from Makefile/hooks; the expanded mypy probe also exposed one real optional FloodWait conversion error in `module/download_transfer.py`. Green: contract `1 passed`; `make style_check` passed with mypy `Success: no issues found in 15 source files` and Pylint error-only clean.
+- RED health: public health and Docker health contracts produced `2 failed, 1 passed` because `/healthz` and container checks did not exist. Green rerun: `3 passed`; the operational `/api/system` route remained login-protected.
+- RED container inputs/migration: pinned-base, non-root/mount, and runtime config-path contracts produced `3 failed, 1 passed`. Green rerun: `4 passed`. The new project-local Rclone credential directory separately failed the build-context exclusion test, then passed after adding `rclone/` to `.dockerignore`.
+- Docker/runtime/dependency/health contract groups passed at `18 passed`, then `23 passed`; the final focused container, dependency, runtime, health, CSRF, Web server, and Web auth selection passed `33 passed`.
+- Registry verification confirmed the reviewed base digest exposes `linux/386`, `linux/amd64`, `linux/arm/v6`, `linux/arm/v7`, `linux/arm64/v8`, and `linux/ppc64le`, matching the publishing workflow. Alpine 3.20 indexes confirmed `gcc=13.2.1_git20240309-r1`, `musl-dev=1.2.5-r3`, and `rclone=1.66.0-r5` for all six target architectures.
+- `TMD_UID=10001 TMD_GID=10001 docker compose -f docker-compose.yaml config`: passed and resolved the expected non-root user, state paths, health command, and directory mounts.
+- First all-files pre-commit run changed only Black formatting in `tests/test_web_system_api.py`; the second run passed trailing whitespace, end-of-file, Black, isort, mypy, and Pylint.
+- `TMD_TASK_DB_PATH=<temporary>/import.sqlite3 .venv/bin/python check_imports.py`: both import probes passed and created no task database.
+- `.venv/bin/python -m compileall -q module tests`, `.venv/bin/python -m pip check`, `make style_check PYTHON=.venv/bin/python`, and `git diff --check`: passed.
+- Complete suite: `708 passed, 1 skipped`.
+- Image build was attempted with `docker build --target runtime-image -t telegram-media-downloader:phase8-check .` and was blocked before build by the unavailable Colima Docker socket. No image or smoke-test success is claimed; a successful CI multi-platform build is required before production deployment.
+
+### Notes
+
+Changed files:
+- `Makefile`, `.pre-commit-config.yaml`, `module/download_transfer.py`, `tests/test_runtime_contract.py`: Expanded the enforceable static boundary and corrected the one current-scope type error.
+- `module/web.py`, `Dockerfile`, `docker-compose.yaml`, `tests/test_web_system_api.py`, `tests/test_docker_contract.py`: Added minimal readiness, container health, immutable inputs, non-root execution, and writable mount contracts.
+- `module/download_entry.py`, `.dockerignore`, `tests/test_dependency_contract.py`: Added environment-selectable config/data paths, protected project-local Rclone credentials, and enforced pinned Python requirements.
+- `README.md`, `README_CN.md`, `docs/web-control-console.md`, `docs/superpowers/plans/2026-07-30-architecture-hardening-follow-up.md`: Documented the non-root directory migration, health prerequisite, immutable inputs, static boundary, and Phase 8 completion.
+- `progress.md`: Recorded Phase 8 red-green, architecture/package verification, Docker environment gap, and rollback evidence.
+
+Rollback:
+- Revert the Phase 8 commit. No database schema or row migration is introduced. If the container migration has been applied, stop the container, retain the migrated `state/` directory and database backups, restore the pre-migration Compose file and directory snapshot, and restore the prior ownership before starting the old image.
