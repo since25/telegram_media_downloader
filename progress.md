@@ -3025,3 +3025,41 @@ Changed files:
 
 Rollback:
 - Revert the follow-up documentation commit. No runtime code, database schema, configuration, dependency, service, or production state is changed.
+
+## 2026-07-30 - Task: Phase 5 runtime correctness and command ownership
+
+### What was done
+
+- Replaced split message-ID-only stall state with one transfer-progress tracker keyed by task, chat, and message; the Pyrogram progress callback and watchdog now share the same tracker, and only increasing byte counts refresh the heartbeat.
+- Rejected Web commands when the application loop is missing, closed, or stopped, closing rejected coroutines instead of returning a future for work that cannot execute.
+- Routed live Web `TaskNode` cancellation and process-local Web registry cleanup through the application owner loop while preserving the existing channel-library cancellation path and task response contract.
+- Reclassified unexpected Telegram message-refetch failures as failed downloads without incrementing not-found skip accounting, while retaining explicit skip behavior for the installed Pyrogram version's supported inaccessible-message exceptions.
+
+### Testing
+
+- RED: `.venv/bin/python -m pytest -q tests/module/test_transfer_progress.py` failed at collection with `ModuleNotFoundError: module.transfer_progress`.
+- RED: `.venv/bin/python -m pytest -q tests/module/test_web_commands.py::test_submit_rejects_open_but_stopped_loop` failed because no `RuntimeError` was raised and a pending task was left on the stopped loop.
+- RED: `.venv/bin/python -m pytest -q tests/test_web_cancel_task.py::test_cancel_active_web_task_mutates_node_on_owner_loop` failed with different request-thread and owner-thread identifiers.
+- RED: `.venv/bin/python -m pytest -q tests/module/test_package_download.py::test_unexpected_refetch_error_is_failed_not_skipped` exposed both the skip misclassification and the installed Pyrogram version's missing generic `errors.NotFound` attribute.
+- `.venv/bin/python -m pytest -q tests/module/test_transfer_progress.py tests/module/test_web_commands.py tests/test_web_cancel_task.py tests/test_web_prescan_retention.py tests/module/test_download_lifecycle.py tests/module/test_package_download.py tests/module/test_web.py tests/test_media_downloader.py`: `97 passed`.
+- `.venv/bin/python -m pytest -q`: `671 passed, 1 skipped`.
+- `.venv/bin/python check_imports.py`: both supported import probes passed.
+- `.venv/bin/python -m compileall -q module tests`: passed.
+- `.venv/bin/python -m pip check`: no broken requirements.
+- `make style_check PYTHON=.venv/bin/python`: blocking mypy and Pylint checks passed.
+- `.venv/bin/python -m mypy module/transfer_progress.py --ignore-missing-imports --follow-imports=silent`: passed.
+- `.venv/bin/python -m pylint module/transfer_progress.py module/download_transfer.py -rn -sn --errors-only --rcfile=pylintrc`: passed.
+- Expanded non-blocking mypy probe of `module/download_transfer.py` still reports its pre-existing optional FloodWait conversion warning at line 138; the planned Phase 8 touched-module static-boundary work owns that cleanup.
+- `git diff --check`: passed.
+
+### Notes
+
+Changed files:
+- `module/transfer_progress.py`, `module/download_stat.py`, `module/download_transfer.py`, `module/download_entry.py`: Added the shared transfer identity/tracker, integrated callback/watchdog state, and corrected refetch classification.
+- `module/web_commands.py`, `module/web.py`: Enforced running-loop command admission and owner-loop live-task cancellation.
+- `tests/module/test_transfer_progress.py`, `tests/module/test_web_commands.py`, `tests/module/test_package_download.py`, `tests/module/test_web.py`, `tests/test_web_cancel_task.py`, `tests/test_web_prescan_retention.py`: Added and adapted regression coverage for the repaired ownership and failure contracts.
+- `docs/web-control-console.md`, `docs/superpowers/plans/2026-07-30-architecture-hardening-follow-up.md`: Documented the runtime behavior and marked Phase 5 complete.
+- `progress.md`: Recorded Phase 5 red-green and verification evidence.
+
+Rollback:
+- Revert the Phase 5 commit. No database schema, persisted task migration, configuration, dependency, service, or production state change is introduced.

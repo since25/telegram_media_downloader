@@ -36,7 +36,7 @@
 - Produces: `TransferProgressTracker.start(key)`, `observe(key, downloaded_size)`, `downloaded_size(key)`, `last_progress_at(key)`, `mark_stalled(key)`, `consume_stalled(key)`, and `clear(key)`.
 - `TransferRuntime` consumes one `progress_tracker` instead of three independent dictionaries.
 
-- [ ] **Step 1: Add failing tracker identity and isolation tests**
+- [x] **Step 1: Add failing tracker identity and isolation tests**
 
 ```python
 def test_runtime_and_progress_callback_share_one_tracker():
@@ -55,7 +55,7 @@ def test_same_message_id_in_two_chats_has_independent_progress():
     assert tracker.downloaded_size(second) == 0
 ```
 
-- [ ] **Step 2: Run the focused tests and retain RED evidence**
+- [x] **Step 2: Run the focused tests and retain RED evidence**
 
 Run:
 
@@ -68,7 +68,7 @@ Run:
 Expected: failure because the tracker module/interface does not exist and the runtime
 still owns different dictionaries.
 
-- [ ] **Step 3: Implement the focused tracker**
+- [x] **Step 3: Implement the focused tracker**
 
 ```python
 TransferKey = tuple[str, str, str]
@@ -85,12 +85,12 @@ def transfer_key(node, message_id) -> TransferKey:
 The tracker stores monotonic last-progress time, last increasing byte count, and stalled
 keys. `observe()` refreshes time only when bytes increase.
 
-- [ ] **Step 4: Route callback and watchdog through the same tracker**
+- [x] **Step 4: Route callback and watchdog through the same tracker**
 
 `update_download_status()` computes the key and calls `observe()`. `transfer_media()` and
 `watch_stall()` use the same key and tracker. Cleanup clears only that transfer key.
 
-- [ ] **Step 5: Verify focused and lifecycle regressions**
+- [x] **Step 5: Verify focused and lifecycle regressions**
 
 ```bash
 .venv/bin/python -m pytest -q \
@@ -113,7 +113,7 @@ Expected: all selected tests pass.
 - `submit_web_coroutine(loop, coroutine)` accepts only a running, open loop.
 - Rejection closes the coroutine and raises `RuntimeError("application loop is not available")`.
 
-- [ ] **Step 1: Replace the incorrect stopped-loop success test with a failing rejection test**
+- [x] **Step 1: Replace the incorrect stopped-loop success test with a failing rejection test**
 
 ```python
 def test_submit_rejects_open_but_stopped_loop():
@@ -124,7 +124,7 @@ def test_submit_rejects_open_but_stopped_loop():
     loop.close()
 ```
 
-- [ ] **Step 2: Run the test and retain RED evidence**
+- [x] **Step 2: Run the test and retain RED evidence**
 
 ```bash
 .venv/bin/python -m pytest -q \
@@ -133,7 +133,7 @@ def test_submit_rejects_open_but_stopped_loop():
 
 Expected: the current implementation returns a completed Future instead of raising.
 
-- [ ] **Step 3: Implement the minimum rejection**
+- [x] **Step 3: Implement the minimum rejection**
 
 ```python
 if (
@@ -145,7 +145,7 @@ if (
     raise RuntimeError("application loop is not available")
 ```
 
-- [ ] **Step 4: Verify Web command and confirmation behavior**
+- [x] **Step 4: Verify Web command and confirmation behavior**
 
 ```bash
 .venv/bin/python -m pytest -q \
@@ -167,7 +167,7 @@ Expected: all selected tests pass and stopped-loop confirmation returns `503`.
 - Produces: `_cancel_web_task_owned(task_id, node, workflow_type) -> dict`.
 - Flask submits it with `submit_web_coroutine()` and waits with `wait_for_web_command()`.
 
-- [ ] **Step 1: Add a failing thread-ownership cancellation test**
+- [x] **Step 1: Add a failing thread-ownership cancellation test**
 
 ```python
 def test_cancel_active_web_task_mutates_node_on_owner_loop(running_app):
@@ -183,7 +183,7 @@ def test_cancel_active_web_task_mutates_node_on_owner_loop(running_app):
 The fixture uses a real background owner loop and a `TaskNode` test double that records
 the thread calling `stop_transmission()`.
 
-- [ ] **Step 2: Run the new test and retain RED evidence**
+- [x] **Step 2: Run the new test and retain RED evidence**
 
 ```bash
 .venv/bin/python -m pytest -q \
@@ -192,14 +192,14 @@ the thread calling `stop_transmission()`.
 
 Expected: the recorded thread is the Flask request thread.
 
-- [ ] **Step 3: Implement owner-loop cancellation**
+- [x] **Step 3: Implement owner-loop cancellation**
 
 The owned coroutine stops the node, removes the scanning registry entry under its lock,
 and applies the persistent cancelled transition. Waiting task removal remains
 deterministic. Submission failure returns `503`; timeout returns `503` without cancelling
 accepted owner work.
 
-- [ ] **Step 4: Verify cancel, prescan, and channel-library regressions**
+- [x] **Step 4: Verify cancel, prescan, and channel-library regressions**
 
 ```bash
 .venv/bin/python -m pytest -q \
@@ -222,7 +222,7 @@ Expected: all selected tests pass.
 - Confirmed `BadRequest`/`NotFound` keeps the existing skip result.
 - Any other refetch exception returns `DownloadStatus.FailedDownload`.
 
-- [ ] **Step 1: Add a failing generic-refetch regression**
+- [x] **Step 1: Add a failing generic-refetch regression**
 
 ```python
 async def test_unexpected_refetch_error_is_failed_not_skipped():
@@ -234,7 +234,7 @@ async def test_unexpected_refetch_error_is_failed_not_skipped():
     assert node.skip_not_found_download_task == 0
 ```
 
-- [ ] **Step 2: Run the regression and retain RED evidence**
+- [x] **Step 2: Run the regression and retain RED evidence**
 
 ```bash
 .venv/bin/python -m pytest -q \
@@ -243,12 +243,12 @@ async def test_unexpected_refetch_error_is_failed_not_skipped():
 
 Expected: current code returns `SkipDownload`.
 
-- [ ] **Step 3: Implement the classification change**
+- [x] **Step 3: Implement the classification change**
 
 Unexpected exceptions log the safe exception class and return `FailedDownload`; they do
 not increment not-found counters or markers.
 
-- [ ] **Step 4: Run Phase 5 focused tests**
+- [x] **Step 4: Run Phase 5 focused tests**
 
 ```bash
 .venv/bin/python -m pytest -q \
@@ -262,7 +262,7 @@ not increment not-found counters or markers.
   tests/test_media_downloader.py
 ```
 
-- [ ] **Step 5: Run full verification, append progress, and commit**
+- [x] **Step 5: Run full verification, append progress, and commit**
 
 ```bash
 .venv/bin/python -m pytest -q

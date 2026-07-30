@@ -21,7 +21,9 @@ are committed to `web_tasks.sqlite3` in one transaction. High-frequency download
 callbacks are sampled before persistence: the first sample, at least one second of
 elapsed time, at least 1 MiB of byte movement, or the final sample is retained. SQLite
 progress work runs outside the downloader event-loop thread, and each task/file pair has
-at most one progress write in flight.
+at most one progress write in flight. The stall watchdog and Pyrogram callback share one
+process-local tracker keyed by task, chat, and message; only increasing byte counts
+refresh the stall heartbeat.
 
 The Tasks tab uses a compact five-column task table. Each row groups the task title,
 source, type, and short task ID so status, progress, results, and available actions remain
@@ -61,7 +63,9 @@ to the downloader loop, so later Web selection changes cannot alter already acce
 work. Flask-to-async commands use the application owner loop; a bounded HTTP wait may
 return `503`, but it does not cancel work that the owner loop already accepted. A waiting
 confirmation reloaded without its process-only Telegram preview is closed with the stable
-`restart_interrupted` reason instead of being presented as usable.
+`restart_interrupted` reason instead of being presented as usable. Cancelling a live Web
+task also stops its `TaskNode` on the owner loop; an unavailable or stopped loop returns
+`503` instead of reporting a cancellation that cannot execute.
 
 ## Resources And Channel Indexes
 

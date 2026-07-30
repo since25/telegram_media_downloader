@@ -56,6 +56,23 @@ def test_unavailable_loop_closes_coroutine():
     assert coroutine.cr_frame is None
 
 
+def test_submit_rejects_open_but_stopped_loop():
+    from module.web_commands import submit_web_coroutine
+
+    loop = asyncio.new_event_loop()
+
+    async def never_started():
+        return None
+
+    coroutine = never_started()
+    try:
+        with pytest.raises(RuntimeError, match="not available"):
+            submit_web_coroutine(loop, coroutine)
+        assert coroutine.cr_frame is None
+    finally:
+        loop.close()
+
+
 def test_bounded_wait_times_out_without_cancelling_owner_work():
     from module.web_commands import WebCommandTimeout, wait_for_web_command
 

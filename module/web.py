@@ -2600,8 +2600,8 @@ def cancel_task(task_id: str):
         return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
 
     with _web_task_state_lock:
-        preview = _pending_web_task_previews.pop(task_id, None)
-        prescan = _pending_web_prescans.pop(task_id, None)
+        preview = _pending_web_task_previews.get(task_id)
+        prescan = _pending_web_prescans.get(task_id)
         scanning_node = _scanning_web_task_nodes.get(task_id)
     node = (
         (preview or prescan or {}).get("node")
@@ -2610,9 +2610,22 @@ def cancel_task(task_id: str):
     )
     task = get_task_store().get_task(task_id)
     if node:
-        node.stop_transmission()
-    with _web_task_state_lock:
-        _scanning_web_task_nodes.pop(task_id, None)
+        workflow_type = ((preview or prescan) or {}).get("task_type") or (
+            task.task_type if task else "prescan"
+        )
+        try:
+            result = wait_for_web_command(
+                submit_web_coroutine(
+                    getattr(_active_app(), "loop", None),
+                    _cancel_web_task_owned(task_id, node, workflow_type),
+                ),
+                timeout=1,
+            )
+        except WebCommandTimeout:
+            return jsonify({"ok": False, "error": "cancellation timed out"}), 503
+        except RuntimeError:
+            return jsonify({"ok": False, "error": "service unavailable"}), 503
+        return jsonify(result)
     if not node and not task:
         return jsonify({"ok": False, "error": "task not found"}), 404
     status = task.status if task else None
@@ -2633,6 +2646,34 @@ def cancel_task(task_id: str):
         return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
     get_task_store().remove_task(task_id)
     return jsonify({"ok": True, "task_id": task_id, "removed": True})
+
+
+async def _cancel_web_task_owned(task_id: str, node, workflow_type: str) -> dict:
+    """Cancel one live Web task on the application owner loop."""
+
+    node.stop_transmission()
+    with _web_task_state_lock:
+        _pending_web_task_previews.pop(task_id, None)
+        _pending_web_prescans.pop(task_id, None)
+        _scanning_web_task_nodes.pop(task_id, None)
+
+    task = get_task_store().get_task(task_id)
+    status = task.status if task else None
+    if status in {TaskStatus.DOWNLOADING, TaskStatus.UPLOADING, TaskStatus.SCANNING}:
+        get_task_store().update_task(
+            task_id,
+            status=TaskStatus.CANCELLED,
+            needs_confirmation=False,
+            workflow=WorkflowSnapshot(
+                workflow_type=workflow_type,
+                status=TaskStatus.CANCELLED,
+                summary="Cancelled",
+            ),
+        )
+        return {"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED}
+
+    get_task_store().remove_task(task_id)
+    return {"ok": True, "task_id": task_id, "removed": True}
 
 
 @_flask_app.route("/api/tasks/<task_id>/clear", methods=["POST"])

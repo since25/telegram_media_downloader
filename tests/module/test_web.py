@@ -1,6 +1,7 @@
 """Tests for the Flask web control surface."""
 
 import asyncio
+import concurrent.futures
 import json
 import os
 import tempfile
@@ -9,6 +10,28 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from module.app import Application
+
+
+def accepted_web_submission(scheduled):
+    """Return a submission stub for route tests that do not execute owner work."""
+
+    def submit(_loop, coroutine):
+        scheduled.append(coroutine)
+        coroutine.close()
+        future = concurrent.futures.Future()
+        future.set_result(None)
+        return future
+
+    return submit
+
+
+def completed_web_command(_loop, coroutine):
+    """Execute an owner command for synchronous Flask route tests."""
+
+    result = asyncio.run(coroutine)
+    future = concurrent.futures.Future()
+    future.set_result(result)
+    return future
 
 
 def build_web_test_app(tmp_dir):
@@ -438,21 +461,10 @@ class WebTestCase(unittest.TestCase):
             self.assertEqual(missing.status_code, 404)
 
     def test_confirm_prescan_schedules_selected_download(self):
-        class FakeLoop:
-            def __init__(self):
-                self.scheduled = []
-
-            def is_running(self):
-                return False
-
-            def create_task(self, coroutine):
-                self.scheduled.append(coroutine)
-                coroutine.close()
-
         package = SimpleNamespace(package_id=1, messages=[], failed_message_ids=[])
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
-            app.loop = FakeLoop()
+            scheduled = []
             self.web_module._current_app = app
             self.web_module._flask_app.config["LOGIN_DISABLED"] = True
             node = self.web_module._create_web_task(
@@ -470,11 +482,16 @@ class WebTestCase(unittest.TestCase):
             }
             client = self._csrf_client()
 
-            response = client.post("/api/tasks/web-prescan-3/confirm")
+            with patch.object(
+                self.web_module,
+                "submit_web_coroutine",
+                side_effect=accepted_web_submission(scheduled),
+            ):
+                response = client.post("/api/tasks/web-prescan-3/confirm")
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.get_json()["status"], "queued")
-            self.assertEqual(len(app.loop.scheduled), 1)
+            self.assertEqual(len(scheduled), 1)
 
     def test_clear_terminal_task_removes_history(self):
         from module.task_state import TaskStatus, get_task_store
@@ -558,7 +575,12 @@ class WebTestCase(unittest.TestCase):
             )
             client = self._csrf_client()
 
-            response = client.post("/api/tasks/web-scan-9/cancel")
+            with patch.object(
+                self.web_module,
+                "submit_web_coroutine",
+                side_effect=completed_web_command,
+            ):
+                response = client.post("/api/tasks/web-scan-9/cancel")
 
             self.assertEqual(response.status_code, 200)
             self.assertTrue(node.is_stop_transmission)
@@ -587,6 +609,10 @@ class WebTestCase(unittest.TestCase):
                 self.web_module,
                 "get_active_task_nodes",
                 return_value={"web-dl-9": node},
+            ), patch.object(
+                self.web_module,
+                "submit_web_coroutine",
+                side_effect=completed_web_command,
             ):
                 response = client.post("/api/tasks/web-dl-9/cancel")
 
@@ -694,21 +720,43 @@ class WebTestCase(unittest.TestCase):
             self.assertNotIn("web-preview-9", self.web_module._scanning_web_task_nodes)
 
     def test_task_submission_schedules_valid_package_link(self):
-        class FakeLoop:
-            def __init__(self):
-                self.scheduled = []
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            app.web_client = object()
+            scheduled = []
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            client = self._csrf_client()
 
+            with patch.object(
+                self.web_module,
+                "submit_web_coroutine",
+                side_effect=accepted_web_submission(scheduled),
+            ):
+                response = client.post(
+                    "/api/tasks",
+                    json={"link": "https://t.me/c/12345/99"},
+                )
+
+            self.assertEqual(response.status_code, 202)
+            payload = response.get_json()
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["task_type"], "package")
+            self.assertEqual(payload["status"], "scanning")
+            self.assertEqual(len(scheduled), 1)
+
+    def test_task_submission_rejects_stopped_application_loop(self):
+        class StoppedLoop:
             def is_running(self):
                 return False
 
-            def create_task(self, coroutine):
-                self.scheduled.append(coroutine)
-                coroutine.close()
+            def is_closed(self):
+                return False
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
             app.web_client = object()
-            app.loop = FakeLoop()
+            app.loop = StoppedLoop()
             self.web_module._current_app = app
             self.web_module._flask_app.config["LOGIN_DISABLED"] = True
             client = self._csrf_client()
@@ -718,12 +766,11 @@ class WebTestCase(unittest.TestCase):
                 json={"link": "https://t.me/c/12345/99"},
             )
 
-            self.assertEqual(response.status_code, 202)
-            payload = response.get_json()
-            self.assertTrue(payload["ok"])
-            self.assertEqual(payload["task_type"], "package")
-            self.assertEqual(payload["status"], "scanning")
-            self.assertEqual(len(app.loop.scheduled), 1)
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(
+                response.get_json()["error"],
+                "application loop is not available",
+            )
 
     def test_package_scan_waits_for_web_confirmation_before_downloading(self):
         from module.comment_workflow import build_message_package_workflow_request
@@ -896,20 +943,9 @@ class WebTestCase(unittest.TestCase):
         asyncio.run(scenario())
 
     def test_confirm_preview_schedules_package_download(self):
-        class FakeLoop:
-            def __init__(self):
-                self.scheduled = []
-
-            def is_running(self):
-                return False
-
-            def create_task(self, coroutine):
-                self.scheduled.append(coroutine)
-                coroutine.close()
-
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
-            app.loop = FakeLoop()
+            scheduled = []
             self.web_module._current_app = app
             self.web_module._flask_app.config["LOGIN_DISABLED"] = True
             node = self.web_module._create_web_task(
@@ -927,13 +963,18 @@ class WebTestCase(unittest.TestCase):
             }
             client = self._csrf_client()
 
-            response = client.post("/api/tasks/web-preview-2/confirm")
+            with patch.object(
+                self.web_module,
+                "submit_web_coroutine",
+                side_effect=accepted_web_submission(scheduled),
+            ):
+                response = client.post("/api/tasks/web-preview-2/confirm")
 
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()
             self.assertTrue(payload["ok"])
             self.assertEqual(payload["status"], "queued")
-            self.assertEqual(len(app.loop.scheduled), 1)
+            self.assertEqual(len(scheduled), 1)
 
     def test_cancel_preview_marks_task_cancelled(self):
         from module.task_state import TaskStatus, get_task_store
@@ -957,7 +998,12 @@ class WebTestCase(unittest.TestCase):
             }
             client = self._csrf_client()
 
-            response = client.post("/api/tasks/web-preview-3/cancel")
+            with patch.object(
+                self.web_module,
+                "submit_web_coroutine",
+                side_effect=completed_web_command,
+            ):
+                response = client.post("/api/tasks/web-preview-3/cancel")
 
             self.assertEqual(response.status_code, 200)
             payload = response.get_json()

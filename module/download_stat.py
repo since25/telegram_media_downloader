@@ -11,9 +11,9 @@ from pyrogram import Client
 from module.app import TaskNode
 from module.progress_persistence import download_progress_persistence
 from module.task_state import FileStatus, TaskStatus, get_task_store, snapshot_node
+from module.transfer_progress import TransferProgressTracker, transfer_key
 
-DOWNLOAD_LAST_PROGRESS_TS: dict[int, float] = {}
-DOWNLOAD_LAST_PROGRESS_BYTES: dict[int, int] = {}
+download_progress_tracker = TransferProgressTracker()
 
 
 class DownloadState(Enum):
@@ -174,13 +174,7 @@ async def update_download_status(
     """update_download_status"""
     cur_time = time.time()
 
-    # ---- stall watchdog heartbeat ----
-    DOWNLOAD_LAST_PROGRESS_TS[message_id] = cur_time
-
-    prev_bytes = DOWNLOAD_LAST_PROGRESS_BYTES.get(message_id, -1)
-    if down_byte > prev_bytes:
-        DOWNLOAD_LAST_PROGRESS_BYTES[message_id] = down_byte
-    # ---- end heartbeat ----
+    download_progress_tracker.observe(transfer_key(node, message_id), down_byte)
     # pylint: disable = W0603
     global _total_download_speed
     global _total_download_size

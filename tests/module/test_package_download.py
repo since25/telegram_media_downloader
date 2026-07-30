@@ -11,6 +11,7 @@ from module.app import DownloadStatus
 from module.download_transfer import TransferRuntime, transfer_media
 from module.package_download import build_package_result
 from module.task_state import FileStatus, TaskStateStore
+from module.transfer_progress import TransferProgressTracker
 
 
 def test_partial_package_result_is_completed_with_errors(tmp_path):
@@ -81,9 +82,7 @@ def test_external_transfer_cancellation_is_not_retried(tmp_path):
             get_download_result=lambda: {},
             retry_timeout=0,
             stall_timeout=600,
-            last_progress_ts={},
-            last_progress_bytes={},
-            stalled_message_ids=set(),
+            progress_tracker=TransferProgressTracker(),
         )
         message = SimpleNamespace(
             id=99,
@@ -108,7 +107,7 @@ def test_external_transfer_cancellation_is_not_retried(tmp_path):
         with pytest.raises(asyncio.CancelledError):
             await task
 
-        assert not runtime.stalled_message_ids
+        assert not runtime.progress_tracker.consume_stalled(("", "-100", "99"))
 
     asyncio.run(run_scenario())
 
@@ -152,9 +151,7 @@ def test_flood_wait_uses_server_delay_then_retries(tmp_path):
             get_download_result=lambda: {},
             retry_timeout=0,
             stall_timeout=600,
-            last_progress_ts={},
-            last_progress_bytes={},
-            stalled_message_ids=set(),
+            progress_tracker=TransferProgressTracker(),
         )
         message = SimpleNamespace(
             id=100,
@@ -176,5 +173,58 @@ def test_flood_wait_uses_server_delay_then_retries(tmp_path):
         assert status is DownloadStatus.SuccessDownload
         assert path == str(tmp_path / "final.bin")
         assert client.calls == 2
+
+    asyncio.run(run_scenario())
+
+
+def test_unexpected_refetch_error_is_failed_not_skipped(tmp_path):
+    async def run_scenario():
+        async def fetch_message(_client, _message):
+            raise ConnectionError("temporary")
+
+        runtime = TransferRuntime(
+            app=SimpleNamespace(
+                loop=asyncio.get_running_loop(),
+                hide_file_name=False,
+            ),
+            logger=Mock(),
+            translate=lambda value: value,
+            fetch_message=fetch_message,
+            get_media_meta=Mock(),
+            record_message_marker=lambda node, attribute, message_id: getattr(
+                node, attribute
+            ).add(message_id),
+            can_download=lambda *_args: True,
+            is_file=lambda _path: False,
+            check_download_finish=lambda *_args: None,
+            move_to_download_path=lambda *_args: None,
+            retry_timed_out=lambda *_args: False,
+            update_download_status=lambda *_args: None,
+            get_download_result=lambda: {},
+            retry_timeout=0,
+            stall_timeout=600,
+            progress_tracker=TransferProgressTracker(),
+        )
+        message = SimpleNamespace(id=101, empty=False)
+        node = SimpleNamespace(
+            task_id="refetch-failure",
+            chat_id=-100,
+            skip_not_found_download_task=0,
+            skip_not_found_message_ids=set(),
+        )
+
+        result = await transfer_media(
+            object(),
+            message,
+            ["document"],
+            {"document": ["all"]},
+            node,
+            None,
+            runtime,
+        )
+
+        assert result == (DownloadStatus.FailedDownload, None)
+        assert node.skip_not_found_download_task == 0
+        assert node.skip_not_found_message_ids == set()
 
     asyncio.run(run_scenario())

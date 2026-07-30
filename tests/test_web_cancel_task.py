@@ -8,12 +8,22 @@ Guardrails covered:
   as cancelled.
 - cancelling an unknown task id still 404s.
 """
+import asyncio
+import threading
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 import module.web as web
 from module.task_state import TaskStatus, get_task_store
+
+
+def _complete_web_command(_loop, coroutine):
+    future = asyncio.run(coroutine)
+    completed = mock.Mock()
+    completed.result.return_value = future
+    return completed
 
 
 @pytest.fixture
@@ -66,6 +76,12 @@ def test_cancel_downloading_task_with_active_node_stays_cancelled(monkeypatch, c
         status=TaskStatus.DOWNLOADING,
     )
     monkeypatch.setattr(web, "get_active_task_nodes", lambda: {task_id: node})
+    monkeypatch.setattr(web, "submit_web_coroutine", _complete_web_command)
+    monkeypatch.setattr(
+        web,
+        "_current_app",
+        SimpleNamespace(loop=object(), channel_library_service=None),
+    )
 
     response = client.post(f"/api/tasks/{task_id}/cancel")
 
@@ -77,6 +93,52 @@ def test_cancel_downloading_task_with_active_node_stays_cancelled(monkeypatch, c
     task = get_task_store().get_task(task_id)
     assert task is not None
     assert task.status == TaskStatus.CANCELLED
+
+
+def test_cancel_active_web_task_mutates_node_on_owner_loop(monkeypatch, client):
+    task_id = "web-owned-cancel"
+    loop = asyncio.new_event_loop()
+    loop_started = threading.Event()
+
+    def run_loop():
+        asyncio.set_event_loop(loop)
+        loop_started.set()
+        loop.run_forever()
+
+    owner_thread = threading.Thread(target=run_loop)
+    owner_thread.start()
+    loop_started.wait(timeout=1)
+
+    class ThreadTrackingNode:
+        def __init__(self):
+            self.cancel_thread_id = None
+
+        def stop_transmission(self):
+            self.cancel_thread_id = threading.get_ident()
+
+    node = ThreadTrackingNode()
+    get_task_store().create_task(
+        task_id,
+        source="web",
+        task_type="package",
+        status=TaskStatus.DOWNLOADING,
+    )
+    monkeypatch.setattr(
+        web,
+        "_current_app",
+        SimpleNamespace(loop=loop, channel_library_service=None),
+    )
+    monkeypatch.setattr(web, "get_active_task_nodes", lambda: {task_id: node})
+
+    try:
+        response = client.post(f"/api/tasks/{task_id}/cancel")
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        owner_thread.join(timeout=2)
+        loop.close()
+
+    assert response.status_code == 200
+    assert node.cancel_thread_id == owner_thread.ident
 
 
 def test_cancel_unknown_task_returns_404(client):

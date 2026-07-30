@@ -37,6 +37,7 @@ from module.bot import start_download_bot, stop_download_bot
 from module.channel_library_service import ChannelLibraryService
 from module.channel_library_store import ChannelLibraryStore
 from module.download_stat import (
+    download_progress_tracker,
     get_active_task_nodes,
     get_download_result,
     update_download_status,
@@ -69,6 +70,7 @@ from module.package_download import (
     run_packages,
 )
 from module.task_state import get_task_store, snapshot_node
+from module.transfer_progress import transfer_key
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import _t
 from module.pyrogram_extension import (
@@ -89,12 +91,6 @@ from utils.log import LogFilter
 from utils.meta import print_meta
 from utils.meta_data import MetaData
 from utils.updates import check_for_updates
-
-# ---- stall watchdog state ----
-DOWNLOAD_LAST_PROGRESS_TS: dict[int, float] = {}
-DOWNLOAD_LAST_PROGRESS_BYTES: dict[int, int] = {}
-DOWNLOAD_STALLED_MESSAGE_IDS: set[int] = set()
-
 
 class CommentScanResult(NamedTuple):
     discussion_group_id: int
@@ -693,11 +689,16 @@ async def download_task(
 
 
 async def _stall_watchdog(
-    message_id: int, timeout_s: int, target_task: asyncio.Task, ui_file_name: str
+    message_id: int,
+    timeout_s: int,
+    target_task: asyncio.Task,
+    ui_file_name: str,
+    node: Optional[TaskNode] = None,
 ):
     """Compatibility wrapper around the transfer stall watchdog."""
 
     await _watch_transfer_stall(
+        transfer_key(node, message_id),
         message_id,
         timeout_s,
         target_task,
@@ -723,9 +724,7 @@ def _build_transfer_runtime() -> TransferRuntime:
         get_download_result=get_download_result,
         retry_timeout=RETRY_TIME_OUT,
         stall_timeout=STALL_TIMEOUT,
-        last_progress_ts=DOWNLOAD_LAST_PROGRESS_TS,
-        last_progress_bytes=DOWNLOAD_LAST_PROGRESS_BYTES,
-        stalled_message_ids=DOWNLOAD_STALLED_MESSAGE_IDS,
+        progress_tracker=download_progress_tracker,
     )
 
 

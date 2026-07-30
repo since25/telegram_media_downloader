@@ -10,6 +10,20 @@ from typing import Any, Awaitable, Callable, Optional
 import pyrogram
 
 from module.app import DownloadStatus
+from module.transfer_progress import (
+    TransferKey,
+    TransferProgressTracker,
+    transfer_key,
+)
+
+_MESSAGE_NOT_FOUND_ERRORS = tuple(
+    error_type
+    for error_type in (
+        getattr(pyrogram.errors, "BadRequest", None),
+        getattr(pyrogram.errors, "NotFound", None),
+    )
+    if isinstance(error_type, type) and issubclass(error_type, Exception)
+)
 
 
 def check_download_finish(
@@ -85,12 +99,11 @@ class TransferRuntime:
     get_download_result: Callable[..., dict]
     retry_timeout: float
     stall_timeout: int
-    last_progress_ts: dict[int, float]
-    last_progress_bytes: dict[int, int]
-    stalled_message_ids: set[int]
+    progress_tracker: TransferProgressTracker
 
 
 async def watch_stall(
+    key: TransferKey,
     message_id: int,
     timeout_s: int,
     target_task: asyncio.Task,
@@ -99,19 +112,18 @@ async def watch_stall(
 ) -> None:
     """Cancel a transfer only after its byte progress has stopped."""
 
-    runtime.last_progress_ts[message_id] = time.time()
-    runtime.last_progress_bytes.setdefault(message_id, -1)
+    runtime.progress_tracker.start(key)
     while not target_task.done():
         await asyncio.sleep(5)
-        last_ts = runtime.last_progress_ts.get(message_id)
+        last_ts = runtime.progress_tracker.last_progress_at(key)
         if last_ts is None:
             continue
-        if time.time() - last_ts > timeout_s:
+        if time.monotonic() - last_ts > timeout_s:
             runtime.logger.warning(
                 f"Message[{message_id}] {ui_file_name}: stalled for > "
                 f"{timeout_s}s, cancelling download..."
             )
-            runtime.stalled_message_ids.add(message_id)
+            runtime.progress_tracker.mark_stalled(key)
             target_task.cancel()
             return
 
@@ -156,24 +168,23 @@ async def transfer_media(
                 node, "skip_not_found_message_ids", message_id
             )
             return DownloadStatus.SkipDownload, None
-    except (pyrogram.errors.BadRequest, pyrogram.errors.NotFound) as error:
-        message_id = getattr(message, "id", "N/A")
-        runtime.logger.info(
-            f"Message[{message_id}]: 无法获取message "
-            f"({type(error).__name__}: {error})，跳过下载"
-        )
-        node.skip_not_found_download_task += 1
-        runtime.record_message_marker(node, "skip_not_found_message_ids", message_id)
-        return DownloadStatus.SkipDownload, None
     except Exception as error:
         message_id = getattr(message, "id", "N/A")
+        if isinstance(error, _MESSAGE_NOT_FOUND_ERRORS):
+            runtime.logger.info(
+                f"Message[{message_id}]: 无法获取message "
+                f"({type(error).__name__}: {error})，跳过下载"
+            )
+            node.skip_not_found_download_task += 1
+            runtime.record_message_marker(
+                node, "skip_not_found_message_ids", message_id
+            )
+            return DownloadStatus.SkipDownload, None
         runtime.logger.warning(
             f"Message[{message_id}]: 获取message失败 "
-            f"({type(error).__name__}: {error})，跳过下载"
+            f"({type(error).__name__})，标记下载失败"
         )
-        node.skip_not_found_download_task += 1
-        runtime.record_message_marker(node, "skip_not_found_message_ids", message_id)
-        return DownloadStatus.SkipDownload, None
+        return DownloadStatus.FailedDownload, None
 
     try:
         for media_type in media_types:
@@ -225,6 +236,7 @@ async def transfer_media(
         return DownloadStatus.SkipDownload, None
 
     message_id = message.id
+    progress_key = transfer_key(node, message_id)
     runtime.logger.info(f"Message[{message_id}] {ui_file_name}")
     max_retries = 3
     initial_retry_delay = 1
@@ -239,9 +251,7 @@ async def transfer_media(
                     f"Message[{message_id}] ({ui_file_name}): "
                     f"Starting retry {retry + 1}/{max_retries}..."
                 )
-                runtime.last_progress_ts[message_id] = time.time()
-                runtime.last_progress_bytes.pop(message_id, None)
-                runtime.stalled_message_ids.discard(message_id)
+                runtime.progress_tracker.start(progress_key)
 
                 download_result = runtime.get_download_result()
                 if (
@@ -313,6 +323,7 @@ async def transfer_media(
                 )
                 watchdog_task = runtime.app.loop.create_task(
                     watch_stall(
+                        progress_key,
                         message_id,
                         runtime.stall_timeout,
                         download_task,
@@ -331,9 +342,8 @@ async def transfer_media(
                 raise ValueError("download_media returned empty path")
 
             except asyncio.CancelledError:
-                if message_id not in runtime.stalled_message_ids:
+                if not runtime.progress_tracker.consume_stalled(progress_key):
                     raise
-                runtime.stalled_message_ids.discard(message_id)
                 runtime.logger.warning(
                     f"Message[{message_id}]: stalled >{runtime.stall_timeout}s "
                     f"(no progress), cancelled and retrying... "
@@ -423,9 +433,7 @@ async def transfer_media(
         )
         return DownloadStatus.FailedDownload, None
     finally:
-        runtime.last_progress_ts.pop(message_id, None)
-        runtime.last_progress_bytes.pop(message_id, None)
-        runtime.stalled_message_ids.discard(message_id)
+        runtime.progress_tracker.clear(progress_key)
         download_result = runtime.get_download_result()
         if (
             node.chat_id in download_result

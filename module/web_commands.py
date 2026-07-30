@@ -11,18 +11,13 @@ class WebCommandTimeout(RuntimeError):
 def submit_web_coroutine(loop, coroutine) -> concurrent.futures.Future:
     """Submit one coroutine to the running application loop."""
 
-    if loop is None or getattr(loop, "is_closed", lambda: False)():
+    if (
+        loop is None
+        or getattr(loop, "is_closed", lambda: False)()
+        or not loop.is_running()
+    ):
         coroutine.close()
         raise RuntimeError("application loop is not available")
-    if not loop.is_running():
-        try:
-            task = loop.create_task(coroutine)
-        except Exception:
-            coroutine.close()
-            raise
-        accepted: concurrent.futures.Future[object] = concurrent.futures.Future()
-        accepted.set_result(task)
-        return accepted
     try:
         return asyncio.run_coroutine_threadsafe(coroutine, loop)
     except Exception:

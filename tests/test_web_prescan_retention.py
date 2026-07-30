@@ -7,13 +7,22 @@ Guardrails covered:
 - cancel still pops the prescan entirely.
 - clear (single + clear-completed) still drops any retained prescan entry.
 """
+import asyncio
 import json
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 import module.web as web
 from module.task_state import TaskStatus, get_task_store
+
+
+def _complete_web_command(_loop, coroutine):
+    result = asyncio.run(coroutine)
+    future = mock.Mock()
+    future.result.return_value = result
+    return future
 
 
 @pytest.fixture
@@ -125,6 +134,7 @@ def test_confirm_rollback_on_runtime_error_keeps_prescan_cancellable(
         raise RuntimeError("application loop is not available")
 
     monkeypatch.setattr(web, "_run_confirmed_prescan_download", _boom)
+    monkeypatch.setattr(web, "submit_web_coroutine", _complete_web_command)
 
     confirm = client.post(f"/api/tasks/{task_id}/confirm")
     assert confirm.status_code == 503
@@ -135,9 +145,15 @@ def test_confirm_rollback_on_runtime_error_keeps_prescan_cancellable(
     assert task_id not in web._pending_web_prescans
 
 
-def test_cancel_removes_pending_prescan(client):
+def test_cancel_removes_pending_prescan(monkeypatch, client):
     task_id = "prescan-4"
     web._pending_web_prescans[task_id] = _make_prescan()
+    monkeypatch.setattr(web, "submit_web_coroutine", _complete_web_command)
+    monkeypatch.setattr(
+        web,
+        "_current_app",
+        SimpleNamespace(loop=object(), channel_library_service=None),
+    )
 
     cancel = client.post(f"/api/tasks/{task_id}/cancel")
     packages = client.get(f"/api/prescans/{task_id}/packages")
