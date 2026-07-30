@@ -265,10 +265,18 @@ Every route rejects undocumented query keys, JSON fields, and request bodies wit
 
 `channel_library.sqlite3` is created in the runtime directory with SQLite WAL, foreign keys, and file mode `0600`; startup tightens an existing file if its permissions are wider. It contains channel metadata, checkpoints, package revisions, selections, failure ranges, and immutable download-batch snapshots. `web_tasks.sqlite3` separately contains the dispatched Web task and file evidence. Telegram session files, credentials, downloaded media, and configuration secrets do not belong in either database.
 
+The checked-in Docker Compose contract mounts the host `./state` directory at
+`/app/state` and sets `TMD_TASK_DB_PATH`, `TMD_CHANNEL_LIBRARY_DB_PATH`,
+`TMD_RESOURCE_BOT_DB_PATH`, and `TMD_WEB_AUTH_FILE` to files inside that mount. Container
+replacement therefore preserves task history, the channel index, resource-delivery
+state, and the Web credential verifier. Existing Docker installations must stop the
+container, migrate each SQLite database through the SQLite backup API, verify
+`PRAGMA integrity_check`, and move the Web auth file before starting the new mount.
+
 Before an upgrade or rollback that could affect these stores:
 
 1. Stop the service so no scan, dispatch, or task update is in flight.
-2. Create consistent backups of both SQLite databases with the SQLite backup API or `sqlite3 <db> ".backup '<backup>'"`. Do not copy only the main database file while WAL is active.
+2. Create consistent backups of all three SQLite databases with the SQLite backup API or `sqlite3 <db> ".backup '<backup>'"`. Do not copy only the main database file while WAL is active.
 3. Verify each backup opens and returns `ok` from `PRAGMA integrity_check`; back up `config.yaml` and the Telegram session separately with restricted permissions.
 4. Upgrade and restart, then verify service status, Web login, the channel list/detail APIs, one scheduler instance, and existing task APIs. Do not submit an uncontrolled channel merely as a smoke test.
 
@@ -278,8 +286,10 @@ For code rollback, revert the relevant commit and restart the service. Preserve 
 
 The Web console persists task and file snapshots to schema-v1 `web_tasks.sqlite3` using
 SQLite WAL mode. The channel library persists its index in the separate
-`channel_library.sqlite3` described above. Runtime Telegram sessions, auth files, and
-downloaded media are not stored in these databases.
+`channel_library.sqlite3` described above, and the resource Bot persists delivery state
+in `resource_bot.sqlite3`. Runtime Telegram sessions and downloaded media are not stored
+in these databases; the Web credential verifier is the separate `.web_auth.json` file
+and must be backed up with them.
 
 To keep small 1 vCPU / 1 GiB servers responsive:
 

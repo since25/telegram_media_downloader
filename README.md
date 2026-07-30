@@ -138,7 +138,7 @@ pip3 install -r requirements.txt
 Make sure you have **docker** and **docker-compose** installed
 ```sh
 docker pull tangyoha/telegram_media_downloader:latest
-mkdir -p ~/app && mkdir -p ~/app/log/ && cd ~/app
+mkdir -p ~/app/log ~/app/state && cd ~/app
 wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/docker-compose.yaml -O docker-compose.yaml
 wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/config.yaml -O config.yaml
 wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/data.yaml -O data.yaml
@@ -157,6 +157,22 @@ docker pull tangyoha/telegram_media_downloader:latest
 cd ~/app
 docker-compose down
 docker-compose up -d
+```
+
+The Compose file mounts `./state` at `/app/state` and stores
+`web_tasks.sqlite3`, `channel_library.sqlite3`, `resource_bot.sqlite3`, and
+`.web_auth.json` there. Back up this directory together with `config.yaml` and
+`sessions/`. For an existing Docker installation, stop the container first and migrate
+the three databases with the SQLite backup API; do not copy a live WAL database. Move
+the existing Web auth file into `state/` before starting the new Compose definition.
+
+The container paths are explicit and may be overridden when needed:
+
+```yaml
+TMD_TASK_DB_PATH: /app/state/web_tasks.sqlite3
+TMD_CHANNEL_LIBRARY_DB_PATH: /app/state/channel_library.sqlite3
+TMD_RESOURCE_BOT_DB_PATH: /app/state/resource_bot.sqlite3
+TMD_WEB_AUTH_FILE: /app/state/.web_auth.json
 ```
 
 ## Upgrade installation

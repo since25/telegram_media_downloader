@@ -2861,3 +2861,35 @@ Changed files:
 
 Rollback:
 - Revert the architecture-hardening plan commit; no runtime, schema, configuration, or production state changes are involved.
+
+## 2026-07-30 - Task: Enforce task lifecycle invariants and Docker persistence
+
+### What was done
+
+- Replaced the invalid planned-count equality completion check with a terminal-result invariant, so a task cannot finish before every planned file has one success, failure, or skip result.
+- Made file-result accounting idempotent by stable chat/message identity, removed the second result mutation from Bot reporting, and isolated reporting/snapshot failures from the transfer outcome.
+- Added an environment-overridable channel-library database path and made Docker Compose persist all three SQLite databases plus the Web auth verifier under one host `state/` mount.
+- Documented Docker state ownership, existing-installation migration, backup, integrity, and rollback requirements.
+
+### Testing
+
+- RED verification -> `8 failed, 2 passed`: reproduced premature completion, duplicate result counting, reporting-side mutation, notification failure changing a success, missing channel-library path override, and missing Compose state persistence.
+- New invariant/runtime/Docker tests after the fix -> `10 passed`.
+- Focused task, lifecycle, Bot, package, channel-library, Web upload, path, and Docker regressions -> `235 passed`.
+- Complete suite with isolated `TMD_TASK_DB_PATH`, `TMD_RESOURCE_BOT_DB_PATH`, and `TMD_WEB_AUTH_FILE` -> `635 passed, 1 skipped`.
+- `check_imports.py`, changed-module/test compilation, `.venv/bin/pip check`, and `git diff --check` passed.
+- `docker compose -f docker-compose.yaml config` passed and resolved the four state paths plus `./state:/app/state`; Compose reported only the pre-existing obsolete `version` key warning.
+
+### Notes
+
+Changed files:
+- `module/app.py`: Added derived terminal-result completion and idempotent per-file result accounting.
+- `module/download_lifecycle.py`, `module/pyrogram_extension.py`: Separated transfer results from reporting/snapshot side effects.
+- `module/download_entry.py`: Added the `TMD_CHANNEL_LIBRARY_DB_PATH` resolver.
+- `docker-compose.yaml`, `.gitignore`: Added the persistent state mount, explicit runtime paths, and ignored host state directory.
+- `tests/module/`, `tests/test_docker_contract.py`: Added correctness, failure-isolation, path, and Compose regressions.
+- `README.md`, `README_CN.md`, `docs/web-control-console.md`: Documented state persistence, migration, backup, and integrity requirements.
+- `progress.md`: Recorded red-green and full-regression evidence.
+
+Rollback:
+- Revert this phase commit. For Docker deployments that have already migrated files into `state/`, stop the container first and either keep the explicit environment/mount contract or move the verified files back to their prior runtime paths before starting older code; never copy a live WAL database.

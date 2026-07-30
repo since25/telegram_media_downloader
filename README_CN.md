@@ -253,7 +253,7 @@ pip3 install -r requirements.txt
 确保安装了 **docker** 和 **docker-compose**
 ```sh
 docker pull tangyoha/telegram_media_downloader:latest
-mkdir -p ~/app && mkdir -p ~/app/log/ && cd ~/app
+mkdir -p ~/app/log ~/app/state && cd ~/app
 wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/docker-compose.yaml -O docker-compose.yaml
 wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/config.example.yaml -O config.example.yaml
 wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/data.yaml -O data.yaml
@@ -274,6 +274,21 @@ docker pull tangyoha/telegram_media_downloader:latest
 cd ~/app
 docker-compose down
 docker-compose up -d
+```
+
+Compose 会把宿主机 `./state` 挂载到容器 `/app/state`，并在其中保存
+`web_tasks.sqlite3`、`channel_library.sqlite3`、`resource_bot.sqlite3` 和
+`.web_auth.json`。备份时应把该目录与 `config.yaml`、`sessions/` 一并保存。已有
+Docker 部署升级前必须先停止容器，三个数据库使用 SQLite backup API 迁移，不能在
+WAL 仍有写入时直接复制；原有 Web 认证文件应在新 Compose 启动前移入 `state/`。
+
+容器中的状态路径通过以下环境变量明确指定，必要时可以覆盖：
+
+```yaml
+TMD_TASK_DB_PATH: /app/state/web_tasks.sqlite3
+TMD_CHANNEL_LIBRARY_DB_PATH: /app/state/channel_library.sqlite3
+TMD_RESOURCE_BOT_DB_PATH: /app/state/resource_bot.sqlite3
+TMD_WEB_AUTH_FILE: /app/state/.web_auth.json
 ```
 
 ## 升级安装

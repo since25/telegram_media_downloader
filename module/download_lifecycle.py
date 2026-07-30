@@ -291,32 +291,58 @@ async def run_file_lifecycle(
             telegram_permit,
             runtime,
         )
-        await runtime.report_bot_download_status(
-            node.bot,
-            node,
-            download_status,
-            file_size,
-            chat_id=node.chat_id,
-            message_id=message_id,
-            file_name=file_name,
-        )
+        try:
+            await runtime.report_bot_download_status(
+                node.bot,
+                node,
+                download_status,
+                file_size,
+                chat_id=node.chat_id,
+                message_id=message_id,
+                file_name=file_name,
+            )
+        except Exception as report_error:
+            runtime.logger.error(
+                f"Error reporting completed download status: {report_error}"
+            )
         if getattr(node, "task_id", None):
-            runtime.snapshot_node(node)
+            try:
+                runtime.snapshot_node(node)
+            except Exception as snapshot_error:
+                runtime.logger.error(
+                    f"Error persisting completed download snapshot: {snapshot_error}"
+                )
     except Exception as error:
         runtime.logger.error(f"Error in download_task: {error}")
         traceback.print_exc()
-        node.failed_download_task += 1
-        runtime.logger.info(
-            "download_task: 异常导致任务失败 - " f"失败计数={node.failed_download_task}"
-        )
-        if message_id:
+        if message_id and download_status is None:
+            download_status = DownloadStatus.FailedDownload
             node.download_status[message_id] = DownloadStatus.FailedDownload
+            node.stat(
+                DownloadStatus.FailedDownload,
+                node.chat_id,
+                message_id,
+                file_name,
+            )
+            if getattr(node, "task_id", None):
+                runtime.task_store.upsert_file(
+                    node.task_id,
+                    message_id,
+                    status=FileStatus.FAILED,
+                    filename=file_name or "",
+                    save_path=file_name or "",
+                    error="download_failed",
+                )
+            runtime.logger.info(
+                "download_task: 异常导致任务失败 - "
+                f"失败计数={node.failed_download_task}"
+            )
         if message_id and node.bot:
             try:
                 await runtime.report_bot_download_status(
                     node.bot,
                     node,
-                    DownloadStatus.FailedDownload,
+                    download_status or DownloadStatus.FailedDownload,
                     0,
                     chat_id=node.chat_id,
                     message_id=message_id,

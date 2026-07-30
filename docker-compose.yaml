@@ -10,6 +10,11 @@ services:
     #environment:
     #  - http_proxy=http://192.168.101.30:10811
     #  - https_proxy=http://192.168.101.30:10811
+    environment:
+      TMD_TASK_DB_PATH: /app/state/web_tasks.sqlite3
+      TMD_CHANNEL_LIBRARY_DB_PATH: /app/state/channel_library.sqlite3
+      TMD_RESOURCE_BOT_DB_PATH: /app/state/resource_bot.sqlite3
+      TMD_WEB_AUTH_FILE: /app/state/.web_auth.json
     volumes:
       # Here is what you need to edit
       - "./downloads/:/app/downloads/"
@@ -23,6 +28,7 @@ services:
       - "./log/:/app/log/"
       - "./sessions/:/app/sessions"
       - "./temp/:/app/temp"
+      - "./state/:/app/state/"
     #restart: "unless-stopped"
 # volumes:
 #   sessions:

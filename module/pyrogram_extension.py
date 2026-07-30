@@ -794,7 +794,6 @@ async def report_bot_download_status(
     Returns:
         None
     """
-    node.stat(download_status, chat_id, message_id, file_name)
     node.total_download_byte += download_size
 
     # 检查任务是否完成，完成时立即回复

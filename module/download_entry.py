@@ -1832,6 +1832,15 @@ async def stop_server(client: PyrogramClient):
     await client.stop()
 
 
+def channel_library_db_path() -> Path:
+    """Return the persistent channel-library database path."""
+
+    override = os.environ.get("TMD_CHANNEL_LIBRARY_DB_PATH")
+    if override:
+        return Path(override)
+    return Path.cwd() / "channel_library.sqlite3"
+
+
 def _start_channel_library_service(
     application: Application, client: PyrogramClient
 ) -> Optional[ChannelLibraryService]:
@@ -1842,7 +1851,7 @@ def _start_channel_library_service(
         service = ChannelLibraryService(
             application,
             client,
-            ChannelLibraryStore(Path.cwd() / "channel_library.sqlite3"),
+            ChannelLibraryStore(channel_library_db_path()),
             application.channel_library_config,
             task_store=get_task_store(),
         )

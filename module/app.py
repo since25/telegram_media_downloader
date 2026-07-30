@@ -183,6 +183,7 @@ class TaskNode:
         self.success_tasks = []  # 格式: [(chat_id, message_id, file_name)]
         self.failed_tasks = []  # 格式: [(chat_id, message_id, file_name)]
         self.skipped_tasks = []  # 格式: [(chat_id, message_id, file_name)]
+        self._download_result_status: dict = {}
 
         # 文件名标签：用于在下载评论时添加到文件名中
         self.file_name_tag: Optional[str] = None
@@ -211,7 +212,18 @@ class TaskNode:
         return (
             self.is_running
             and self.task_type != TaskType.ListenForward
-            and self.total_task == self.total_download_task
+            and self.total_download_task > 0
+            and self.completed_download_task >= self.total_download_task
+        )
+
+    @property
+    def completed_download_task(self) -> int:
+        """Return the number of files with one terminal download result."""
+
+        return (
+            self.success_download_task
+            + self.failed_download_task
+            + self.skip_download_task
         )
 
     def stop_transmission(self):
@@ -237,6 +249,15 @@ class TaskNode:
         Returns:
             None
         """
+        if chat_id is not None and message_id is not None:
+            result_key = (chat_id, message_id)
+            previous_status = self._download_result_status.get(result_key)
+            if previous_status is status:
+                return
+            if previous_status is not None:
+                self._remove_download_result(previous_status, chat_id, message_id)
+            self._download_result_status[result_key] = status
+
         # 记录详细的任务状态
         if status is DownloadStatus.SuccessDownload:
             self.success_download_task += 1
@@ -250,6 +271,29 @@ class TaskNode:
             self.failed_download_task += 1
             if chat_id is not None and message_id is not None:
                 self.failed_tasks.append((chat_id, message_id, file_name))
+
+    def _remove_download_result(
+        self,
+        status: DownloadStatus,
+        chat_id: Union[int, str],
+        message_id: int,
+    ) -> None:
+        """Remove a previous terminal result before replacing it."""
+
+        if status is DownloadStatus.SuccessDownload:
+            self.success_download_task = max(self.success_download_task - 1, 0)
+            details = self.success_tasks
+        elif status is DownloadStatus.SkipDownload:
+            self.skip_download_task = max(self.skip_download_task - 1, 0)
+            details = self.skipped_tasks
+        else:
+            self.failed_download_task = max(self.failed_download_task - 1, 0)
+            details = self.failed_tasks
+        details[:] = [
+            detail
+            for detail in details
+            if not (detail[0] == chat_id and detail[1] == message_id)
+        ]
 
     def stat_forward(self, status: ForwardStatus, count: int = 1):
         """Stat upload"""
