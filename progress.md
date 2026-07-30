@@ -2838,3 +2838,26 @@ Changed files:
 
 Rollback:
 - Revert the architecture-hardening design commit; no runtime, schema, configuration, or production state changes are involved.
+
+## 2026-07-30 - Task: Plan architecture hardening implementation
+
+### What was done
+
+- Converted the approved architecture invariants into four ordered implementation phases with explicit red-green tests, verification gates, documentation updates, commit boundaries, final adversarial review, and production deployment steps.
+- Bound each audited defect to concrete source/test areas while preventing unrelated rewrites of stable subsystems.
+- Defined the production preflight, backup-integrity, fast-forward deployment, live acceptance, and rollback evidence required before completion.
+
+### Testing
+
+- Cross-checked the plan against current task lifecycle, Web route inventory, SQLite stores, Rclone adapter, Docker/Compose files, dependency declarations, CI workflows, and the existing production handoff.
+- Confirmed every implementation phase has a focused test set, complete-suite gate, operational checks, `progress.md` entry, and independent commit.
+- `git diff --check` is required before committing this documentation phase.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/plans/2026-07-30-architecture-hardening.md`: Added the ordered TDD implementation, review, and deployment plan.
+- `progress.md`: Recorded the plan scope and verification evidence.
+
+Rollback:
+- Revert the architecture-hardening plan commit; no runtime, schema, configuration, or production state changes are involved.
