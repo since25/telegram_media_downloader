@@ -16,6 +16,13 @@ Web-submitted package/comment tasks first scan into a preview state. The task ro
 
 Confirmed tasks use the existing scan and download pipeline and the recommended naming strategy. Task rows move through scan, confirmation, queue, download, upload, and completion states on `/api/task-dashboard`.
 
+Task/file lifecycle changes that describe one queue, download, upload, or terminal event
+are committed to `web_tasks.sqlite3` in one transaction. High-frequency download
+callbacks are sampled before persistence: the first sample, at least one second of
+elapsed time, at least 1 MiB of byte movement, or the final sample is retained. SQLite
+progress work runs outside the downloader event-loop thread, and each task/file pair has
+at most one progress write in flight.
+
 The Tasks tab uses a compact five-column task table. Each row groups the task title,
 source, type, and short task ID so status, progress, results, and available actions remain
 easy to scan. Selecting a row opens the detail panel below it; ordinary file tasks and
@@ -48,6 +55,13 @@ to `completed_with_errors` so the upload-only retry remains available.
 Prescan mode scans a bounded message window, writes package summaries to the Web state, and waits for the user to include packages before `Start`. Selected packages are downloaded serially through the existing prescan download path. The scan window is configurable per submission via `max_messages` (default 2000, capped at 10000).
 
 Confirming a prescan keeps its package list in Web state instead of discarding it, so `GET /api/prescans/<task_id>/packages` keeps returning `200` (with each package's `selected` flag as of confirmation time) while the download is in progress, which is what backs the prescan download detail view. Cancelling a prescan, or clearing/clear-completing its task once it reaches a terminal state, drops the retained package list so it does not linger in memory.
+
+Confirmation submits an immutable snapshot of the selected package IDs and package list
+to the downloader loop, so later Web selection changes cannot alter already accepted
+work. Flask-to-async commands use the application owner loop; a bounded HTTP wait may
+return `503`, but it does not cancel work that the owner loop already accepted. A waiting
+confirmation reloaded without its process-only Telegram preview is closed with the stable
+`restart_interrupted` reason instead of being presented as usable.
 
 ## Resources And Channel Indexes
 

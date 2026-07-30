@@ -1,5 +1,6 @@
 """In-memory Web task state snapshots."""
 
+import copy
 import os
 import sqlite3
 import threading
@@ -450,6 +451,67 @@ class TaskStateStore:
                 self._persist_task(task)
             return task
 
+    def transition_file(
+        self,
+        task_id: Any,
+        message_id: Any,
+        *,
+        task_updates: Optional[dict] = None,
+        file_updates: Optional[dict] = None,
+    ) -> tuple[TaskSnapshot, FileSnapshot]:
+        """Atomically apply one task/file lifecycle transition."""
+
+        task_key = str(task_id)
+        message_key = str(message_id)
+        with self._lock:
+            existing = self._active.get(task_key) or self._completed.get(task_key)
+            task = (
+                copy.deepcopy(existing)
+                if existing is not None
+                else TaskSnapshot(task_id=task_key)
+            )
+            if task_updates:
+                self._apply_updates(task, **task_updates)
+
+            file_snapshot = task.files.get(message_key)
+            if file_snapshot is None:
+                file_snapshot = FileSnapshot(message_id=message_key)
+                task.files[message_key] = file_snapshot
+            for key, value in (file_updates or {}).items():
+                if value is not None and hasattr(file_snapshot, key):
+                    setattr(file_snapshot, key, value)
+
+            transition_time = _now()
+            file_snapshot.updated_at = transition_time
+            task.current_file = file_snapshot
+            task.updated_at = transition_time
+            task.refresh_counts_from_files()
+
+            if self.storage_path:
+                with self._connect() as connection:
+                    self._write_task(connection, task)
+                    self._write_file(connection, task_key, file_snapshot)
+
+            evicted_keys = []
+            if task.status in TERMINAL_TASK_STATUSES:
+                self._active.pop(task_key, None)
+                self._completed[task_key] = task
+                while len(self._completed) > self.recent_limit:
+                    oldest_key = min(
+                        self._completed,
+                        key=lambda key: self._completed[key].updated_at,
+                    )
+                    self._completed.pop(oldest_key, None)
+                    evicted_keys.append(oldest_key)
+            else:
+                self._completed.pop(task_key, None)
+                self._active[task_key] = task
+
+            if self.storage_path and evicted_keys:
+                with self._connect() as connection:
+                    self._delete_task_storage(connection, evicted_keys)
+            return task, file_snapshot
+
     def upsert_file(self, task_id: Any, message_id: Any, **updates) -> FileSnapshot:
         task_key = str(task_id)
         message_key = str(message_id)
@@ -836,104 +898,112 @@ class TaskStateStore:
     def _persist_task(self, task: TaskSnapshot) -> None:
         if not self.storage_path:
             return
-        workflow = task.workflow or WorkflowSnapshot()
         with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO tasks (
-                    task_id, source, task_type, chat_id, title, status,
-                    created_at, updated_at, total_count, success_count,
-                    failed_count, skipped_count, upload_success_count,
-                    workflow_type, workflow_status, workflow_scan_count,
-                    workflow_media_count, workflow_selected_count,
-                    workflow_summary, workflow_error, error, needs_confirmation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(task_id) DO UPDATE SET
-                    source=excluded.source,
-                    task_type=excluded.task_type,
-                    chat_id=excluded.chat_id,
-                    title=excluded.title,
-                    status=excluded.status,
-                    updated_at=excluded.updated_at,
-                    total_count=excluded.total_count,
-                    success_count=excluded.success_count,
-                    failed_count=excluded.failed_count,
-                    skipped_count=excluded.skipped_count,
-                    upload_success_count=excluded.upload_success_count,
-                    workflow_type=excluded.workflow_type,
-                    workflow_status=excluded.workflow_status,
-                    workflow_scan_count=excluded.workflow_scan_count,
-                    workflow_media_count=excluded.workflow_media_count,
-                    workflow_selected_count=excluded.workflow_selected_count,
-                    workflow_summary=excluded.workflow_summary,
-                    workflow_error=excluded.workflow_error,
-                    error=excluded.error,
-                    needs_confirmation=excluded.needs_confirmation
-                """,
-                (
-                    task.task_id,
-                    task.source,
-                    str(task.task_type),
-                    task.chat_id,
-                    task.title,
-                    task.status,
-                    task.created_at,
-                    task.updated_at,
-                    task.total_count,
-                    task.success_count,
-                    task.failed_count,
-                    task.skipped_count,
-                    task.upload_success_count,
-                    workflow.workflow_type,
-                    workflow.status,
-                    workflow.scan_count,
-                    workflow.media_count,
-                    workflow.selected_count,
-                    workflow.summary,
-                    workflow.error,
-                    task.error,
-                    1 if task.needs_confirmation else 0,
-                ),
-            )
+            self._write_task(connection, task)
+
+    @staticmethod
+    def _write_task(connection, task: TaskSnapshot) -> None:
+        workflow = task.workflow or WorkflowSnapshot()
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, source, task_type, chat_id, title, status,
+                created_at, updated_at, total_count, success_count,
+                failed_count, skipped_count, upload_success_count,
+                workflow_type, workflow_status, workflow_scan_count,
+                workflow_media_count, workflow_selected_count,
+                workflow_summary, workflow_error, error, needs_confirmation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET
+                source=excluded.source,
+                task_type=excluded.task_type,
+                chat_id=excluded.chat_id,
+                title=excluded.title,
+                status=excluded.status,
+                updated_at=excluded.updated_at,
+                total_count=excluded.total_count,
+                success_count=excluded.success_count,
+                failed_count=excluded.failed_count,
+                skipped_count=excluded.skipped_count,
+                upload_success_count=excluded.upload_success_count,
+                workflow_type=excluded.workflow_type,
+                workflow_status=excluded.workflow_status,
+                workflow_scan_count=excluded.workflow_scan_count,
+                workflow_media_count=excluded.workflow_media_count,
+                workflow_selected_count=excluded.workflow_selected_count,
+                workflow_summary=excluded.workflow_summary,
+                workflow_error=excluded.workflow_error,
+                error=excluded.error,
+                needs_confirmation=excluded.needs_confirmation
+            """,
+            (
+                task.task_id,
+                task.source,
+                str(task.task_type),
+                task.chat_id,
+                task.title,
+                task.status,
+                task.created_at,
+                task.updated_at,
+                task.total_count,
+                task.success_count,
+                task.failed_count,
+                task.skipped_count,
+                task.upload_success_count,
+                workflow.workflow_type,
+                workflow.status,
+                workflow.scan_count,
+                workflow.media_count,
+                workflow.selected_count,
+                workflow.summary,
+                workflow.error,
+                task.error,
+                1 if task.needs_confirmation else 0,
+            ),
+        )
 
     def _persist_file(self, task_id: str, file_snapshot: FileSnapshot) -> None:
         if not self.storage_path:
             return
         with self._connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO task_files (
-                    task_id, message_id, status, filename, total_size,
-                    downloaded_size, download_speed, save_path, error, updated_at,
-                    uploaded_size, upload_speed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(task_id, message_id) DO UPDATE SET
-                    status=excluded.status,
-                    filename=excluded.filename,
-                    total_size=excluded.total_size,
-                    downloaded_size=excluded.downloaded_size,
-                    download_speed=excluded.download_speed,
-                    save_path=excluded.save_path,
-                    error=excluded.error,
-                    updated_at=excluded.updated_at,
-                    uploaded_size=excluded.uploaded_size,
-                    upload_speed=excluded.upload_speed
-                """,
-                (
-                    task_id,
-                    file_snapshot.message_id,
-                    file_snapshot.status,
-                    file_snapshot.filename,
-                    file_snapshot.total_size,
-                    file_snapshot.downloaded_size,
-                    file_snapshot.download_speed,
-                    file_snapshot.save_path,
-                    file_snapshot.error,
-                    file_snapshot.updated_at,
-                    file_snapshot.uploaded_size,
-                    file_snapshot.upload_speed,
-                ),
-            )
+            self._write_file(connection, task_id, file_snapshot)
+
+    @staticmethod
+    def _write_file(connection, task_id: str, file_snapshot: FileSnapshot) -> None:
+        connection.execute(
+            """
+            INSERT INTO task_files (
+                task_id, message_id, status, filename, total_size,
+                downloaded_size, download_speed, save_path, error, updated_at,
+                uploaded_size, upload_speed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(task_id, message_id) DO UPDATE SET
+                status=excluded.status,
+                filename=excluded.filename,
+                total_size=excluded.total_size,
+                downloaded_size=excluded.downloaded_size,
+                download_speed=excluded.download_speed,
+                save_path=excluded.save_path,
+                error=excluded.error,
+                updated_at=excluded.updated_at,
+                uploaded_size=excluded.uploaded_size,
+                upload_speed=excluded.upload_speed
+            """,
+            (
+                task_id,
+                file_snapshot.message_id,
+                file_snapshot.status,
+                file_snapshot.filename,
+                file_snapshot.total_size,
+                file_snapshot.downloaded_size,
+                file_snapshot.download_speed,
+                file_snapshot.save_path,
+                file_snapshot.error,
+                file_snapshot.updated_at,
+                file_snapshot.uploaded_size,
+                file_snapshot.upload_speed,
+            ),
+        )
 
 
 def _default_storage_path() -> Optional[Path]:
@@ -1031,7 +1101,12 @@ def snapshot_node(
         mapped_status = _file_status_from_download_status(status)
         if (
             existing_file is not None
-            and existing_file.status == FileStatus.UPLOAD_FAILED
+            and existing_file.status
+            in {
+                FileStatus.UPLOADING,
+                FileStatus.UPLOADED,
+                FileStatus.UPLOAD_FAILED,
+            }
             and mapped_status == FileStatus.DOWNLOADED
         ):
             continue

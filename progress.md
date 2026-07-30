@@ -2893,3 +2893,38 @@ Changed files:
 
 Rollback:
 - Revert this phase commit. For Docker deployments that have already migrated files into `state/`, stop the container first and either keep the explicit environment/mount contract or move the verified files back to their prior runtime paths before starting older code; never copy a live WAL database.
+
+## 2026-07-30 - Task: Consolidate task state boundaries
+
+### What was done
+
+- Added one atomic task/file lifecycle transition so queue, download, upload, and terminal evidence cannot be half-committed in memory or SQLite.
+- Sampled high-frequency download progress off the event loop with time/byte/final thresholds and at most one in-flight write per file.
+- Routed Flask-to-async work through one owner-loop command boundary with bounded waits that do not cancel accepted work.
+- Locked shared Web preview/prescan state, passed immutable confirmation selections across threads, and made restart-orphaned confirmations fail deterministically with `restart_interrupted`.
+- Prevented late download snapshots from regressing uploading, uploaded, or upload-failed file states.
+
+### Testing
+
+- Initial Phase 2 RED verification -> `9 failed`, covering missing atomic transitions, sampled progress, Web command ownership, and restart-orphan confirmation handling.
+- Additional concurrency/state RED verification -> `3 failed`, covering concurrent per-file progress writes, upload-state regression, and mutable prescan confirmation state.
+- Phase 2 focused task-store, progress, Web command, lifecycle, prescan/cancel, and channel-library regressions -> `161 passed`.
+- Natural-order complete suite with isolated task/resource/auth paths -> `646 passed, 1 skipped`; no `Event loop is closed` failures reproduced.
+- An earlier complete-suite run with `TMD_CHANNEL_LIBRARY_DB_PATH` forced externally produced one expected default-path contract failure; rerunning without that conflicting override passed completely.
+- `check_imports.py`, changed-module/test compilation, `.venv/bin/pip check`, and `git diff --check` passed.
+- Task database migration, transaction rollback, and restart recovery tests -> `3 passed`; temporary database verification -> `PRAGMA integrity_check = ok`, schema version `1`.
+
+### Notes
+
+Changed files:
+- `module/task_state.py`: Added atomic task/file transitions and protected upload-stage states from late download snapshots.
+- `module/progress_persistence.py`: Added sampled, off-loop, single-in-flight download progress persistence.
+- `module/web_commands.py`: Added the shared Flask-to-owner-loop command boundary and bounded wait error.
+- `module/download_queue.py`, `module/download_lifecycle.py`, `module/download_stat.py`: Routed lifecycle and progress persistence through the consolidated boundaries.
+- `module/web.py`: Routed async submissions and waits through the command helper and synchronized process-local Web confirmation state.
+- `tests/module/test_task_state.py`, `tests/module/test_progress_persistence.py`, `tests/module/test_web_commands.py`, `tests/module/test_download_lifecycle.py`, `tests/test_web_cancel_task.py`, `tests/test_web_prescan_retention.py`: Added atomicity, rollback, sampling, loop-ownership, immutable-confirmation, restart, and state-regression coverage.
+- `docs/web-control-console.md`: Documented atomic lifecycle writes, progress sampling, owner-loop timeouts, immutable confirmation snapshots, and restart behavior.
+- `progress.md`: Recorded Phase 2 implementation and verification evidence.
+
+Rollback:
+- Revert the Phase 2 commit. No schema version change is introduced; existing `web_tasks.sqlite3` data remains compatible with the prior Phase 1 code.

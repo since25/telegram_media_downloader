@@ -1,5 +1,6 @@
 """One-file lifecycle with separate download and upload phases."""
 
+import asyncio
 import os
 import time
 import traceback
@@ -7,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from module.app import DownloadStatus
+from module.progress_persistence import download_progress_persistence
 from module.task_state import FileStatus, TaskStatus
 
 
@@ -30,6 +32,25 @@ class FileLifecycleRuntime:
     get_download_result: Callable[..., dict]
 
 
+async def _transition_file(
+    store,
+    task_id,
+    message_id,
+    *,
+    task_updates: Optional[dict] = None,
+    file_updates: Optional[dict] = None,
+):
+    """Run one durable task/file transition outside the event-loop thread."""
+
+    return await asyncio.to_thread(
+        store.transition_file,
+        task_id,
+        message_id,
+        task_updates=task_updates,
+        file_updates=file_updates,
+    )
+
+
 async def run_download_phase(
     client,
     message,
@@ -41,11 +62,12 @@ async def run_download_phase(
 
     message_id = message.id
     if getattr(node, "task_id", None):
-        runtime.task_store.update_task(node.task_id, status=TaskStatus.DOWNLOADING)
-        runtime.task_store.upsert_file(
+        await _transition_file(
+            runtime.task_store,
             node.task_id,
             message_id,
-            status=FileStatus.DOWNLOADING,
+            task_updates={"status": TaskStatus.DOWNLOADING},
+            file_updates={"status": FileStatus.DOWNLOADING},
         )
 
     token = runtime.naming_snapshot_context.set(naming_snapshot)
@@ -76,13 +98,18 @@ async def run_download_phase(
             file_status = FileStatus.SKIPPED
         else:
             file_status = FileStatus.FAILED
-        runtime.task_store.upsert_file(
+        await _transition_file(
+            runtime.task_store,
             node.task_id,
             message_id,
-            status=file_status,
-            filename=file_name or "",
-            save_path=file_name or "",
+            task_updates={"status": TaskStatus.DOWNLOADING},
+            file_updates={
+                "status": file_status,
+                "filename": file_name or "",
+                "save_path": file_name or "",
+            },
         )
+        download_progress_persistence.clear(node.task_id, message_id)
 
     node.stat(download_status, node.chat_id, message_id, file_name)
     runtime.logger.info(
@@ -142,13 +169,16 @@ async def run_upload_phase(
 
     try:
         if getattr(node, "task_id", None):
-            runtime.task_store.update_task(node.task_id, status=TaskStatus.UPLOADING)
-            runtime.task_store.upsert_file(
+            await _transition_file(
+                runtime.task_store,
                 node.task_id,
                 message_id,
-                status=FileStatus.UPLOADING,
-                filename=file_name,
-                save_path=file_name,
+                task_updates={"status": TaskStatus.UPLOADING},
+                file_updates={
+                    "status": FileStatus.UPLOADING,
+                    "filename": file_name,
+                    "save_path": file_name,
+                },
             )
         upload_result = await runtime.app.upload_file(
             file_name,
@@ -158,12 +188,16 @@ async def run_upload_phase(
         if upload_result:
             node.upload_success_count += 1
             if getattr(node, "task_id", None):
-                runtime.task_store.upsert_file(
+                await _transition_file(
+                    runtime.task_store,
                     node.task_id,
                     message_id,
-                    status=FileStatus.UPLOADED,
-                    filename=file_name,
-                    save_path=file_name,
+                    task_updates={"status": TaskStatus.UPLOADING},
+                    file_updates={
+                        "status": FileStatus.UPLOADED,
+                        "filename": file_name,
+                        "save_path": file_name,
+                    },
                 )
             runtime.logger.info(
                 "download_task: 文件上传成功 - "
@@ -173,24 +207,32 @@ async def run_upload_phase(
             return
 
         if getattr(node, "task_id", None):
-            runtime.task_store.upsert_file(
+            await _transition_file(
+                runtime.task_store,
                 node.task_id,
                 message_id,
-                status=FileStatus.UPLOAD_FAILED,
-                filename=file_name,
-                save_path=file_name,
-                error="upload_failed",
+                task_updates={"status": TaskStatus.UPLOADING},
+                file_updates={
+                    "status": FileStatus.UPLOAD_FAILED,
+                    "filename": file_name,
+                    "save_path": file_name,
+                    "error": "upload_failed",
+                },
             )
         runtime.logger.warning(f"download_task: 文件上传失败 - file_name={file_name}")
     except Exception as error:
         if getattr(node, "task_id", None):
-            runtime.task_store.upsert_file(
+            await _transition_file(
+                runtime.task_store,
                 node.task_id,
                 message_id,
-                status=FileStatus.UPLOAD_FAILED,
-                filename=file_name,
-                save_path=file_name,
-                error="upload_failed",
+                task_updates={"status": TaskStatus.UPLOADING},
+                file_updates={
+                    "status": FileStatus.UPLOAD_FAILED,
+                    "filename": file_name,
+                    "save_path": file_name,
+                    "error": "upload_failed",
+                },
             )
         runtime.logger.error(
             "download_task: 文件上传异常 - " f"file_name={file_name}, error={error}",
@@ -307,7 +349,7 @@ async def run_file_lifecycle(
             )
         if getattr(node, "task_id", None):
             try:
-                runtime.snapshot_node(node)
+                await asyncio.to_thread(runtime.snapshot_node, node)
             except Exception as snapshot_error:
                 runtime.logger.error(
                     f"Error persisting completed download snapshot: {snapshot_error}"
@@ -325,14 +367,19 @@ async def run_file_lifecycle(
                 file_name,
             )
             if getattr(node, "task_id", None):
-                runtime.task_store.upsert_file(
+                await _transition_file(
+                    runtime.task_store,
                     node.task_id,
                     message_id,
-                    status=FileStatus.FAILED,
-                    filename=file_name or "",
-                    save_path=file_name or "",
-                    error="download_failed",
+                    task_updates={"status": TaskStatus.DOWNLOADING},
+                    file_updates={
+                        "status": FileStatus.FAILED,
+                        "filename": file_name or "",
+                        "save_path": file_name or "",
+                        "error": "download_failed",
+                    },
                 )
+                download_progress_persistence.clear(node.task_id, message_id)
             runtime.logger.info(
                 "download_task: 异常导致任务失败 - "
                 f"失败计数={node.failed_download_task}"

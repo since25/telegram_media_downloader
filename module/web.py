@@ -1,7 +1,5 @@
 """web ui for media download"""
 
-import asyncio
-import concurrent.futures
 import hmac
 import json
 import logging
@@ -46,6 +44,11 @@ from module.download_stat import (
 from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
 from module.task_state import FileStatus, TERMINAL_TASK_STATUSES, mask_display_name
 from module.telegram_activity import get_telegram_activity_gate
+from module.web_commands import (
+    WebCommandTimeout,
+    submit_web_coroutine,
+    wait_for_web_command,
+)
 from utils.format import format_byte
 
 log = logging.getLogger("werkzeug")
@@ -68,6 +71,7 @@ _web_task_counter = 0
 _pending_web_task_previews: dict[str, dict] = {}
 _pending_web_prescans: dict[str, dict] = {}
 _scanning_web_task_nodes: dict[str, TaskNode] = {}
+_web_task_state_lock = threading.RLock()
 WEB_AUTH_FILE_ENV = "TMD_WEB_AUTH_FILE"
 WEB_AUTH_FILE_NAME = ".web_auth.json"
 SUPPORTED_MEDIA_TYPES = ["audio", "photo", "video", "document", "voice", "video_note"]
@@ -820,8 +824,8 @@ def update_incremental_scan_settings():
         future = _channel_service().submit_incremental_scan_settings_threadsafe(
             enabled, expression, timezone
         )
-        settings = future.result(timeout=10)
-    except concurrent.futures.TimeoutError:
+        settings = wait_for_web_command(future, timeout=10)
+    except WebCommandTimeout:
         raise _ChannelApiError(
             503,
             "service_timeout",
@@ -893,8 +897,8 @@ def create_channel_library():
             if scan_mode == "messages"
             else service.submit_library_link_threadsafe(link.strip(), scan_mode)
         )
-        result = future.result(timeout=30)
-    except concurrent.futures.TimeoutError:
+        result = wait_for_web_command(future, timeout=30)
+    except WebCommandTimeout:
         raise _ChannelApiError(
             503,
             "service_timeout",
@@ -976,7 +980,7 @@ def create_channel_scan(library_id: int):
             if set(payload) != {"mode"}:
                 _invalid_request("incremental mode does not accept extra fields")
             future = service.submit_incremental_threadsafe(library_id)
-            scan = future.result(timeout=30)
+            scan = wait_for_web_command(future, timeout=30)
         elif mode == "repair":
             if "failed_job_id" in payload:
                 _invalid_request("repair mode does not accept failed_job_id")
@@ -995,7 +999,7 @@ def create_channel_scan(library_id: int):
                 payload.get("failed_job_id"), "failed_job_id", minimum=1
             )
             scan = service.retry_failed_job(library_id, failed_job_id)
-    except concurrent.futures.TimeoutError:
+    except WebCommandTimeout:
         raise _ChannelApiError(
             503,
             "service_timeout",
@@ -1840,14 +1844,15 @@ def _next_web_task_id() -> str:
 def _schedule_web_coroutine(app: Application, coroutine) -> None:
     """Schedule a coroutine on the downloader loop from the Flask thread."""
 
-    loop = getattr(app, "loop", None)
-    if loop is None:
-        coroutine.close()
-        raise RuntimeError("application loop is not available")
-    if loop.is_running():
-        asyncio.run_coroutine_threadsafe(coroutine, loop)
-    else:
-        loop.create_task(coroutine)
+    future = submit_web_coroutine(getattr(app, "loop", None), coroutine)
+
+    def log_failure(completed):
+        try:
+            completed.result()
+        except Exception:
+            logger.exception("Web owner-loop command failed")
+
+    future.add_done_callback(log_failure)
 
 
 def _web_client(app: Application):
@@ -1923,7 +1928,8 @@ def _create_web_task(
     node.task_source = "web"
     node.task_display_type = task_type
     node.is_running = True
-    _scanning_web_task_nodes[task_id] = node
+    with _web_task_state_lock:
+        _scanning_web_task_nodes[task_id] = node
     get_task_store().create_task(
         task_id=task_id,
         source="web",
@@ -2046,12 +2052,13 @@ async def _run_web_prescan_task(
             return
         plan = scan_result.prescan_plan
         packages = list(getattr(plan, "packages", []) or [])
-        _pending_web_prescans[task_id] = {
-            "channel": channel,
-            "node": node,
-            "packages": packages,
-            "selected_package_ids": set(),
-        }
+        with _web_task_state_lock:
+            _pending_web_prescans[task_id] = {
+                "channel": channel,
+                "node": node,
+                "packages": packages,
+                "selected_package_ids": set(),
+            }
         summary = (
             f"Prescan ready: {len(packages)} packages, "
             f"{getattr(plan, 'scanned_count', 0)} messages scanned"
@@ -2093,7 +2100,8 @@ async def _run_web_prescan_task(
                 ),
             )
     finally:
-        _scanning_web_task_nodes.pop(task_id, None)
+        with _web_task_state_lock:
+            _scanning_web_task_nodes.pop(task_id, None)
         _release_prescan_slot(task_id)
 
 
@@ -2153,12 +2161,13 @@ async def _run_web_package_task(
         )
         node.package_plan = package_plan
         node.package_media_items = {item.message.id: item for item in package_items}
-        _pending_web_task_previews[task_id] = {
-            "task_type": "package",
-            "node": node,
-            "messages": scan_result.messages,
-            "failed_message_ids": getattr(scan_result, "failed_message_ids", None),
-        }
+        with _web_task_state_lock:
+            _pending_web_task_previews[task_id] = {
+                "task_type": "package",
+                "node": node,
+                "messages": scan_result.messages,
+                "failed_message_ids": getattr(scan_result, "failed_message_ids", None),
+            }
         for item in package_items:
             message_id = getattr(getattr(item, "message", None), "id", None)
             if message_id is not None:
@@ -2199,7 +2208,8 @@ async def _run_web_package_task(
                 ),
             )
     finally:
-        _scanning_web_task_nodes.pop(task_id, None)
+        with _web_task_state_lock:
+            _scanning_web_task_nodes.pop(task_id, None)
 
 
 async def _run_web_comment_task(
@@ -2230,12 +2240,13 @@ async def _run_web_comment_task(
         if node.is_stop_transmission:
             _mark_web_task_cancelled(task_id, "comment")
             return
-        _pending_web_task_previews[task_id] = {
-            "task_type": "comment",
-            "node": node,
-            "request": workflow_request,
-            "entity_id": entity.id,
-        }
+        with _web_task_state_lock:
+            _pending_web_task_previews[task_id] = {
+                "task_type": "comment",
+                "node": node,
+                "request": workflow_request,
+                "entity_id": entity.id,
+            }
         get_task_store().update_task(
             task_id,
             status=TaskStatus.WAITING_CONFIRMATION,
@@ -2267,7 +2278,8 @@ async def _run_web_comment_task(
                 ),
             )
     finally:
-        _scanning_web_task_nodes.pop(task_id, None)
+        with _web_task_state_lock:
+            _scanning_web_task_nodes.pop(task_id, None)
 
 
 async def _run_confirmed_package_download(preview: dict):
@@ -2453,9 +2465,10 @@ def _prune_orphaned_prescans() -> None:
     evicted that way (unbounded memory growth).
     """
     store = get_task_store()
-    for task_id in list(_pending_web_prescans):
-        if store.get_task(task_id) is None:
-            _pending_web_prescans.pop(task_id, None)
+    with _web_task_state_lock:
+        for task_id in list(_pending_web_prescans):
+            if store.get_task(task_id) is None:
+                _pending_web_prescans.pop(task_id, None)
 
 
 @_flask_app.route("/api/tasks/<task_id>/confirm", methods=["POST"])
@@ -2464,25 +2477,58 @@ def confirm_task(task_id: str):
     """Confirm a scanned Web preview and queue its download."""
 
     _prune_orphaned_prescans()
-    app = _active_app()
-    preview = _pending_web_task_previews.pop(task_id, None)
-    prescan = _pending_web_prescans.get(task_id)  # keep entry so packages stay readable
+    with _web_task_state_lock:
+        preview = _pending_web_task_previews.pop(task_id, None)
+        prescan = _pending_web_prescans.get(task_id)
+        if prescan:
+            selected_ids = frozenset(prescan.get("selected_package_ids") or ())
+            confirmed_prescan = {
+                "channel": prescan.get("channel") or "",
+                "node": prescan.get("node"),
+                "packages": tuple(prescan.get("packages") or ()),
+                "selected_package_ids": selected_ids,
+            }
+        else:
+            selected_ids = frozenset()
+            confirmed_prescan = None
     if not preview and not prescan:
+        task = get_task_store().get_task(task_id)
+        if task and (
+            task.status == TaskStatus.WAITING_CONFIRMATION
+            or task.error == "restart_interrupted"
+        ):
+            get_task_store().update_task(
+                task_id,
+                status=TaskStatus.FAILED,
+                error="restart_interrupted",
+                needs_confirmation=False,
+                workflow=WorkflowSnapshot(
+                    workflow_type=(
+                        task.workflow.workflow_type
+                        if task.workflow is not None
+                        else task.task_type
+                    ),
+                    status=TaskStatus.FAILED,
+                    error="restart_interrupted",
+                ),
+            )
+            return jsonify({"ok": False, "error": "restart_interrupted"}), 409
         return (
             jsonify({"ok": False, "error": "task is not waiting for confirmation"}),
             404,
         )
 
+    app = _active_app()
     try:
         if prescan:
-            selected_ids = set(prescan.get("selected_package_ids") or set())
             if not selected_ids:
                 return (
                     jsonify({"ok": False, "error": "select at least one package"}),
                     400,
                 )
-            prescan["confirmed"] = True
-            coroutine = _run_confirmed_prescan_download(prescan)
+            with _web_task_state_lock:
+                prescan["confirmed"] = True
+            coroutine = _run_confirmed_prescan_download(confirmed_prescan)
         elif preview["task_type"] == "comment":
             coroutine = _run_confirmed_comment_download(preview, _web_client(app))
         else:
@@ -2490,9 +2536,11 @@ def confirm_task(task_id: str):
         _schedule_web_coroutine(app, coroutine)
     except RuntimeError as error:
         if prescan:
-            prescan.pop("confirmed", None)
+            with _web_task_state_lock:
+                prescan.pop("confirmed", None)
         else:
-            _pending_web_task_previews[task_id] = preview
+            with _web_task_state_lock:
+                _pending_web_task_previews[task_id] = preview
         return jsonify({"ok": False, "error": str(error)}), 503
 
     return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.QUEUED})
@@ -2518,10 +2566,11 @@ def cancel_task(task_id: str):
         and service.store.get_download_batch_header_by_task_id(task_id) is not None
     ):
         try:
-            cancelled = service.cancel_download_batch_threadsafe(task_id).result(
-                timeout=1
+            cancelled = wait_for_web_command(
+                service.cancel_download_batch_threadsafe(task_id),
+                timeout=1,
             )
-        except concurrent.futures.TimeoutError:
+        except WebCommandTimeout:
             return jsonify({"ok": False, "error": "cancellation timed out"}), 503
         except RuntimeError:
             return jsonify({"ok": False, "error": "service unavailable"}), 503
@@ -2535,17 +2584,20 @@ def cancel_task(task_id: str):
         )
         return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
 
-    preview = _pending_web_task_previews.pop(task_id, None)
-    prescan = _pending_web_prescans.pop(task_id, None)
+    with _web_task_state_lock:
+        preview = _pending_web_task_previews.pop(task_id, None)
+        prescan = _pending_web_prescans.pop(task_id, None)
+        scanning_node = _scanning_web_task_nodes.get(task_id)
     node = (
         (preview or prescan or {}).get("node")
-        or _scanning_web_task_nodes.get(task_id)
+        or scanning_node
         or get_active_task_nodes().get(task_id)
     )
     task = get_task_store().get_task(task_id)
     if node:
         node.stop_transmission()
-    _scanning_web_task_nodes.pop(task_id, None)
+    with _web_task_state_lock:
+        _scanning_web_task_nodes.pop(task_id, None)
     if not node and not task:
         return jsonify({"ok": False, "error": "task not found"}), 404
     status = task.status if task else None
@@ -2582,7 +2634,8 @@ def clear_task(task_id: str):
             400,
         )
     removed = get_task_store().remove_task(task_id)
-    _pending_web_prescans.pop(task_id, None)
+    with _web_task_state_lock:
+        _pending_web_prescans.pop(task_id, None)
     return jsonify({"ok": removed, "task_id": task_id})
 
 
@@ -2597,8 +2650,9 @@ def clear_completed_tasks():
         if task.status in TERMINAL_TASK_STATUSES
     }
     cleared = get_task_store().clear_completed()
-    for cleared_task_id in terminal_ids:
-        _pending_web_prescans.pop(cleared_task_id, None)
+    with _web_task_state_lock:
+        for cleared_task_id in terminal_ids:
+            _pending_web_prescans.pop(cleared_task_id, None)
     _prune_orphaned_prescans()
     return jsonify({"ok": True, "cleared": cleared})
 
@@ -2636,10 +2690,11 @@ def cleanup_upload_retry_files(task_id: str):
     if service is None or not service.store.get_download_batch_by_task_id(task_id):
         return jsonify({"ok": False, "error": "upload cleanup is unavailable"}), 409
     try:
-        scheduled = service.schedule_upload_cleanup_threadsafe(task_id).result(
-            timeout=1
+        scheduled = wait_for_web_command(
+            service.schedule_upload_cleanup_threadsafe(task_id),
+            timeout=1,
         )
-    except concurrent.futures.TimeoutError:
+    except WebCommandTimeout:
         return jsonify({"ok": False, "error": "cleanup scheduling timed out"}), 503
     except RuntimeError:
         return jsonify({"ok": False, "error": "service unavailable"}), 503
@@ -2659,10 +2714,11 @@ def retry_task(task_id: str):
     service = getattr(_active_app(), "channel_library_service", None)
     if service is not None and service.store.get_download_batch_by_task_id(task_id):
         try:
-            scheduled = service.schedule_upload_retry_threadsafe(task_id).result(
-                timeout=1
+            scheduled = wait_for_web_command(
+                service.schedule_upload_retry_threadsafe(task_id),
+                timeout=1,
             )
-        except concurrent.futures.TimeoutError:
+        except WebCommandTimeout:
             return jsonify({"ok": False, "error": "retry scheduling timed out"}), 503
         except RuntimeError:
             return jsonify({"ok": False, "error": "service unavailable"}), 503
@@ -2693,15 +2749,20 @@ def retry_task(task_id: str):
 def prescan_packages(task_id: str):
     """Return paginated packages for a Web prescan."""
 
-    prescan = _pending_web_prescans.get(task_id)
+    with _web_task_state_lock:
+        prescan = _pending_web_prescans.get(task_id)
+        packages = tuple(prescan.get("packages") or ()) if prescan else ()
+        selected_ids = (
+            frozenset(prescan.get("selected_package_ids") or ())
+            if prescan
+            else frozenset()
+        )
     if not prescan:
         return jsonify({"error": "prescan not found"}), 404
     page = _as_positive_int(request.args.get("page"), 1, minimum=1, maximum=100000)
     page_size = _as_positive_int(
         request.args.get("page_size"), 50, minimum=1, maximum=200
     )
-    packages = list(prescan.get("packages") or [])
-    selected_ids = set(prescan.get("selected_package_ids") or set())
     start = (page - 1) * page_size
     end = start + page_size
     return jsonify(
@@ -2730,27 +2791,30 @@ def prescan_packages(task_id: str):
 def select_prescan_package(task_id: str, package_id: int):
     """Select or deselect one Web prescan package."""
 
-    prescan = _pending_web_prescans.get(task_id)
-    if not prescan:
-        return jsonify({"ok": False, "error": "prescan not found"}), 404
-    selected_ids = prescan.setdefault("selected_package_ids", set())
     payload = request.get_json(silent=True) or {}
     selected = _as_bool(payload.get("selected"), True)
-    if selected:
-        selected_ids.add(package_id)
-    else:
-        selected_ids.discard(package_id)
+    with _web_task_state_lock:
+        prescan = _pending_web_prescans.get(task_id)
+        if not prescan:
+            return jsonify({"ok": False, "error": "prescan not found"}), 404
+        selected_ids = prescan.setdefault("selected_package_ids", set())
+        if selected:
+            selected_ids.add(package_id)
+        else:
+            selected_ids.discard(package_id)
+        selected_count = len(selected_ids)
+        is_selected = package_id in selected_ids
     task = get_task_store().get_task(task_id)
     if task and task.workflow:
-        task.workflow.selected_count = len(selected_ids)
+        task.workflow.selected_count = selected_count
         get_task_store().update_task(task_id, workflow=task.workflow)
     return jsonify(
         {
             "ok": True,
             "task_id": task_id,
             "package_id": package_id,
-            "selected": package_id in selected_ids,
-            "selected_count": len(selected_ids),
+            "selected": is_selected,
+            "selected_count": selected_count,
         }
     )
 
@@ -2760,19 +2824,20 @@ def select_prescan_package(task_id: str, package_id: int):
 def select_all_prescan_packages(task_id: str):
     """Select or clear every Web prescan package at once."""
 
-    prescan = _pending_web_prescans.get(task_id)
-    if not prescan:
-        return jsonify({"ok": False, "error": "prescan not found"}), 404
     payload = request.get_json(silent=True) or {}
     selected = _as_bool(payload.get("selected"), True)
-    packages = list(prescan.get("packages") or [])
-    if selected:
-        selected_ids = {
-            int(getattr(package, "package_id", 0) or 0) for package in packages
-        }
-    else:
-        selected_ids = set()
-    prescan["selected_package_ids"] = selected_ids
+    with _web_task_state_lock:
+        prescan = _pending_web_prescans.get(task_id)
+        if not prescan:
+            return jsonify({"ok": False, "error": "prescan not found"}), 404
+        packages = tuple(prescan.get("packages") or ())
+        if selected:
+            selected_ids = {
+                int(getattr(package, "package_id", 0) or 0) for package in packages
+            }
+        else:
+            selected_ids = set()
+        prescan["selected_package_ids"] = selected_ids
     task = get_task_store().get_task(task_id)
     if task and task.workflow:
         task.workflow.selected_count = len(selected_ids)

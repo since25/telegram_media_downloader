@@ -68,6 +68,32 @@ def test_packages_available_after_confirm(monkeypatch, client):
     assert web._pending_web_prescans[task_id].get("confirmed") is True
 
 
+def test_confirm_passes_immutable_prescan_selection_snapshot(monkeypatch, client):
+    task_id = "prescan-selection-snapshot"
+    pending = _make_prescan({1})
+    original_package = pending["packages"][0]
+    web._pending_web_prescans[task_id] = pending
+    get_task_store().create_task(task_id, status=TaskStatus.WAITING_CONFIRMATION)
+    monkeypatch.setattr(web, "_active_app", lambda: mock.Mock(hide_file_name=False))
+    monkeypatch.setattr(web, "_schedule_web_coroutine", lambda app, coro: coro.close())
+    captured = {}
+
+    def _capture_prescan(prescan):
+        captured["prescan"] = prescan
+        return mock.Mock(close=lambda: None)
+
+    monkeypatch.setattr(web, "_run_confirmed_prescan_download", _capture_prescan)
+
+    confirm = client.post(f"/api/tasks/{task_id}/confirm")
+    pending["selected_package_ids"].clear()
+    pending["packages"].append(mock.Mock(package_id=2))
+
+    assert confirm.status_code == 200
+    assert captured["prescan"] is not pending
+    assert captured["prescan"]["selected_package_ids"] == frozenset({1})
+    assert captured["prescan"]["packages"] == (original_package,)
+
+
 def test_confirm_without_selection_returns_400_and_keeps_prescan_pending(
     monkeypatch, client
 ):

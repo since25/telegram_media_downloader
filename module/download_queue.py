@@ -48,17 +48,17 @@ async def enqueue_download(
         node.download_status[msg_id] = DownloadStatus.Downloading
         if getattr(node, "task_id", None):
             snapshot_node(node)
-            get_task_store().update_task(
-                node.task_id,
-                status=TaskStatus.QUEUED,
-                total_count=max(
-                    node.total_download_task + 1, len(node.download_status)
-                ),
-            )
-            get_task_store().upsert_file(
+            get_task_store().transition_file(
                 node.task_id,
                 msg_id,
-                status=FileStatus.QUEUED,
+                task_updates={
+                    "status": TaskStatus.QUEUED,
+                    "total_count": max(
+                        node.total_download_task + 1,
+                        len(node.download_status),
+                    ),
+                },
+                file_updates={"status": FileStatus.QUEUED},
             )
 
         queue_entry_times[(node.chat_id, msg_id)] = time.time()

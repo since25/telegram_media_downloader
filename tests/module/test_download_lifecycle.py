@@ -18,6 +18,19 @@ class _Store:
     def upsert_file(self, task_id, message_id, **updates):
         self.files.setdefault((str(task_id), str(message_id)), {}).update(updates)
 
+    def transition_file(
+        self,
+        task_id,
+        message_id,
+        *,
+        task_updates=None,
+        file_updates=None,
+    ):
+        self.tasks.setdefault(str(task_id), {}).update(task_updates or {})
+        self.files.setdefault((str(task_id), str(message_id)), {}).update(
+            file_updates or {}
+        )
+
 
 class _Logger:
     def __getattr__(self, _name):

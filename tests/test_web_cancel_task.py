@@ -83,3 +83,25 @@ def test_cancel_unknown_task_returns_404(client):
     assert response.status_code == 404
     body = response.get_json()
     assert body["ok"] is False
+
+
+def test_confirm_orphaned_waiting_task_is_closed_as_restart_interrupted(client):
+    task_id = "web-orphan-confirm"
+    get_task_store().create_task(
+        task_id,
+        source="web",
+        task_type="package",
+        status=TaskStatus.WAITING_CONFIRMATION,
+        needs_confirmation=True,
+    )
+
+    response = client.post(f"/api/tasks/{task_id}/confirm")
+
+    assert response.status_code == 409
+    body = response.get_json()
+    assert body["ok"] is False
+    assert body["error"] == "restart_interrupted"
+    task = get_task_store().get_task(task_id)
+    assert task.status == TaskStatus.FAILED
+    assert task.error == "restart_interrupted"
+    assert task.needs_confirmation is False

@@ -7,6 +7,62 @@ from module.app import DownloadStatus, TaskNode
 
 
 class TaskStateStoreTestCase(unittest.TestCase):
+    def test_transition_file_updates_task_and_file_together(self):
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+        store = TaskStateStore()
+        store.create_task("transition-1", status=TaskStatus.QUEUED)
+
+        task, file_snapshot = store.transition_file(
+            "transition-1",
+            101,
+            task_updates={"status": TaskStatus.DOWNLOADING, "total_count": 1},
+            file_updates={
+                "status": FileStatus.DOWNLOADING,
+                "filename": "sample.bin",
+                "total_size": 100,
+                "downloaded_size": 40,
+            },
+        )
+
+        self.assertEqual(task.status, TaskStatus.DOWNLOADING)
+        self.assertEqual(task.total_count, 1)
+        self.assertEqual(file_snapshot.status, FileStatus.DOWNLOADING)
+        self.assertEqual(task.files["101"].downloaded_size, 40)
+
+    def test_transition_file_rolls_back_memory_and_sqlite_on_file_write_failure(self):
+        from module.task_state import TaskStateStore, TaskStatus
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            store = TaskStateStore(storage_path=db_path)
+            store.create_task("transition-fail", status=TaskStatus.QUEUED)
+            with sqlite3.connect(db_path) as connection:
+                connection.executescript(
+                    """
+                    CREATE TRIGGER reject_transition_file
+                    BEFORE INSERT ON task_files
+                    BEGIN
+                        SELECT RAISE(ABORT, 'file write rejected');
+                    END;
+                    """
+                )
+
+            with self.assertRaises(sqlite3.IntegrityError):
+                store.transition_file(
+                    "transition-fail",
+                    101,
+                    task_updates={"status": TaskStatus.DOWNLOADING},
+                    file_updates={"status": "downloading"},
+                )
+
+            in_memory = store.get_task("transition-fail")
+            reloaded = TaskStateStore(storage_path=db_path).get_task("transition-fail")
+            self.assertEqual(in_memory.status, TaskStatus.QUEUED)
+            self.assertEqual(in_memory.files, {})
+            self.assertEqual(reloaded.status, TaskStatus.QUEUED)
+            self.assertEqual(reloaded.files, {})
+
     def test_create_update_file_and_complete_keeps_task_visible(self):
         from module.task_state import FileStatus, TaskStateStore, TaskStatus
 
@@ -80,33 +136,44 @@ class TaskStateStoreTestCase(unittest.TestCase):
         self.assertEqual(snapshot.skipped_count, 1)
         self.assertEqual(snapshot.upload_success_count, 1)
 
-    def test_upload_failed_file_is_not_regressed_by_download_snapshot(self):
+    def test_upload_state_is_not_regressed_by_download_snapshot(self):
         import module.task_state as task_state_module
 
-        from module.task_state import FileStatus, TaskStateStore, TaskStatus, snapshot_node
+        from module.task_state import (
+            FileStatus,
+            TaskStateStore,
+            TaskStatus,
+            snapshot_node,
+        )
 
-        original_store = task_state_module._TASK_STORE
-        task_state_module._TASK_STORE = TaskStateStore()
-        try:
-            task = task_state_module.get_task_store().create_task(
-                "upload-failed",
-                status=TaskStatus.COMPLETED_WITH_ERRORS,
-            )
-            task_state_module.get_task_store().upsert_file(
-                task.task_id,
-                101,
-                status=FileStatus.UPLOAD_FAILED,
-                save_path="/data/retained.mp4",
-            )
-            node = TaskNode(chat_id=-1002, task_id="upload-failed")
-            node.download_status[101] = DownloadStatus.SuccessDownload
+        for upload_status in (
+            FileStatus.UPLOADING,
+            FileStatus.UPLOADED,
+            FileStatus.UPLOAD_FAILED,
+        ):
+            with self.subTest(upload_status=upload_status):
+                original_store = task_state_module._TASK_STORE
+                task_state_module._TASK_STORE = TaskStateStore()
+                try:
+                    task = task_state_module.get_task_store().create_task(
+                        f"preserve-{upload_status}",
+                        status=TaskStatus.COMPLETED_WITH_ERRORS,
+                    )
+                    task_state_module.get_task_store().upsert_file(
+                        task.task_id,
+                        101,
+                        status=upload_status,
+                        save_path="/data/retained.mp4",
+                    )
+                    node = TaskNode(chat_id=-1002, task_id=task.task_id)
+                    node.download_status[101] = DownloadStatus.SuccessDownload
 
-            snapshot_node(node)
+                    snapshot_node(node)
 
-            stored = task_state_module.get_task_store().get_task(task.task_id)
-            self.assertEqual(stored.files["101"].status, FileStatus.UPLOAD_FAILED)
-        finally:
-            task_state_module._TASK_STORE = original_store
+                    stored = task_state_module.get_task_store().get_task(task.task_id)
+                    self.assertEqual(stored.files["101"].status, upload_status)
+                finally:
+                    task_state_module._TASK_STORE = original_store
 
     def test_update_reactivates_a_terminal_task_for_upload_retry(self):
         from module.task_state import TaskStateStore, TaskStatus

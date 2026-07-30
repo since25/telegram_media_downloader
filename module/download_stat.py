@@ -7,6 +7,7 @@ from enum import Enum
 from pyrogram import Client
 
 from module.app import TaskNode
+from module.progress_persistence import download_progress_persistence
 from module.task_state import FileStatus, TaskStatus, get_task_store, snapshot_node
 
 DOWNLOAD_LAST_PROGRESS_TS: dict[int, float] = {}
@@ -191,25 +192,6 @@ async def update_download_status(
     if not _download_result.get(chat_id):
         _download_result[chat_id] = {}
 
-    if getattr(node, "task_id", None):
-        get_task_store().update_task(
-            node.task_id,
-            status=TaskStatus.DOWNLOADING,
-            total_count=max(
-                int(getattr(node, "total_download_task", 0) or 0),
-                len(getattr(node, "download_status", {}) or {}),
-            ),
-        )
-        get_task_store().upsert_file(
-            node.task_id,
-            message_id,
-            status=FileStatus.DOWNLOADING,
-            filename=file_name,
-            save_path=file_name,
-            total_size=total_size,
-            downloaded_size=down_byte,
-        )
-
     if _download_result[chat_id].get(message_id):
         last_download_byte = _download_result[chat_id][message_id]["down_byte"]
         last_time = _download_result[chat_id][message_id]["end_time"]
@@ -235,15 +217,9 @@ async def update_download_status(
         _download_result[chat_id][message_id][
             "each_second_total_download"
         ] = each_second_total_download
-        if getattr(node, "task_id", None):
-            get_task_store().upsert_file(
-                node.task_id,
-                message_id,
-                download_speed=download_speed,
-                downloaded_size=down_byte,
-            )
     else:
         each_second_total_download = down_byte
+        download_speed = down_byte / max(cur_time - start_time, 0.001)
         _download_result[chat_id][message_id] = {
             "down_byte": down_byte,
             "total_size": total_size,
@@ -255,6 +231,22 @@ async def update_download_status(
             "task_id": node.task_id,
         }
         _total_download_size += down_byte
+
+    if getattr(node, "task_id", None):
+        await download_progress_persistence.persist_download(
+            get_task_store(),
+            node.task_id,
+            message_id,
+            total_count=max(
+                int(getattr(node, "total_download_task", 0) or 0),
+                len(getattr(node, "download_status", {}) or {}),
+            ),
+            filename=file_name,
+            total_size=total_size,
+            downloaded_size=down_byte,
+            download_speed=int(download_speed),
+            force=down_byte >= total_size > 0,
+        )
 
     if cur_time - _last_download_time >= 1.0:
         # update speed
