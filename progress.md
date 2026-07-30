@@ -2642,3 +2642,32 @@ Changed files:
 
 Rollback:
 - Revert this implementation commit and restart the service. Because schema 2 is not accepted by the previous schema-1 code, production rollback must restore the pre-deploy `resource_bot.sqlite3` backup with the service stopped; preserve the current schema-2 database separately before restoring.
+
+## 2026-07-30 - Task: Deploy resource publishing management page
+
+### What was done
+
+- Pushed commit `80c085d` and fast-forwarded the RackNerd production checkout from `116bf21`.
+- Stopped `tg-downloader.service` and created a restricted pre-deploy backup containing the previous commit marker, configuration/auth files, sessions, and consistent copies of all three SQLite databases.
+- Migrated the live `resource_bot.sqlite3` from schema 1 to schema 2, restarted the unified application, and verified the independent Publishing page through the authenticated production Web session.
+- Confirmed the two existing completed deliveries remain visible with their original package IDs and complete download/upload item counts.
+
+### Testing
+
+- Production backup: `/root/telegram_media_downloader/backups/release-20260729-204948-publishing-page` (`177M`, directory mode `0700`).
+- Backup database integrity -> `channel_library.sqlite3: ok`, `web_tasks.sqlite3: ok`, `resource_bot.sqlite3: ok`; the backed-up resource database remains schema 1.
+- Production code -> `80c085d`; `check_imports.py`, module compilation, and `.venv/bin/pip check` passed before restart.
+- Live databases -> channel schema `0`, Web task schema `1`, resource Bot schema `2`; all integrity checks -> `ok`; live resource database mode -> `0600`.
+- Authenticated production Web acceptance -> Publishing tab present, CSRF token available, delivery API returned exactly two completed jobs for packages `32926` and `32929`, with no queued or active work and zero inactive speeds.
+- Persisted delivery counts remained `32926: 26/26 downloaded, 26/26 uploaded` and `32929: 12/12 downloaded, 12/12 uploaded`.
+- Service -> `active/running`, `NRestarts=0`, `ExecMainStatus=0`, about `95MB` memory; four download workers started.
+- Post-deploy journal -> `39` lines and `0` traceback/exception/critical/start-failure/error markers.
+- Local and public Web roots redirect to login; public login returns `200`.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the production backup, schema migration, service health, authenticated Publishing-page acceptance, preserved delivery history, and rollback point.
+
+Rollback:
+- Stop `tg-downloader.service`, preserve the current schema-2 resource database separately, restore `config.yaml`, sessions as needed, and `resource_bot.sqlite3` from `/root/telegram_media_downloader/backups/release-20260729-204948-publishing-page`, reset the code to commit `116bf21`, and restart the service. Do not restore the other databases unless their integrity is independently in question.
