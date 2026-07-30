@@ -6,13 +6,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from pyrogram import enums
+from pyrogram import enums, raw
 
 from module.resource_bot_store import ResourceBotStore
 from module.resource_delivery import (
     PreparedDeliveryItem,
     ResourceDeliveryService,
     TransferSpeedTracker,
+    _TrackedUploadFile,
     build_delivery_groups,
     safe_delivery_filename,
 )
@@ -314,6 +315,23 @@ def test_transfer_speed_tracker_throttles_and_reports_terminal_sample():
     tracker.observe(1000, 1000)
 
     assert samples == [666, 666]
+
+
+def test_tracked_upload_file_exposes_serializable_string_name(tmp_path):
+    path = tmp_path / "album-video.mp4"
+    path.write_bytes(b"video")
+    tracker = TransferSpeedTracker(lambda _speed: None)
+
+    with _TrackedUploadFile(path, tracker) as stream:
+        assert isinstance(stream.name, str)
+        payload = raw.types.InputFile(
+            id=1,
+            parts=1,
+            name=stream.name,
+            md5_checksum="",
+        ).write()
+
+    assert payload
 
 
 def run(coroutine):

@@ -176,7 +176,9 @@ retried automatically.
 staging manifest for restart cleanup. Older databases migrate additively on startup.
 Speed persistence is throttled to approximately one update per second. Single uploads
 use Pyrogram progress callbacks; compatible albums remain media groups and measure
-upload reads without splitting the album.
+upload reads without splitting the album. Album tracking exposes a normal string file
+name to Pyrogram so its MTProto upload serializer remains compatible with local `Path`
+objects.
 
 The resource Bot and its delivery worker share the existing `start_download_bot` and
 `stop_download_bot` application entry. Leaving `resource_bot_token` empty preserves the

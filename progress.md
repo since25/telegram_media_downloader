@@ -2759,3 +2759,33 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, preserve the live schema-3 resource database and configuration, restore `config.yaml` and `resource_bot.sqlite3` from `/root/telegram_media_downloader/backups/release-20260730-042143-staging-pipeline`, return code to commit `70316fc`, and restart. Do not restore the channel or Web-task databases unless independently required.
+
+## 2026-07-30 - Task: Fix Pyrogram album upload stream filename serialization
+
+### What was done
+
+- Diagnosed failed staging job `g2UAjNeNiQxbV3LG`: the first 10-item album downloaded successfully but failed before creating a staging manifest or destination copy.
+- Reproduced the production `AttributeError` with two valid small videos and obtained the complete Pyrogram traceback: `_TrackedUploadFile.name` was a `PosixPath`, while Pyrogram's MTProto serializer requires a string and calls `.encode()`.
+- Normalized the tracked album stream path to `str` when opening `FileIO`, preserving album upload-speed tracking while making its filename serializable.
+- Added a regression test that verifies the tracked stream exposes a string name and can be serialized by Pyrogram's raw `InputFile`.
+- Confirmed the first two successful production packages predated commit `80c085d`, which introduced tracked album streams; the later failures therefore match the exact regression window.
+
+### Testing
+
+- RED verification: the new regression test observed `stream.name` as `PosixPath`.
+- Resource delivery worker tests -> `17 passed`.
+- Resource store, delivery, Bot, lifecycle, command, and application regressions -> `64 passed`.
+- Complete suite with isolated `TMD_TASK_DB_PATH` and `TMD_RESOURCE_BOT_DB_PATH` -> `625 passed, 1 skipped`.
+- Changed modules compiled, `check_imports.py` passed, and `git diff --check` passed.
+- Production diagnostic reproduction produced `AttributeError: 'PosixPath' object has no attribute 'encode'` before any staging message was created.
+
+### Notes
+
+Changed files:
+- `module/resource_delivery.py`: Converted the tracked album upload path to a string before opening the file stream.
+- `tests/module/test_resource_delivery.py`: Added Pyrogram filename-type and raw-serialization regression coverage.
+- `docs/web-control-console.md`: Documented the album speed-tracking compatibility boundary.
+- `progress.md`: Recorded diagnosis, regression window, fix, and verification evidence.
+
+Rollback:
+- Revert this fix commit and restart the service. No schema, configuration, activation, binding, or delivery-history rollback is required.

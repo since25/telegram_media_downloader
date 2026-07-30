@@ -70,7 +70,7 @@ class _TrackedUploadFile(io.BufferedReader):
     """Binary file wrapper that observes album upload reads without splitting it."""
 
     def __init__(self, path: Path, tracker: TransferSpeedTracker) -> None:
-        super().__init__(io.FileIO(path, "rb"))
+        super().__init__(io.FileIO(str(path), "rb"))
         self._tracker = tracker
         self._transferred = 0
         self._total = int(path.stat().st_size)
