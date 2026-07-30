@@ -104,14 +104,16 @@ class ResourceAdminCommands:
                 self.handle_create_key,
                 filters=pyrogram.filters.command(["create_resource_key"])
                 & pyrogram.filters.user(allowed),
-            )
+            ),
+            group=-1,
         )
         admin_client.add_handler(
             MessageHandler(
                 self.handle_revoke_user,
                 filters=pyrogram.filters.command(["revoke_resource_user"])
                 & pyrogram.filters.user(allowed),
-            )
+            ),
+            group=-1,
         )
 
     async def handle_create_key(self, client, message) -> None:

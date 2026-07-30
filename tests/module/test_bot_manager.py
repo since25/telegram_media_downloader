@@ -36,7 +36,7 @@ class FakeAdminClient:
         self.handlers = []
         self.commands = []
 
-    def add_handler(self, handler):
+    def add_handler(self, handler, group=0):
         self.handlers.append(handler)
 
     async def set_bot_commands(self, commands):

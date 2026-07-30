@@ -2579,3 +2579,30 @@ Changed files:
 Rollback:
 - Stop `tg-downloader.service`, preserve the current configuration/sessions/three SQLite databases, restore `config.yaml` from `/root/telegram_media_downloader/backups/release-20260729-193337-resource-bot/config.yaml` (or remove only `resource_bot_token`), revert the resource Bot commits on `master`, fast-forward production, and restart the service.
 - Preserve `resource_bot.sqlite3` during ordinary code rollback; the pre-feature code does not use it. Restore database backups only for confirmed corruption or an incompatible schema problem, with the service stopped and the current files retained first.
+
+## 2026-07-30 - Task: Fix resource activation-key command dispatch
+
+### What was done
+
+- Diagnosed `/create_resource_key` producing no reply in production: the existing management Bot catch-all text Handler matched the command first in Handler group `0`, so the later resource administration Handler never ran.
+- Registered `/create_resource_key` and `/revoke_resource_user` in Handler group `-1`, ahead of the generic management text Handler.
+- Added a regression contract for the resource administration Handler priority and updated the lifecycle test fake to model Handler groups.
+
+### Testing
+
+- Production diagnosis before the fix: `resource_activation_keys` remained at `0` rows after the command, confirming the key Handler had not run; no service/database/Token error was present.
+- RED verification: the new Handler-priority test observed groups `[0, 0]` instead of `[-1, -1]`.
+- Focused management/resource regressions: `.venv/bin/pytest -q tests/module/test_resource_bot.py tests/module/test_bot_manager.py tests/module/test_bot_commands.py tests/module/test_comment_workflow.py` -> `131 passed`.
+- Complete suite with isolated task/resource databases -> `613 passed, 1 skipped`.
+- Changed modules compiled and `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/resource_bot.py`: Registered resource administration commands in the higher-priority Handler group.
+- `tests/module/test_resource_bot.py`: Added the Handler-priority regression contract.
+- `tests/module/test_bot_manager.py`: Allowed the lifecycle fake client to record Handler groups.
+- `progress.md`: Recorded the production symptom, root cause, fix, and verification.
+
+Rollback:
+- Revert the activation-command dispatch fix and restart `tg-downloader.service`; no schema, configuration, activation key, or other persisted production data is changed by this patch.

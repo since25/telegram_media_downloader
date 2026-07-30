@@ -266,6 +266,24 @@ def test_admin_create_key_replies_privately_and_revoke_user(tmp_path):
     run(scenario())
 
 
+def test_admin_resource_commands_register_before_generic_text_handlers(
+    tmp_path,
+):
+    class RecordingClient:
+        def __init__(self):
+            self.groups = []
+
+        def add_handler(self, handler, group=0):
+            self.groups.append(group)
+
+    store = make_store(tmp_path)
+    client = RecordingClient()
+
+    ResourceAdminCommands(store).register(client, [1])
+
+    assert client.groups == [-1, -1]
+
+
 def test_activate_is_private_and_key_redeems_only_once(tmp_path):
     async def scenario():
         store = ResourceBotStore(tmp_path / "resource_bot.sqlite3")
