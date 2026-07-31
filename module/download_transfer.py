@@ -96,7 +96,7 @@ class TransferRuntime:
     move_to_download_path: Callable[..., None]
     retry_timed_out: Callable[..., bool]
     update_download_status: Callable[..., Any]
-    get_download_result: Callable[..., dict]
+    remove_download_result: Callable[..., None]
     retry_timeout: float
     stall_timeout: int
     progress_tracker: TransferProgressTracker
@@ -254,13 +254,7 @@ async def transfer_media(
                     f"Starting retry {retry + 1}/{max_retries}..."
                 )
                 runtime.progress_tracker.start(progress_key)
-
-                download_result = runtime.get_download_result()
-                if (
-                    node.chat_id in download_result
-                    and message_id in download_result[node.chat_id]
-                ):
-                    del download_result[node.chat_id][message_id]
+                runtime.remove_download_result(node, message_id)
 
                 try:
                     if temp_file_name and os.path.exists(temp_file_name):
@@ -436,9 +430,4 @@ async def transfer_media(
         return DownloadStatus.FailedDownload, None
     finally:
         runtime.progress_tracker.clear(progress_key)
-        download_result = runtime.get_download_result()
-        if (
-            node.chat_id in download_result
-            and message_id in download_result[node.chat_id]
-        ):
-            del download_result[node.chat_id][message_id]
+        runtime.remove_download_result(node, message_id)

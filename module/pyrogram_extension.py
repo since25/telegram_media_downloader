@@ -971,14 +971,12 @@ async def _report_bot_status(
         # 显示活跃下载任务的详细进度
         download_result = get_download_result()
         active_downloads = []
-        if node.chat_id in download_result:
-            messages = download_result[node.chat_id]
-            for idx, value in messages.items():
-                if (
-                    value["task_id"] == node.task_id
-                    and value["down_byte"] < value["total_size"]
-                ):
-                    active_downloads.append(value)
+        for (task_id, _chat_id, _message_id), value in download_result.items():
+            if (
+                task_id == str(node.task_id)
+                and value["down_byte"] < value["total_size"]
+            ):
+                active_downloads.append(value)
 
         active_uploads_count = 0
         for idx, value in node.upload_stat_dict.items():

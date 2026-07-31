@@ -23,7 +23,9 @@ elapsed time, at least 1 MiB of byte movement, or the final sample is retained. 
 progress work runs outside the downloader event-loop thread, and each task/file pair has
 at most one progress write in flight. The stall watchdog and Pyrogram callback share one
 process-local tracker keyed by task, chat, and message; only increasing byte counts
-refresh the stall heartbeat.
+refresh the stall heartbeat. The live Files-page cache uses the same three-part identity
+and exposes only synchronized snapshots, so concurrent tasks for the same Telegram
+message cannot overwrite or clear each other's display state.
 
 The Tasks tab uses a compact five-column task table. Each row groups the task title,
 source, type, and short task ID so status, progress, results, and available actions remain
@@ -67,7 +69,11 @@ return `503`, but it does not cancel work that the owner loop already accepted. 
 confirmation reloaded without its process-only Telegram preview is closed with the stable
 `restart_interrupted` reason instead of being presented as usable. Cancelling a live Web
 task also stops its `TaskNode` on the owner loop; an unavailable or stopped loop returns
-`503` instead of reporting a cancellation that cannot execute.
+`503` instead of reporting a cancellation that cannot execute. If a persisted active
+task has lost its process-only runtime handle, cancellation returns
+`409 runtime_handle_missing` and leaves the durable status unchanged rather than
+claiming that still-unowned work was cancelled. Global download pause/resume mutations
+are also applied on the application owner loop.
 
 ## Settings Activation
 
@@ -409,6 +415,9 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 
 - `GET /api/task-dashboard`: task summary plus current download speed. Each task row and file row now also carries `upload_progress` and `upload_speed` (task rows aggregate upload progress across their files).
 - `GET /api/tasks`: task summaries.
+- `GET /get_download_list?already_down=true|false`: live transfer rows keyed by
+  `task_id`, `chat`, and message `id`; existing filename, size, progress, speed, and
+  save-path fields remain available.
 - `GET /get_upload_list`: rows for files currently uploading (chat, id, filename, total_size, upload_progress, upload_speed).
 - `GET /api/tasks/<task_id>`: one task with file rows.
 - `GET /api/tasks/<task_id>/files?page=1&page_size=50`: paginated file rows.
@@ -418,7 +427,9 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 - `POST /api/tasks` with `{"mode": "prescan", "max_messages": 2000}`: start a bounded Web prescan (max_messages optional, clamped to 10000).
 - `POST /api/tasks/<task_id>/confirm`: confirm a preview and queue the download.
 - `POST /api/tasks/<task_id>/cancel`: cancel a preview or a persisted
-  channel-library batch. Persisted channel tasks remain visible as cancelled history.
+  channel-library batch. Persisted channel tasks remain visible as cancelled history;
+  a non-channel active task without a live runtime handle returns
+  `409 runtime_handle_missing` without changing its persisted status.
 - `GET /api/prescans/<task_id>/packages?page=1&page_size=50`: paginated prescan packages.
 - `POST /api/prescans/<task_id>/packages/<package_id>/select`: include or exclude a package.
 - `POST /api/prescans/<task_id>/packages/select-all`: include or exclude all packages at once with `{"selected": true|false}`.

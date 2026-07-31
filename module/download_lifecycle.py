@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable, Optional
 from module.app import DownloadStatus
 from module.progress_persistence import download_progress_persistence
 from module.task_state import FileStatus, TaskStatus
+from module.transfer_progress import transfer_key
 
 
 @dataclass(frozen=True)
@@ -29,7 +30,7 @@ class FileLifecycleRuntime:
     queue_entry_times: dict
     task_start_times: dict
     performance_stats: dict
-    get_download_result: Callable[..., dict]
+    remove_download_result: Callable[..., None]
 
 
 async def _transition_file(
@@ -246,10 +247,14 @@ def _record_performance(
     download_status,
     runtime: FileLifecycleRuntime,
 ) -> None:
-    if not message_id or (node.chat_id, message_id) not in runtime.task_start_times:
+    if not message_id:
         return
 
-    task_start_time = runtime.task_start_times.pop((node.chat_id, message_id))
+    key = transfer_key(node, message_id)
+    if key not in runtime.task_start_times:
+        return
+
+    task_start_time = runtime.task_start_times.pop(key)
     task_duration = time.time() - task_start_time
     stats = runtime.performance_stats
     stats["total_download_time"] += task_duration
@@ -302,11 +307,11 @@ async def run_file_lifecycle(
 
         message_id = message.id
         task_start_time = time.time()
-        runtime.task_start_times[(node.chat_id, message_id)] = task_start_time
+        timing_key = transfer_key(node, message_id)
+        runtime.task_start_times[timing_key] = task_start_time
         queue_wait_time = 0
-        queue_key = (node.chat_id, message_id)
-        if queue_key in runtime.queue_entry_times:
-            queue_wait_time = task_start_time - runtime.queue_entry_times.pop(queue_key)
+        if timing_key in runtime.queue_entry_times:
+            queue_wait_time = task_start_time - runtime.queue_entry_times.pop(timing_key)
             runtime.performance_stats["total_queue_time"] += queue_wait_time
 
         runtime.logger.info(
@@ -400,9 +405,4 @@ async def run_file_lifecycle(
     finally:
         _record_performance(node, message_id, download_status, runtime)
         if message_id:
-            download_result = runtime.get_download_result()
-            if (
-                node.chat_id in download_result
-                and message_id in download_result[node.chat_id]
-            ):
-                del download_result[node.chat_id][message_id]
+            runtime.remove_download_result(node, message_id)

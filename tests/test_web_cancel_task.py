@@ -149,6 +149,28 @@ def test_cancel_unknown_task_returns_404(client):
     assert body["ok"] is False
 
 
+def test_cancel_active_task_without_runtime_handle_reports_conflict(client):
+    task_id = "web-missing-runtime-handle"
+    get_task_store().create_task(
+        task_id,
+        source="web",
+        task_type="package",
+        status=TaskStatus.DOWNLOADING,
+    )
+
+    response = client.post(f"/api/tasks/{task_id}/cancel")
+
+    assert response.status_code == 409
+    assert response.get_json() == {
+        "ok": False,
+        "error": "runtime handle is unavailable",
+        "error_code": "runtime_handle_missing",
+    }
+    task = get_task_store().get_task(task_id)
+    assert task is not None
+    assert task.status == TaskStatus.DOWNLOADING
+
+
 def test_confirm_orphaned_waiting_task_is_closed_as_restart_interrupted(client):
     task_id = "web-orphan-confirm"
     get_task_store().create_task(

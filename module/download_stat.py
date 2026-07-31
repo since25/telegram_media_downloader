@@ -1,17 +1,19 @@
 """Download Stat"""
 
 import asyncio
+import copy
 import re
 import threading
 import time
 from enum import Enum
+from typing import Any, Callable
 
 from pyrogram import Client
 
 from module.app import TaskNode
 from module.progress_persistence import download_progress_persistence
 from module.task_state import FileStatus, TaskStatus, get_task_store, snapshot_node
-from module.transfer_progress import TransferProgressTracker, transfer_key
+from module.transfer_progress import TransferKey, TransferProgressTracker, transfer_key
 
 download_progress_tracker = TransferProgressTracker()
 
@@ -23,36 +25,171 @@ class DownloadState(Enum):
     StopDownload = 2
 
 
-_download_result: dict = {}
-_total_download_speed: int = 0
-_total_download_size: int = 0
-_last_download_time: float = time.time()
+class DownloadResultStore:
+    """Own process-local transfer display state behind synchronized snapshots."""
+
+    def __init__(self, clock: Callable[[], float] = time.time):
+        self._clock = clock
+        self._entries: dict[TransferKey, dict[str, Any]] = {}
+        self._lock = threading.RLock()
+        self._total_download_speed = 0
+        self._total_download_size = 0
+        self._last_download_time = self._clock()
+
+    def observe(
+        self,
+        key: TransferKey,
+        *,
+        downloaded_size: int,
+        total_size: int,
+        file_name: str,
+        start_time: float,
+    ) -> int:
+        """Record one progress sample and return its current bytes-per-second rate."""
+
+        now = self._clock()
+        downloaded = int(downloaded_size)
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                per_file_delta = downloaded
+                download_speed = downloaded / max(now - float(start_time), 0.001)
+                entry = {
+                    "down_byte": downloaded,
+                    "total_size": int(total_size),
+                    "file_name": file_name,
+                    "start_time": float(start_time),
+                    "end_time": now,
+                    "download_speed": download_speed,
+                    "each_second_total_download": downloaded,
+                    "task_id": key[0],
+                    "chat_id": key[1],
+                    "message_id": key[2],
+                }
+                self._entries[key] = entry
+            else:
+                previous_size = int(entry["down_byte"])
+                per_file_delta = max(downloaded - previous_size, 0)
+                last_time = float(entry["end_time"])
+                download_speed = float(entry["download_speed"])
+                each_second_total = int(entry["each_second_total_download"])
+                each_second_total += per_file_delta
+                end_time = last_time
+                if now - last_time >= 1.0:
+                    download_speed = int(each_second_total / (now - last_time))
+                    end_time = now
+                    each_second_total = 0
+                entry.update(
+                    {
+                        "down_byte": downloaded,
+                        "total_size": int(total_size),
+                        "file_name": file_name,
+                        "end_time": end_time,
+                        "download_speed": max(download_speed, 0),
+                        "each_second_total_download": each_second_total,
+                    }
+                )
+
+            self._total_download_size += per_file_delta
+            if now - self._last_download_time >= 1.0:
+                self._total_download_speed = max(
+                    int(self._total_download_size / (now - self._last_download_time)),
+                    0,
+                )
+                self._total_download_size = 0
+                self._last_download_time = now
+            return max(int(entry["download_speed"]), 0)
+
+    def snapshot(self) -> dict[TransferKey, dict[str, Any]]:
+        """Return an independent snapshot safe for Flask and reporting threads."""
+
+        with self._lock:
+            return copy.deepcopy(self._entries)
+
+    def remove(self, key: TransferKey) -> None:
+        with self._lock:
+            self._entries.pop(key, None)
+
+    def clear_completed(self) -> int:
+        """Remove fully downloaded display entries while preserving live progress."""
+
+        with self._lock:
+            completed = [
+                key
+                for key, value in self._entries.items()
+                if int(value.get("total_size", 0) or 0) > 0
+                and int(value.get("down_byte", 0) or 0)
+                == int(value.get("total_size", 0) or 0)
+            ]
+            for key in completed:
+                self._entries.pop(key, None)
+            return len(completed)
+
+    @property
+    def total_download_speed(self) -> int:
+        with self._lock:
+            return self._total_download_speed
+
+    def reset(self) -> None:
+        """Clear process-local display and aggregate state for test isolation."""
+
+        with self._lock:
+            self._entries.clear()
+            self._total_download_speed = 0
+            self._total_download_size = 0
+            self._last_download_time = self._clock()
+
+
+_download_results = DownloadResultStore()
 _download_state: DownloadState = DownloadState.Downloading
+_download_state_lock = threading.RLock()
 _active_task_nodes: dict = {}  # 全局活跃TaskNode管理: {task_id: TaskNode}
 _active_task_nodes_lock = threading.RLock()
 
 
-def get_download_result() -> dict:
-    """get global download result"""
-    return _download_result
+def get_download_result() -> dict[TransferKey, dict[str, Any]]:
+    """Return a thread-safe snapshot of process-local download progress."""
+
+    return _download_results.snapshot()
+
+
+def record_download_result(
+    node: TaskNode,
+    message_id: int,
+    *,
+    downloaded_size: int,
+    total_size: int,
+    file_name: str,
+    start_time: float,
+) -> int:
+    """Record one progress sample under the complete transfer identity."""
+
+    return _download_results.observe(
+        transfer_key(node, message_id),
+        downloaded_size=downloaded_size,
+        total_size=total_size,
+        file_name=file_name,
+        start_time=start_time,
+    )
+
+
+def remove_download_result(node: TaskNode, message_id: int) -> None:
+    """Remove only the progress entry owned by one task transfer."""
+
+    _download_results.remove(transfer_key(node, message_id))
+
+
+def reset_download_runtime_state_for_tests() -> None:
+    """Reset process-local download state without exposing mutable internals."""
+
+    _download_results.reset()
+    set_download_state(DownloadState.Downloading)
 
 
 def clear_completed_download_result() -> int:
     """Drop fully-downloaded entries from the display cache; keep in-progress ones."""
-    removed = 0
-    for chat_id in list(_download_result):
-        messages = _download_result[chat_id]
-        for msg_id in list(messages):
-            value = messages[msg_id]
-            if (
-                value.get("down_byte", 0) == value.get("total_size", 0)
-                and value.get("total_size", 0) > 0
-            ):
-                del messages[msg_id]
-                removed += 1
-        if not messages:
-            del _download_result[chat_id]
-    return removed
+
+    return _download_results.clear_completed()
 
 
 def add_active_task_node(
@@ -102,7 +239,7 @@ def get_active_task_nodes() -> dict:
 
 def get_total_download_speed() -> int:
     """get total download speed"""
-    return _total_download_speed
+    return _download_results.total_download_speed
 
 
 _RCLONE_SPEED_UNITS = {
@@ -152,14 +289,16 @@ def get_total_upload_speed() -> int:
 
 def get_download_state() -> DownloadState:
     """get download state"""
-    return _download_state
+    with _download_state_lock:
+        return _download_state
 
 
 # pylint: disable = W0603
 def set_download_state(state: DownloadState):
     """set download state"""
     global _download_state
-    _download_state = state
+    with _download_state_lock:
+        _download_state = state
 
 
 async def update_download_status(
@@ -174,64 +313,25 @@ async def update_download_status(
     """update_download_status"""
     cur_time = time.time()
 
-    download_progress_tracker.observe(transfer_key(node, message_id), down_byte)
-    # pylint: disable = W0603
-    global _total_download_speed
-    global _total_download_size
-    global _last_download_time
+    progress_key = transfer_key(node, message_id)
+    download_progress_tracker.observe(progress_key, down_byte)
 
     if node.is_stop_transmission:
         client.stop_transmission()
-
-    chat_id = node.chat_id
 
     while get_download_state() == DownloadState.StopDownload:
         if node.is_stop_transmission:
             client.stop_transmission()
         await asyncio.sleep(1)
 
-    if not _download_result.get(chat_id):
-        _download_result[chat_id] = {}
-
-    if _download_result[chat_id].get(message_id):
-        last_download_byte = _download_result[chat_id][message_id]["down_byte"]
-        last_time = _download_result[chat_id][message_id]["end_time"]
-        download_speed = _download_result[chat_id][message_id]["download_speed"]
-        each_second_total_download = _download_result[chat_id][message_id][
-            "each_second_total_download"
-        ]
-        end_time = _download_result[chat_id][message_id]["end_time"]
-
-        _total_download_size += down_byte - last_download_byte
-        each_second_total_download += down_byte - last_download_byte
-
-        if cur_time - last_time >= 1.0:
-            download_speed = int(each_second_total_download / (cur_time - last_time))
-            end_time = cur_time
-            each_second_total_download = 0
-
-        download_speed = max(download_speed, 0)
-
-        _download_result[chat_id][message_id]["down_byte"] = down_byte
-        _download_result[chat_id][message_id]["end_time"] = end_time
-        _download_result[chat_id][message_id]["download_speed"] = download_speed
-        _download_result[chat_id][message_id][
-            "each_second_total_download"
-        ] = each_second_total_download
-    else:
-        each_second_total_download = down_byte
-        download_speed = down_byte / max(cur_time - start_time, 0.001)
-        _download_result[chat_id][message_id] = {
-            "down_byte": down_byte,
-            "total_size": total_size,
-            "file_name": file_name,
-            "start_time": start_time,
-            "end_time": cur_time,
-            "download_speed": down_byte / (cur_time - start_time),
-            "each_second_total_download": each_second_total_download,
-            "task_id": node.task_id,
-        }
-        _total_download_size += down_byte
+    download_speed = record_download_result(
+        node,
+        message_id,
+        downloaded_size=down_byte,
+        total_size=total_size,
+        file_name=file_name,
+        start_time=start_time,
+    )
 
     if getattr(node, "task_id", None):
         await download_progress_persistence.persist_download(
@@ -248,15 +348,6 @@ async def update_download_status(
             download_speed=int(download_speed),
             force=down_byte >= total_size > 0,
         )
-
-    if cur_time - _last_download_time >= 1.0:
-        # update speed
-        _total_download_speed = int(
-            _total_download_size / (cur_time - _last_download_time)
-        )
-        _total_download_speed = max(_total_download_speed, 0)
-        _total_download_size = 0
-        _last_download_time = cur_time
 
     # Report download status to bot - 添加速率限制
     from module.pyrogram_extension import report_bot_status

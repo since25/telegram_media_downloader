@@ -3203,3 +3203,36 @@ Changed files:
 
 Rollback:
 - Revert the Phase 0 planning commit. This phase changes documentation only and does not alter runtime, configuration, databases, dependencies, CI execution, or production state.
+
+## 2026-07-30 - Task: Phase 1 runtime state identity and owner-loop control
+
+### What was done
+
+- Replaced the shared mutable download-result dictionary with a synchronized store that records, snapshots, clears, and removes entries by `(task_id, chat_id, message_id)`.
+- Migrated retry cleanup, file-lifecycle cleanup, queue timing, performance timing, Bot reporting, and Web file-list rendering to the complete transfer identity so one task cannot overwrite or remove another task processing the same Telegram message.
+- Routed Web pause/resume mutations through the application owner loop with bounded `503` failure behavior when the loop is unavailable or does not answer in time.
+- Changed cancellation of a persisted active task with no live runtime handle to return `409 runtime_handle_missing` without changing durable task state.
+- Documented the live-transfer identity, owner-loop mutation, and cancellation-conflict contracts.
+
+### Testing
+
+- RED: the new runtime-state regression module initially failed collection because `DownloadResultStore` did not exist; the cancellation regression also captured the prior false-success path for an active persisted task with no runtime handle.
+- Focused Phase 1 regressions and directly affected lifecycle/package tests: `13 passed`.
+- Expanded Web, cancellation, CSRF, admission, download lifecycle, package, prescan, system, and upload-progress selection: `119 passed`.
+- One attempted expanded command named a nonexistent `tests/module/test_download_queue.py` and exited before test execution; the corrected selection above used the repository's actual test inventory.
+- Complete suite after implementation and again after Black formatting: `714 passed, 1 skipped`.
+- `.venv/bin/pre-commit run --all-files`: first run reformatted only `module/download_stat.py`; second run passed trailing-whitespace, end-of-file, Black, isort, mypy, and Pylint hooks.
+- `TMD_TASK_DB_PATH=<temporary>/import.sqlite3 .venv/bin/python check_imports.py`: both supported import probes passed and no task database was created.
+- `.venv/bin/python -m compileall -q module tests`, `.venv/bin/python -m pip check`, `make style_check PYTHON=.venv/bin/python`, and `git diff --check`: passed; the blocking static boundary reported no mypy issues across 15 modules and no Pylint errors.
+
+### Notes
+
+Changed files:
+- `module/download_stat.py`, `module/download_transfer.py`, `module/download_lifecycle.py`, `module/download_queue.py`, `module/download_entry.py`, `module/pyrogram_extension.py`: Added synchronized transfer snapshots/commands and propagated the three-part identity through progress, timing, reporting, retry, and cleanup paths.
+- `module/web.py`: Applied pause/resume on the owner loop, rendered the new transfer snapshot shape, and refused false-success cancellation without a runtime handle.
+- `tests/module/test_download_runtime_state.py`, `tests/module/test_download_lifecycle.py`, `tests/module/test_package_download.py`, `tests/module/test_web.py`, `tests/test_web_cancel_task.py`, `tests/test_web_clear_download_list.py`: Added isolation, ownership-thread, cancellation, snapshot, timing, and cache-clear regressions and migrated fixtures away from mutable internals.
+- `docs/web-control-console.md`: Documented the Phase 1 identity, owner-loop, Web response, and cancellation contracts.
+- `progress.md`: Recorded Phase 1 red-green, full-suite, static, import, and rollback evidence.
+
+Rollback:
+- Revert the Phase 1 commit. No database schema, persisted row, configuration format, deployment path, or authentication contract changes; rollback restores the prior in-process dictionary identity and Web mutation behavior.

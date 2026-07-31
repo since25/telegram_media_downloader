@@ -1598,6 +1598,23 @@ def system_metrics():
 def web_set_download_state():
     """Set download state"""
     state = request.args.get("state")
+    try:
+        result = wait_for_web_command(
+            submit_web_coroutine(
+                getattr(_active_app(), "loop", None),
+                _set_download_state_owned(state),
+            ),
+            timeout=1,
+        )
+    except WebCommandTimeout:
+        return jsonify({"ok": False, "error": "state change timed out"}), 503
+    except RuntimeError:
+        return jsonify({"ok": False, "error": "service unavailable"}), 503
+    return result
+
+
+async def _set_download_state_owned(state: Optional[str]) -> Optional[str]:
+    """Apply pause/resume state on the application owner loop."""
 
     if state == "continue" and get_download_state() is DownloadState.StopDownload:
         set_download_state(DownloadState.Downloading)
@@ -1628,28 +1645,28 @@ def get_download_list():
 
     result = []
     download_result = get_download_result()
-    for chat_id, messages in download_result.items():
-        for idx, value in messages.items():
-            is_already_down = value["down_byte"] == value["total_size"]
+    for (task_id, chat_id, message_id), value in download_result.items():
+        is_already_down = value["down_byte"] == value["total_size"]
 
-            if already_down and not is_already_down:
-                continue
+        if already_down and not is_already_down:
+            continue
 
-            download_speed = format_byte(value["download_speed"]) + "/s"
-            total_size = value["total_size"] or 1
-            result.append(
-                {
-                    "chat": f"{chat_id}",
-                    "id": f"{idx}",
-                    "filename": os.path.basename(value["file_name"]),
-                    "total_size": format_byte(value["total_size"]),
-                    "download_progress": round(
-                        value["down_byte"] / total_size * 100, 1
-                    ),
-                    "download_speed": download_speed,
-                    "save_path": value["file_name"].replace("\\", "/"),
-                }
-            )
+        download_speed = format_byte(value["download_speed"]) + "/s"
+        total_size = value["total_size"] or 1
+        result.append(
+            {
+                "task_id": task_id,
+                "chat": chat_id,
+                "id": message_id,
+                "filename": os.path.basename(value["file_name"]),
+                "total_size": format_byte(value["total_size"]),
+                "download_progress": round(
+                    value["down_byte"] / total_size * 100, 1
+                ),
+                "download_speed": download_speed,
+                "save_path": value["file_name"].replace("\\", "/"),
+            }
+        )
 
     return jsonify(result)
 
@@ -2630,20 +2647,16 @@ def cancel_task(task_id: str):
         return jsonify({"ok": False, "error": "task not found"}), 404
     status = task.status if task else None
     if status in {TaskStatus.DOWNLOADING, TaskStatus.UPLOADING, TaskStatus.SCANNING}:
-        workflow_type = ((preview or prescan) or {}).get("task_type") or (
-            task.task_type if task else "prescan"
-        )
-        get_task_store().update_task(
-            task_id,
-            status=TaskStatus.CANCELLED,
-            needs_confirmation=False,
-            workflow=WorkflowSnapshot(
-                workflow_type=workflow_type,
-                status=TaskStatus.CANCELLED,
-                summary="Cancelled",
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "runtime handle is unavailable",
+                    "error_code": "runtime_handle_missing",
+                }
             ),
+            409,
         )
-        return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
     get_task_store().remove_task(task_id)
     return jsonify({"ok": True, "task_id": task_id, "removed": True})
 

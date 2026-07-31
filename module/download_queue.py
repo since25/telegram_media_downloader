@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable
 
 from module.app import DownloadStatus
 from module.task_state import FileStatus, TaskStatus, get_task_store, snapshot_node
+from module.transfer_progress import transfer_key
 
 
 async def enqueue_download(
@@ -61,7 +62,7 @@ async def enqueue_download(
                 file_updates={"status": FileStatus.QUEUED},
             )
 
-        queue_entry_times[(node.chat_id, msg_id)] = time.time()
+        queue_entry_times[transfer_key(node, msg_id)] = time.time()
         naming_snapshot = None
         naming_context = getattr(node, "package_naming_context", None)
         if naming_context is not None:

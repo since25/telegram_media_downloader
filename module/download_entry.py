@@ -40,6 +40,7 @@ from module.download_stat import (
     download_progress_tracker,
     get_active_task_nodes,
     get_download_result,
+    remove_download_result,
     update_download_status,
 )
 from module.download_models import (
@@ -70,7 +71,7 @@ from module.package_download import (
     run_packages,
 )
 from module.task_state import get_task_store, initialize_task_store, snapshot_node
-from module.transfer_progress import transfer_key
+from module.transfer_progress import TransferKey, transfer_key
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import _t
 from module.pyrogram_extension import (
@@ -286,14 +287,10 @@ PERFORMANCE_STATS: dict[str, float] = {
 }
 
 # 用于跟踪单个任务的开始时间
-TASK_START_TIMES: dict[
-    tuple[Union[int, str], int], float
-] = {}  # (chat_id, message_id) -> start_time
+TASK_START_TIMES: dict[TransferKey, float] = {}
 
 # 用于跟踪队列等待时间
-QUEUE_ENTRY_TIMES: dict[
-    tuple[Union[int, str], int], float
-] = {}  # (chat_id, message_id) -> queue_entry_time
+QUEUE_ENTRY_TIMES: dict[TransferKey, float] = {}
 
 # 携带单次 download_task -> download_media -> _get_media_meta 调用链的命名快照。
 # download_media 被 module.pyrogram_extension.record_download_status 装饰，
@@ -662,7 +659,7 @@ def _build_file_lifecycle_runtime() -> FileLifecycleRuntime:
         queue_entry_times=QUEUE_ENTRY_TIMES,
         task_start_times=TASK_START_TIMES,
         performance_stats=PERFORMANCE_STATS,
-        get_download_result=get_download_result,
+        remove_download_result=remove_download_result,
     )
 
 
@@ -721,7 +718,7 @@ def _build_transfer_runtime() -> TransferRuntime:
         move_to_download_path=_move_to_download_path,
         retry_timed_out=_check_timeout,
         update_download_status=update_download_status,
-        get_download_result=get_download_result,
+        remove_download_result=remove_download_result,
         retry_timeout=RETRY_TIME_OUT,
         stall_timeout=STALL_TIMEOUT,
         progress_tracker=download_progress_tracker,

@@ -84,7 +84,7 @@ def test_reporting_failure_does_not_change_successful_download_result():
             "avg_queue_time": 0,
             "total_queue_time": 0,
         },
-        get_download_result=lambda: {},
+        remove_download_result=lambda *_args: None,
     )
 
     asyncio.run(

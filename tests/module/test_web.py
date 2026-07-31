@@ -66,6 +66,7 @@ def build_web_test_app(tmp_dir):
 class WebTestCase(unittest.TestCase):
     def setUp(self):
         from module import web as web_module
+        from module.download_stat import reset_download_runtime_state_for_tests
         from module.task_state import get_task_store
 
         self.web_module = web_module
@@ -80,7 +81,7 @@ class WebTestCase(unittest.TestCase):
         web_module._pending_web_prescans.clear()
         web_module._scanning_web_task_nodes.clear()
         web_module._active_web_prescan_task_id = None
-        web_module.get_download_result().clear()
+        reset_download_runtime_state_for_tests()
         get_task_store().clear()
 
     def _csrf_client(self):
@@ -105,7 +106,9 @@ class WebTestCase(unittest.TestCase):
         self.web_module._pending_web_prescans.clear()
         self.web_module._scanning_web_task_nodes.clear()
         self.web_module._active_web_prescan_task_id = None
-        self.web_module.get_download_result().clear()
+        from module.download_stat import reset_download_runtime_state_for_tests
+
+        reset_download_runtime_state_for_tests()
         get_task_store().clear()
 
     def test_flask_session_secret_is_not_static(self):
@@ -372,6 +375,49 @@ class WebTestCase(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(update_thread_ids, [owner_thread.ident])
+
+    def test_pause_download_mutation_runs_on_owner_loop(self):
+        loop = asyncio.new_event_loop()
+        loop_started = threading.Event()
+        mutation_thread_ids = []
+
+        def run_loop():
+            asyncio.set_event_loop(loop)
+            loop_started.set()
+            loop.run_forever()
+
+        def record_state(_state):
+            mutation_thread_ids.append(threading.get_ident())
+
+        owner_thread = threading.Thread(target=run_loop)
+        owner_thread.start()
+        loop_started.wait(timeout=1)
+        self.web_module._current_app = SimpleNamespace(
+            loop=loop,
+            channel_library_service=None,
+        )
+        self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+        client = self._csrf_client()
+
+        try:
+            with patch.object(
+                self.web_module,
+                "get_download_state",
+                return_value=self.web_module.DownloadState.Downloading,
+            ), patch.object(
+                self.web_module,
+                "set_download_state",
+                side_effect=record_state,
+            ):
+                response = client.post("/set_download_state?state=pause")
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            owner_thread.join(timeout=2)
+            loop.close()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_data(as_text=True), "continue")
+        self.assertEqual(mutation_thread_ids, [owner_thread.ident])
 
     def test_task_dashboard_returns_task_summary(self):
         from module.task_state import FileStatus, TaskStatus, get_task_store
