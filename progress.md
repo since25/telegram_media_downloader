@@ -3402,3 +3402,30 @@ Changed files:
 
 Rollback:
 - Revert the Phase 6 commit. This reintroduces only the known full-pre-commit formatting failure; no runtime data, schema, configuration, authentication, release workflow, image, or production state is affected.
+
+## 2026-07-31 - Task: Deploy first-principles remediation to production
+
+### What was done
+
+- Confirmed the production service does not use Docker: `tg-downloader.service` directly runs `run_downloader.sh`, which activates the repository virtual environment and executes `python3 media_downloader.py`; Docker is inactive and no container is involved in the production path.
+- Reclassified the failed optional Docker image publication as unrelated to this deployment, confirmed local `master` was already pushed at `3032781d4681f19bc2646e417f776408a3b83c3e`, and used the actual systemd/Python deployment path.
+- Verified all download, scan, channel-batch, and resource-delivery queues were empty before stopping the service. Preserved the production worktree's existing untracked `backups/`, `d`, `sessions/`, and `web_tasks.sqlite3.bak-20260717-085320` entries without cleanup or overwrite.
+- Stopped only `tg-downloader.service` and created the mode-`0700` rollback point `backups/deploy-20260730-220645` containing the pre-deployment commit/status, `config.yaml`, `data.yaml`, `.web_auth.json`, sessions, all three SQLite databases, checksums, and the pre-deployment virtual-environment package list.
+- Fast-forwarded production from `efa7391958503afa439b6319b063f35ccf18c77b` to `3032781d4681f19bc2646e417f776408a3b83c3e`, synchronized the existing `.venv` to the committed requirements, and restarted the systemd service.
+
+### Testing
+
+- Pre-deployment: `tg-downloader.service` was active with no warning-or-higher journal entries in the preceding 30 minutes; the root filesystem had 14 GB free; task, scan, batch, and resource-delivery status counts contained terminal rows only.
+- Backup: each database was copied with `sqlite3.Connection.backup()` and its backup passed `PRAGMA integrity_check == 'ok'`; the resulting rollback directory contained 19 files before the package manifest was added and occupied approximately 186 MB.
+- Update: `git pull --ff-only origin master` completed as a clean fast-forward to `3032781`; tracked files remained clean and all pre-existing untracked runtime/backup paths remained present.
+- Startup gate: the production `.venv` passed module compilation, explicit facade/bootstrap/runtime/auth imports, YAML configuration parsing, `pip check`, and rollback-point SHA-256 verification. Runtime versions resolved to Pyrogram `2.1.22`, aiohttp `3.9.3`, and psutil `5.9.8`.
+- Post-deployment: systemd reached `active/running`; `/healthz` returned HTTP `200` with `{"status":"ok"}` after 11 seconds; the process listened on port 80 and the Web root returned the expected login redirect (`302`).
+- Post-deployment database probes: all three live databases passed `PRAGMA quick_check == 'ok'`; task, scan, channel-batch, and resource-delivery tables still contained no active or queued work. The new service start produced no warning-or-higher journal entries.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the verified non-Docker production path, preflight, rollback point, fast-forward update, dependency synchronization, readiness, database, queue, and journal evidence.
+
+Rollback:
+- Stop `tg-downloader.service`, preserve any state created after this deployment, switch the repository to `efa7391958503afa439b6319b063f35ccf18c77b`, restore the prior virtual-environment packages from `backups/deploy-20260730-220645/installed_packages_before.txt`, and restart the service. The same backup directory contains verified copies of configuration, authentication, sessions, and all three databases if a state rollback is also required.
