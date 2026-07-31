@@ -22,9 +22,7 @@ def test_docker_publication_depends_on_complete_verification():
 
     assert publish["needs"] == "verify"
     verification_commands = "\n".join(
-        str(step.get("run", ""))
-        for step in verify["steps"]
-        if isinstance(step, dict)
+        str(step.get("run", "")) for step in verify["steps"] if isinstance(step, dict)
     )
     for required_command in (
         "python -m pytest -q",

@@ -3373,3 +3373,32 @@ Changed files:
 
 Rollback:
 - Revert the Phase 5 commit. No database schema, persisted row, configuration format, authentication format, dependency, CI workflow, or deployment path changes are introduced; rollback restores import-time runtime resource creation and the former facade/reverse-import behavior.
+
+## 2026-07-31 - Task: Phase 6 complete adversarial review
+
+### What was done
+
+- Re-reviewed task/file invariants, duplicate callbacks, concurrent transfer identity, pause/cancellation/timeout/shutdown paths, restart recovery, SQLite contracts, readiness, Web authentication/CSRF/request bounds, paired configuration recovery, packaging, CI reachability, container mounts/health, and import/dependency boundaries.
+- Confirmed one local gate defect: the required unskipped `pre-commit run --all-files` could not pass because `tests/test_release_contract.py` was inside the enforced Black boundary but retained pre-existing formatting drift.
+- Accepted only Black's minimal mechanical rewrite of that controlled release-contract expression; no runtime, schema, configuration, dependency, workflow, authentication, deployment, or production behavior changed.
+- Kept production deployment blocked pending a pushed reviewed commit and a successful real multi-platform CI image build.
+
+### Testing
+
+- Focused adversarial regression groups: `63 passed` for lifecycle/concurrency/state invariants, `307 passed` for persistence/recovery/readiness/auth/Web/channel/resource boundaries, and `21 passed` for dependency/Docker/release/runtime contracts.
+- RED final gate: `.venv/bin/pre-commit run --all-files` failed because Black reformatted only `tests/test_release_contract.py`; the second unskipped run passed trailing-whitespace, end-of-file, Black, isort, mypy, and Pylint.
+- Complete suite after the correction: `732 passed, 1 skipped`.
+- Fresh SQLite probes initialized all three stores and verified `PRAGMA integrity_check == 'ok'`, WAL mode, synchronous level `2`, `busy_timeout=5000`, mode `0600`, and schema versions task `1`, channel `8`, resource `3`; channel/resource connections also enforced foreign keys.
+- A temporary Web-auth probe verified mode `0600`, password-hash verification, no configured plaintext in the file, and a persisted session secret.
+- `make style_check PYTHON=.venv/bin/python`: passed with mypy clean across 18 modules and Pylint error-only clean across the expanded orchestration boundary.
+- `.venv/bin/python -m compileall -q media_downloader.py module tests`, `.venv/bin/python -m pip check`, a temporary-path `check_imports.py` probe with no task database creation, `TMD_UID=10001 TMD_GID=10001 docker compose -f docker-compose.yaml config`, and `git diff --check`: passed.
+- Local Docker image construction was not claimed: `docker info` could not reach `/Users/wangyichuan/.colima/default/docker.sock`. The required successful multi-platform CI build remains a hard pre-deployment gate for Phase 7.
+
+### Notes
+
+Changed files:
+- `tests/test_release_contract.py`: Applied the exact Black formatting required for the already-enforced release-contract boundary so the mandatory unskipped full pre-commit gate passes cleanly.
+- `progress.md`: Recorded the complete Phase 6 review inventory, focused/full gates, SQLite/auth probes, local Docker limitation, and remaining remote CI deployment gate.
+
+Rollback:
+- Revert the Phase 6 commit. This reintroduces only the known full-pre-commit formatting failure; no runtime data, schema, configuration, authentication, release workflow, image, or production state is affected.
