@@ -79,6 +79,89 @@ class TaskStateStoreTestCase(unittest.TestCase):
         self.assertNotIn("extra", persisted.files)
         self.assertNotEqual(persisted.status, "caller-mutated")
 
+    def test_public_mutation_results_cannot_mutate_store_state(self):
+        from module.task_state import (
+            FileStatus,
+            TaskStateStore,
+            TaskStatus,
+        )
+
+        with self.subTest(method="create_task"):
+            store = TaskStateStore()
+            returned = store.create_task(
+                "create-snapshot",
+                title="original",
+                status=TaskStatus.QUEUED,
+            )
+            returned.title = "caller-mutated"
+            self.assertEqual(store.get_task("create-snapshot").title, "original")
+
+        with self.subTest(method="ensure_task"):
+            store = TaskStateStore()
+            store.create_task(
+                "ensure-snapshot",
+                title="original",
+                status=TaskStatus.QUEUED,
+            )
+            returned = store.ensure_task(
+                "ensure-snapshot",
+                title="original",
+                status=TaskStatus.QUEUED,
+            )
+            returned.title = "caller-mutated"
+            self.assertEqual(store.get_task("ensure-snapshot").title, "original")
+
+        with self.subTest(method="update_task"):
+            store = TaskStateStore()
+            store.create_task("update-snapshot", status=TaskStatus.CREATED)
+            returned = store.update_task(
+                "update-snapshot",
+                status=TaskStatus.QUEUED,
+                title="original",
+            )
+            returned.title = "caller-mutated"
+            self.assertEqual(store.get_task("update-snapshot").title, "original")
+
+        with self.subTest(method="transition_file"):
+            store = TaskStateStore()
+            store.create_task("transition-snapshot", status=TaskStatus.QUEUED)
+            returned_task, returned_file = store.transition_file(
+                "transition-snapshot",
+                101,
+                task_updates={"status": TaskStatus.DOWNLOADING},
+                file_updates={
+                    "status": FileStatus.DOWNLOADING,
+                    "filename": "original.bin",
+                },
+            )
+            returned_task.title = "caller-mutated"
+            returned_file.filename = "caller-mutated.bin"
+            persisted = store.get_task("transition-snapshot")
+            self.assertEqual(persisted.title, "")
+            self.assertEqual(persisted.files["101"].filename, "original.bin")
+
+        with self.subTest(method="upsert_file"):
+            store = TaskStateStore()
+            store.create_task("upsert-snapshot", status=TaskStatus.QUEUED)
+            returned = store.upsert_file(
+                "upsert-snapshot",
+                101,
+                status=FileStatus.DOWNLOADING,
+                filename="original.bin",
+            )
+            returned.filename = "caller-mutated.bin"
+            self.assertEqual(
+                store.get_task("upsert-snapshot").files["101"].filename,
+                "original.bin",
+            )
+
+        with self.subTest(method="complete_task"):
+            store = TaskStateStore()
+            store.create_task("complete-snapshot", status=TaskStatus.QUEUED)
+            returned = store.complete_task("complete-snapshot")
+            returned.title = "caller-mutated"
+            self.assertEqual(store.get_task("complete-snapshot").title, "")
+
     def test_serialization_uses_stable_snapshot_during_concurrent_file_update(self):
         from module.task_state import TaskSnapshot, TaskStateStore
 
@@ -282,18 +365,81 @@ class TaskStateStoreTestCase(unittest.TestCase):
                 finally:
                     task_state_module._TASK_STORE = original_store
 
-    def test_update_reactivates_a_terminal_task_for_upload_retry(self):
+    def test_update_cannot_reactivate_a_terminal_task(self):
+        from module.task_state import (
+            TaskStateStore,
+            TaskStatus,
+            TaskTransitionError,
+        )
+
+        store = TaskStateStore()
+        task = store.create_task("retry-upload", status=TaskStatus.COMPLETED_WITH_ERRORS)
+
+        with self.assertRaises(TaskTransitionError):
+            store.update_task(task.task_id, status=TaskStatus.UPLOADING)
+
+        self.assertEqual(
+            store.get_task(task.task_id).status,
+            TaskStatus.COMPLETED_WITH_ERRORS,
+        )
+        dashboard = store.dashboard()
+        self.assertEqual(dashboard["active_task_count"], 0)
+        self.assertEqual(dashboard["completed_task_count"], 1)
+
+    def test_explicit_retry_reactivates_a_retryable_terminal_task(self):
         from module.task_state import TaskStateStore, TaskStatus
 
         store = TaskStateStore()
         task = store.create_task("retry-upload", status=TaskStatus.COMPLETED_WITH_ERRORS)
 
-        updated = store.update_task(task.task_id, status=TaskStatus.UPLOADING)
+        retried = store.retry_task(task.task_id)
 
-        self.assertEqual(updated.status, TaskStatus.UPLOADING)
+        self.assertEqual(retried.status, TaskStatus.QUEUED)
         dashboard = store.dashboard()
         self.assertEqual(dashboard["active_task_count"], 1)
         self.assertEqual(dashboard["completed_task_count"], 0)
+
+    def test_invalid_transition_does_not_change_memory_or_sqlite(self):
+        from module.task_state import (
+            TaskStateStore,
+            TaskStatus,
+            TaskTransitionError,
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "tasks.sqlite3"
+            store = TaskStateStore(storage_path=db_path)
+            store.create_task("invalid-transition", status=TaskStatus.UPLOADING)
+
+            with self.assertRaises(TaskTransitionError):
+                store.update_task(
+                    "invalid-transition",
+                    status=TaskStatus.SCANNING,
+                    error="must-not-persist",
+                )
+
+            in_memory = store.get_task("invalid-transition")
+            reloaded = TaskStateStore(storage_path=db_path).get_task(
+                "invalid-transition"
+            )
+            self.assertEqual(in_memory.status, TaskStatus.UPLOADING)
+            self.assertEqual(in_memory.error, "")
+            self.assertEqual(reloaded.status, TaskStatus.UPLOADING)
+            self.assertEqual(reloaded.error, "")
+
+    def test_explicit_reconciliation_can_requeue_interrupted_download(self):
+        from module.task_state import TaskStateStore, TaskStatus
+
+        store = TaskStateStore()
+        store.create_task("restart-reconcile", status=TaskStatus.DOWNLOADING)
+
+        reconciled = store.reconcile_task(
+            "restart-reconcile",
+            status=TaskStatus.QUEUED,
+            error="",
+        )
+
+        self.assertEqual(reconciled.status, TaskStatus.QUEUED)
 
     def test_mask_display_name_preserves_extension(self):
         from module.task_state import mask_display_name
@@ -636,8 +782,9 @@ class TaskStateStoreTestCase(unittest.TestCase):
             total_count=4,
         )
 
-        self.assertIs(replayed, created)
+        self.assertIsNot(replayed, created)
         self.assertEqual(replayed.status, TaskStatus.COMPLETED)
+        self.assertEqual(created.status, TaskStatus.QUEUED)
 
     def test_ensure_task_rejects_deterministic_identity_mismatch(self):
         from module.task_state import (

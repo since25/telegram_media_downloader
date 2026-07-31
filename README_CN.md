@@ -470,6 +470,12 @@ Web 认证文件保存密码校验值，不再保存配置密码明文。已有�
 - **date_format** - 支持自定义配置file_path_prefix中media_datetime的格式，具体格式查看 [python-datetime](https://docs.python.org/zh-cn/3/library/time.html)
 - **enable_download_txt** 启用下载txt文件，默认`false`
 
+Web 设置会先完整校验整次请求，再修改运行中对象或写入文件。类型错误、列表中
+存在不支持的值、整数越界以及非法 `date_format` 指令会返回
+`400 invalid_settings`，并指出拒绝的字段；失败请求不会产生部分内存或磁盘修改。
+`config.yaml` 与 `data.yaml` 作为同一代通过 journal 提交；若进程在两个替换之间
+中断，下次启动会在读取任一 YAML 前完成可验证恢复，恢复证据不一致时会明确失败。
+
 #### 频道库下载配置参数
 - **channel_library.min_free_disk_bytes** - 下载生命周期保留的最小可用磁盘空间，默认 `3221225472`（3GB）。资源包会在下载前预约完整已知大小，上传和清理结束后才释放预约。
 

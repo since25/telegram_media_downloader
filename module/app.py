@@ -17,7 +17,7 @@ from ruamel import yaml
 
 from module.channel_library_store import ChannelLibraryConfig
 from module.cloud_drive import CloudDrive, CloudDriveConfig
-from module.config_persistence import atomic_write_yaml
+from module.config_persistence import atomic_write_yaml_pair, recover_yaml_pair
 from module.filter import Filter
 from module.language import Language, set_language
 from module.runtime_health import RuntimeHealth
@@ -989,8 +989,13 @@ class Application:
         # self.app_data["already_download_ids"] = list(self.already_download_ids_set)
 
         if immediate:
-            atomic_write_yaml(Path(self.config_file), self.config, _yaml.dump)
-            atomic_write_yaml(Path(self.app_data_file), self.app_data, _yaml.dump)
+            atomic_write_yaml_pair(
+                Path(self.config_file),
+                self.config,
+                Path(self.app_data_file),
+                self.app_data,
+                _yaml.dump,
+            )
 
     def set_language(self, language: Language):
         """Set Language"""
@@ -999,6 +1004,7 @@ class Application:
 
     def load_config(self):
         """Load user config"""
+        recover_yaml_pair(Path(self.config_file), Path(self.app_data_file))
         with open(
             os.path.join(os.path.abspath("."), self.config_file), encoding="utf-8"
         ) as f:

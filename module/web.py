@@ -142,6 +142,14 @@ class _ChannelApiError(Exception):
         self.message = message
 
 
+class _SettingsValidationError(ValueError):
+    """One Web-editable setting failed strict validation."""
+
+    def __init__(self, field: str):
+        super().__init__(field)
+        self.field = field
+
+
 class User(UserMixin):
     """Web Login User"""
 
@@ -2976,6 +2984,296 @@ def _as_string_list(
     return normalized
 
 
+def _validate_settings_int(
+    value: Any,
+    field: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _SettingsValidationError(field)
+    if value < minimum or value > maximum:
+        raise _SettingsValidationError(field)
+    return value
+
+
+def _validate_settings_bool(value: Any, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise _SettingsValidationError(field)
+    return value
+
+
+def _validate_settings_string(
+    value: Any,
+    field: str,
+    *,
+    allow_empty: bool = True,
+) -> str:
+    if not isinstance(value, str):
+        raise _SettingsValidationError(field)
+    normalized = value.strip() if not allow_empty else value
+    if not allow_empty and not normalized:
+        raise _SettingsValidationError(field)
+    return normalized
+
+
+def _validate_settings_string_list(
+    value: Any,
+    field: str,
+    *,
+    allowed_values: Optional[list[str]] = None,
+    allow_empty: bool = True,
+) -> list[str]:
+    if not isinstance(value, list):
+        raise _SettingsValidationError(field)
+    normalized = []
+    for item in value:
+        if not isinstance(item, str):
+            raise _SettingsValidationError(field)
+        item = item.strip()
+        if not item or (allowed_values is not None and item not in allowed_values):
+            raise _SettingsValidationError(field)
+        if item not in normalized:
+            normalized.append(item)
+    if not allow_empty and not normalized:
+        raise _SettingsValidationError(field)
+    return normalized
+
+
+def _validate_date_format(value: Any) -> str:
+    date_format = _validate_settings_string(
+        value,
+        "date_format",
+        allow_empty=False,
+    )
+    supported_directives = frozenset(
+        "aAwdbBmyYHIpMSfzZjUWcxXGguV%"
+    )
+    index = 0
+    while index < len(date_format):
+        if date_format[index] != "%":
+            index += 1
+            continue
+        index += 1
+        if index >= len(date_format):
+            raise _SettingsValidationError("date_format")
+        while index < len(date_format) and date_format[index] in "-_0^#":
+            index += 1
+        while index < len(date_format) and date_format[index].isdigit():
+            index += 1
+        if (
+            index >= len(date_format)
+            or date_format[index] not in supported_directives
+        ):
+            raise _SettingsValidationError("date_format")
+        index += 1
+    return date_format
+
+
+def _normalize_settings_payload(app: Application, payload: dict) -> dict:
+    """Validate and normalize a complete settings request without mutation."""
+
+    allowed_top_level = {
+        "save_path",
+        "media_types",
+        "file_formats",
+        "file_path_prefix",
+        "file_name_prefix",
+        "file_name_prefix_split",
+        "max_download_task",
+        "max_concurrent_transmissions",
+        "start_timeout",
+        "date_format",
+        "hide_file_name",
+        "drop_no_audio_video",
+        "enable_download_txt",
+        "after_upload_telegram_delete",
+        "upload_drive",
+        "web",
+        "chats",
+    }
+    unknown_fields = set(payload) - allowed_top_level
+    if unknown_fields:
+        raise _SettingsValidationError(sorted(unknown_fields)[0])
+
+    normalized = {}
+    if "save_path" in payload:
+        normalized["save_path"] = _validate_settings_string(
+            payload["save_path"],
+            "save_path",
+            allow_empty=False,
+        )
+    if "media_types" in payload:
+        normalized["media_types"] = _validate_settings_string_list(
+            payload["media_types"],
+            "media_types",
+            allowed_values=SUPPORTED_MEDIA_TYPES,
+            allow_empty=False,
+        )
+    if "file_formats" in payload:
+        file_formats = payload["file_formats"]
+        if not isinstance(file_formats, dict):
+            raise _SettingsValidationError("file_formats")
+        if set(file_formats) - set(FILE_FORMAT_TYPES):
+            raise _SettingsValidationError("file_formats")
+        normalized_formats = {}
+        for media_type in FILE_FORMAT_TYPES:
+            field = f"file_formats.{media_type}"
+            if media_type not in file_formats:
+                normalized_formats[media_type] = ["all"]
+                continue
+            values = _validate_settings_string_list(
+                file_formats[media_type],
+                field,
+            )
+            normalized_formats[media_type] = values or ["all"]
+        normalized["file_formats"] = normalized_formats
+    for field, allowed_values in (
+        ("file_path_prefix", PATH_PREFIX_OPTIONS),
+        ("file_name_prefix", NAME_PREFIX_OPTIONS),
+    ):
+        if field in payload:
+            normalized[field] = _validate_settings_string_list(
+                payload[field],
+                field,
+                allowed_values=allowed_values,
+            )
+    if "file_name_prefix_split" in payload:
+        normalized["file_name_prefix_split"] = _validate_settings_string(
+            payload["file_name_prefix_split"],
+            "file_name_prefix_split",
+        )
+    for field, minimum, maximum in (
+        ("max_download_task", 1, 32),
+        ("max_concurrent_transmissions", 1, 200),
+        ("start_timeout", 1, 3600),
+    ):
+        if field in payload:
+            normalized[field] = _validate_settings_int(
+                payload[field],
+                field,
+                minimum=minimum,
+                maximum=maximum,
+            )
+    if "date_format" in payload:
+        normalized["date_format"] = _validate_date_format(payload["date_format"])
+    for field in (
+        "hide_file_name",
+        "drop_no_audio_video",
+        "enable_download_txt",
+        "after_upload_telegram_delete",
+    ):
+        if field in payload:
+            normalized[field] = _validate_settings_bool(payload[field], field)
+
+    if "upload_drive" in payload:
+        upload_drive = payload["upload_drive"]
+        if not isinstance(upload_drive, dict):
+            raise _SettingsValidationError("upload_drive")
+        allowed_upload_fields = {
+            "enable_upload_file",
+            "before_upload_file_zip",
+            "after_upload_file_delete",
+            "upload_adapter",
+            "rclone_path",
+            "remote_dir",
+        }
+        if set(upload_drive) - allowed_upload_fields:
+            raise _SettingsValidationError("upload_drive")
+        normalized_upload = {}
+        for field in (
+            "enable_upload_file",
+            "before_upload_file_zip",
+            "after_upload_file_delete",
+        ):
+            if field in upload_drive:
+                normalized_upload[field] = _validate_settings_bool(
+                    upload_drive[field],
+                    f"upload_drive.{field}",
+                )
+        for field in ("upload_adapter", "rclone_path", "remote_dir"):
+            if field in upload_drive:
+                normalized_upload[field] = _validate_settings_string(
+                    upload_drive[field],
+                    f"upload_drive.{field}",
+                )
+        normalized["upload_drive"] = normalized_upload
+
+    if "web" in payload:
+        web_config = payload["web"]
+        if not isinstance(web_config, dict):
+            raise _SettingsValidationError("web")
+        if set(web_config) - {"enable_web", "web_host", "web_port"}:
+            raise _SettingsValidationError("web")
+        normalized_web = {}
+        if "enable_web" in web_config:
+            normalized_web["enable_web"] = _validate_settings_bool(
+                web_config["enable_web"],
+                "web.enable_web",
+            )
+        if "web_host" in web_config:
+            normalized_web["web_host"] = _validate_settings_string(
+                web_config["web_host"],
+                "web.web_host",
+                allow_empty=False,
+            )
+        if "web_port" in web_config:
+            normalized_web["web_port"] = _validate_settings_int(
+                web_config["web_port"],
+                "web.web_port",
+                minimum=1,
+                maximum=65535,
+            )
+        normalized["web"] = normalized_web
+
+    if "chats" in payload:
+        chats = payload["chats"]
+        if not isinstance(chats, list):
+            raise _SettingsValidationError("chats")
+        normalized_chats = []
+        for index, chat in enumerate(chats):
+            field_prefix = f"chats.{index}"
+            if not isinstance(chat, dict) or "chat_id" not in chat:
+                raise _SettingsValidationError(field_prefix)
+            if set(chat) - {
+                "chat_id",
+                "last_read_message_id",
+                "download_filter",
+                "upload_telegram_chat_id",
+            }:
+                raise _SettingsValidationError(field_prefix)
+            chat_id = chat["chat_id"]
+            if chat_id not in app.chat_download_config:
+                raise _SettingsValidationError(f"{field_prefix}.chat_id")
+            normalized_chat = {"chat_id": chat_id}
+            if "last_read_message_id" in chat:
+                normalized_chat["last_read_message_id"] = _validate_settings_int(
+                    chat["last_read_message_id"],
+                    f"{field_prefix}.last_read_message_id",
+                    minimum=0,
+                    maximum=2**63 - 1,
+                )
+            if "download_filter" in chat:
+                normalized_chat["download_filter"] = _validate_settings_string(
+                    chat["download_filter"],
+                    f"{field_prefix}.download_filter",
+                )
+            if "upload_telegram_chat_id" in chat:
+                upload_chat_id = chat["upload_telegram_chat_id"]
+                if isinstance(upload_chat_id, bool) or not isinstance(
+                    upload_chat_id,
+                    (str, int),
+                ):
+                    raise _SettingsValidationError(
+                        f"{field_prefix}.upload_telegram_chat_id"
+                    )
+                normalized_chat["upload_telegram_chat_id"] = str(upload_chat_id)
+            normalized_chats.append(normalized_chat)
+        normalized["chats"] = normalized_chats
+    return normalized
+
+
 def _settings_from_app(app: Application) -> dict:
     """Serialize advanced download settings for the web UI."""
 
@@ -3135,28 +3433,30 @@ def _update_chat_config(app: Application, chats: Any) -> None:
             continue
 
         chat_config = app.chat_download_config[chat_id]
-        chat_config.download_filter = str(chat_payload.get("download_filter") or "")
-        chat_config.last_read_message_id = _as_positive_int(
-            chat_payload.get("last_read_message_id"),
-            chat_config.last_read_message_id,
-            minimum=0,
-        )
-        upload_chat_id = str(chat_payload.get("upload_telegram_chat_id") or "").strip()
-        chat_config.upload_telegram_chat_id = upload_chat_id or None
+        if "download_filter" in chat_payload:
+            chat_config.download_filter = chat_payload["download_filter"]
+        if "last_read_message_id" in chat_payload:
+            chat_config.last_read_message_id = chat_payload["last_read_message_id"]
+        if "upload_telegram_chat_id" in chat_payload:
+            upload_chat_id = chat_payload["upload_telegram_chat_id"].strip()
+            chat_config.upload_telegram_chat_id = upload_chat_id or None
 
         config_entry = chat_config_by_id.get(chat_id)
         if config_entry is None:
             config_entry = {"chat_id": chat_id}
             config_chats.append(config_entry)
             chat_config_by_id[chat_id] = config_entry
-        config_entry["last_read_message_id"] = chat_config.last_read_message_id
-        config_entry["download_filter"] = chat_config.download_filter
-        if chat_config.upload_telegram_chat_id:
-            config_entry[
-                "upload_telegram_chat_id"
-            ] = chat_config.upload_telegram_chat_id
-        else:
-            config_entry.pop("upload_telegram_chat_id", None)
+        if "last_read_message_id" in chat_payload:
+            config_entry["last_read_message_id"] = chat_config.last_read_message_id
+        if "download_filter" in chat_payload:
+            config_entry["download_filter"] = chat_config.download_filter
+        if "upload_telegram_chat_id" in chat_payload:
+            if chat_config.upload_telegram_chat_id:
+                config_entry[
+                    "upload_telegram_chat_id"
+                ] = chat_config.upload_telegram_chat_id
+            else:
+                config_entry.pop("upload_telegram_chat_id", None)
 
 
 async def _apply_settings_owned(
@@ -3165,70 +3465,44 @@ async def _apply_settings_owned(
 ) -> SettingsApplyResult:
     """Apply hot fields and persist restart-required fields on the owner loop."""
 
+    payload = _normalize_settings_payload(app, payload)
+
     if "save_path" in payload:
-        save_path = str(payload.get("save_path") or "").strip()
-        if save_path:
-            app.config["save_path"] = save_path
+        app.config["save_path"] = payload["save_path"]
 
-    media_types = _as_string_list(payload.get("media_types"), SUPPORTED_MEDIA_TYPES)
-    if media_types:
-        app.media_types = media_types
-        app.config["media_types"] = media_types
+    if "media_types" in payload:
+        app.media_types = payload["media_types"]
+        app.config["media_types"] = payload["media_types"]
 
-    file_formats = payload.get("file_formats")
-    if isinstance(file_formats, dict):
-        normalized_formats = {}
-        for media_type in FILE_FORMAT_TYPES:
-            values = _as_string_list(file_formats.get(media_type))
-            normalized_formats[media_type] = values or ["all"]
-        app.file_formats = normalized_formats
-        app.config["file_formats"] = normalized_formats
+    if "file_formats" in payload:
+        app.file_formats = payload["file_formats"]
+        app.config["file_formats"] = payload["file_formats"]
 
-    path_prefix = _as_string_list(payload.get("file_path_prefix"), PATH_PREFIX_OPTIONS)
-    if path_prefix:
-        app.file_path_prefix = path_prefix
-        app.config["file_path_prefix"] = path_prefix
+    if "file_path_prefix" in payload:
+        app.file_path_prefix = payload["file_path_prefix"]
+        app.config["file_path_prefix"] = payload["file_path_prefix"]
 
-    name_prefix = _as_string_list(payload.get("file_name_prefix"), NAME_PREFIX_OPTIONS)
-    if name_prefix:
-        app.file_name_prefix = name_prefix
-        app.config["file_name_prefix"] = name_prefix
+    if "file_name_prefix" in payload:
+        app.file_name_prefix = payload["file_name_prefix"]
+        app.config["file_name_prefix"] = payload["file_name_prefix"]
 
     if "file_name_prefix_split" in payload:
-        app.file_name_prefix_split = str(payload.get("file_name_prefix_split") or "")
+        app.file_name_prefix_split = payload["file_name_prefix_split"]
         app.config["file_name_prefix_split"] = app.file_name_prefix_split
 
     if "max_download_task" in payload:
-        app.config["max_download_task"] = _as_positive_int(
-            payload.get("max_download_task"),
-            int(app.config.get("max_download_task", app.max_download_task)),
-            minimum=1,
-            maximum=32,
-        )
+        app.config["max_download_task"] = payload["max_download_task"]
 
     if "max_concurrent_transmissions" in payload:
-        app.config["max_concurrent_transmissions"] = _as_positive_int(
-            payload.get("max_concurrent_transmissions"),
-            int(
-                app.config.get(
-                    "max_concurrent_transmissions",
-                    app.max_concurrent_transmissions,
-                )
-            ),
-            minimum=1,
-            maximum=200,
-        )
+        app.config["max_concurrent_transmissions"] = payload[
+            "max_concurrent_transmissions"
+        ]
 
     if "start_timeout" in payload:
-        app.config["start_timeout"] = _as_positive_int(
-            payload.get("start_timeout"),
-            int(app.config.get("start_timeout", app.start_timeout)),
-            minimum=1,
-            maximum=3600,
-        )
+        app.config["start_timeout"] = payload["start_timeout"]
 
     if "date_format" in payload:
-        app.date_format = str(payload.get("date_format") or app.date_format)
+        app.date_format = payload["date_format"]
         app.config["date_format"] = app.date_format
 
     for key in (
@@ -3238,11 +3512,11 @@ async def _apply_settings_owned(
         "after_upload_telegram_delete",
     ):
         if key in payload:
-            setattr(app, key, _as_bool(payload.get(key), getattr(app, key)))
+            setattr(app, key, payload[key])
             app.config[key] = getattr(app, key)
 
-    upload_drive = payload.get("upload_drive")
-    if isinstance(upload_drive, dict):
+    if "upload_drive" in payload:
+        upload_drive = payload["upload_drive"]
         upload_config = app.config.setdefault("upload_drive", {})
         for key in (
             "enable_upload_file",
@@ -3250,44 +3524,26 @@ async def _apply_settings_owned(
             "after_upload_file_delete",
         ):
             if key in upload_drive:
-                setattr(
-                    app.cloud_drive_config,
-                    key,
-                    _as_bool(
-                        upload_drive.get(key), getattr(app.cloud_drive_config, key)
-                    ),
-                )
+                setattr(app.cloud_drive_config, key, upload_drive[key])
                 upload_config[key] = getattr(app.cloud_drive_config, key)
         if "upload_adapter" in upload_drive:
-            upload_config["upload_adapter"] = str(
-                upload_drive.get("upload_adapter") or ""
-            )
+            upload_config["upload_adapter"] = upload_drive["upload_adapter"]
         for key in ("rclone_path", "remote_dir"):
             if key in upload_drive:
-                setattr(app.cloud_drive_config, key, str(upload_drive.get(key) or ""))
+                setattr(app.cloud_drive_config, key, upload_drive[key])
                 upload_config[key] = getattr(app.cloud_drive_config, key)
 
-    web_config = payload.get("web")
-    if isinstance(web_config, dict):
-        web_host = str(
-            web_config.get("web_host")
-            or app.config.get("web_host")
-            or app.web_host
-        )
-        web_port = _as_positive_int(
-            web_config.get("web_port"),
-            int(app.config.get("web_port", app.web_port)),
-            minimum=1,
-            maximum=65535,
-        )
-        app.config["web_host"] = web_host
-        app.config["web_port"] = web_port
-        app.config["enable_web"] = _as_bool(
-            web_config.get("enable_web"),
-            _as_bool(app.config.get("enable_web"), app.enable_web),
-        )
+    if "web" in payload:
+        web_config = payload["web"]
+        if "web_host" in web_config:
+            app.config["web_host"] = web_config["web_host"]
+        if "web_port" in web_config:
+            app.config["web_port"] = web_config["web_port"]
+        if "enable_web" in web_config:
+            app.config["enable_web"] = web_config["enable_web"]
 
-    _update_chat_config(app, payload.get("chats"))
+    if "chats" in payload:
+        _update_chat_config(app, payload["chats"])
     app.update_config(True)
     return _settings_apply_result(app)
 
@@ -3317,6 +3573,18 @@ def web_settings():
         )
     except WebCommandTimeout:
         return jsonify({"ok": False, "error": "settings update timed out"}), 503
+    except _SettingsValidationError as error:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "invalid settings",
+                    "error_code": "invalid_settings",
+                    "field": error.field,
+                }
+            ),
+            400,
+        )
     except RuntimeError:
         return jsonify({"ok": False, "error": "service unavailable"}), 503
     return jsonify(

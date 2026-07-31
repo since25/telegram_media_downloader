@@ -175,24 +175,29 @@ class AppTestCase(unittest.TestCase):
             app.app_data["chat"][0]["ids_to_retry"],
         )
 
-    @mock.patch("module.app.atomic_write_yaml")
-    def test_update_config(self, mock_atomic_write):
+    @mock.patch("module.app.atomic_write_yaml_pair")
+    def test_update_config(self, mock_atomic_write_pair):
         app = Application("", "")
         app.config_file = "config_test.yaml"
         app.app_data_file = "data_test.yaml"
         app.config["chat"] = [{"chat_id": 123, "last_read_message_id": 0}]
         app.update_config()
-        self.assertEqual(mock_atomic_write.call_count, 2)
+        self.assertEqual(mock_atomic_write_pair.call_count, 1)
         self.assertEqual(
-            [call.args[0] for call in mock_atomic_write.call_args_list],
-            [
+            mock_atomic_write_pair.call_args.args[:4],
+            (
                 module.app.Path("config_test.yaml"),
+                app.config,
                 module.app.Path("data_test.yaml"),
-            ],
+                app.app_data,
+            ),
         )
 
-    @mock.patch("module.app.atomic_write_yaml")
-    def test_update_config_serializes_concurrent_writes(self, mock_atomic_write):
+    @mock.patch("module.app.atomic_write_yaml_pair")
+    def test_update_config_serializes_concurrent_writes(
+        self,
+        mock_atomic_write_pair,
+    ):
         active_writes = 0
         max_active_writes = 0
         counter_lock = threading.Lock()
@@ -206,7 +211,7 @@ class AppTestCase(unittest.TestCase):
             with counter_lock:
                 active_writes -= 1
 
-        mock_atomic_write.side_effect = record_write
+        mock_atomic_write_pair.side_effect = record_write
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = Application(
                 os.path.join(tmp_dir, "config.yaml"),
@@ -223,4 +228,4 @@ class AppTestCase(unittest.TestCase):
 
         self.assertTrue(all(not worker.is_alive() for worker in workers))
         self.assertEqual(max_active_writes, 1)
-        self.assertEqual(mock_atomic_write.call_count, 4)
+        self.assertEqual(mock_atomic_write_pair.call_count, 2)

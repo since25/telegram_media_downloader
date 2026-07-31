@@ -356,6 +356,13 @@ enable_download_txt: false
 - **date_format** Support custom configuration of media_datetime format in file_path_prefix.see [python-datetime](https://docs.python.org/3/library/datetime.html)
 - **enable_download_txt** Enable download txt file, default `false`
 
+Web settings are validated as one request before any live value or file is changed.
+Malformed types, unsupported list values, out-of-range integers, and invalid
+`date_format` directives return `400 invalid_settings` with the rejected field.
+`config.yaml` and `data.yaml` are saved as one journaled generation; startup completes
+an interrupted paired write before reading either file and fails clearly if recovery
+evidence is inconsistent.
+
 The Web auth file stores a password verifier instead of the configured plaintext
 password. An existing plaintext `.web_auth.json` is migrated on startup without changing
 the accepted password. If `web_login_secret` is empty, a generated bootstrap password is

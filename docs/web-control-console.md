@@ -50,6 +50,12 @@ limit, so restart no longer reloads an unbounded completed history. Importing ta
 or diagnostic modules does not open, recover, or prune this database; the application
 lifecycle initializes it explicitly after configuration is loaded.
 
+Task statuses follow an explicit transition contract. Ordinary updates cannot revive a
+terminal task; retained upload failures use the dedicated retry transition, while
+startup/final-state repair uses the dedicated reconciliation transition backed by the
+durable channel batch. Every public task-store read or write result is an independent
+snapshot, so caller mutation cannot change the store or its SQLite state.
+
 On restart, non-channel tasks that have no durable command to resume are closed as failed
 with `restart_interrupted`; queued/downloading/uploading file rows are closed at the same
 time, and the detail panel explains that the service restarted. Channel-library tasks are
@@ -86,6 +92,20 @@ Saving one of these fields updates `config.yaml` but does not mutate the live de
 the response and UI show both `configured_settings` and `active_settings` plus the exact
 `restart_fields`. A stopped owner loop returns `503` instead of partially applying the
 request.
+
+The complete settings payload is validated before any active object, configured value, or
+file is changed. Unsupported date directives, trailing `%`, boolean values supplied for
+integer fields, out-of-range integers, unknown list values, and malformed nested
+`upload_drive`, `web`, or `chats` objects return `400 invalid_settings` with the rejected
+field. A rejected request does not call persistence and leaves both memory and disk
+unchanged.
+
+`config.yaml` and `data.yaml` are committed as one recoverable generation. Both staged
+files and a mode-`0600` journal are made durable before either target is replaced. If the
+process stops between replacements, the next configuration load verifies the recorded
+SHA-256 values and deterministically completes the remaining replacement before parsing
+either YAML file. A missing or mismatched staged/target file fails startup instead of
+guessing which generation is authoritative.
 
 ## Authentication And Process Lifecycle
 

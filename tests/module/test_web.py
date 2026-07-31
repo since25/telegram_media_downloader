@@ -1,6 +1,7 @@
 """Tests for the Flask web control surface."""
 
 import asyncio
+import copy
 import concurrent.futures
 import json
 import os
@@ -375,6 +376,89 @@ class WebTestCase(unittest.TestCase):
 
             self.assertEqual(response.status_code, 200)
             self.assertEqual(update_thread_ids, [owner_thread.ident])
+
+    def test_invalid_web_settings_have_zero_memory_or_disk_side_effects(self):
+        invalid_payloads = (
+            (
+                "date_format",
+                {
+                    "media_types": ["video"],
+                    "date_format": "%Y-%m-%d%",
+                },
+            ),
+            (
+                "date_format",
+                {
+                    "media_types": ["video"],
+                    "date_format": "%Y-%Q",
+                },
+            ),
+            (
+                "max_download_task",
+                {
+                    "media_types": ["video"],
+                    "max_download_task": True,
+                },
+            ),
+            (
+                "media_types",
+                {
+                    "media_types": ["video", "unsupported"],
+                },
+            ),
+            (
+                "upload_drive",
+                {
+                    "media_types": ["video"],
+                    "upload_drive": [],
+                },
+            ),
+        )
+
+        for expected_field, invalid_payload in invalid_payloads:
+            with self.subTest(field=expected_field), tempfile.TemporaryDirectory() as tmp_dir:
+                app = build_web_test_app(tmp_dir)
+                app.update_config()
+                original_config = copy.deepcopy(app.config)
+                original_media_types = list(app.media_types)
+                original_date_format = app.date_format
+                original_cloud_config = copy.deepcopy(app.cloud_drive_config.__dict__)
+                config_bytes = Path(app.config_file).read_bytes()
+                app_data_bytes = Path(app.app_data_file).read_bytes()
+                self.web_module._current_app = app
+                self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+                client = self._csrf_client()
+
+                with (
+                    patch.object(app, "update_config") as update_config,
+                    patch.object(
+                        self.web_module,
+                        "submit_web_coroutine",
+                        side_effect=completed_web_command,
+                    ),
+                ):
+                    response = client.post("/api/settings", json=invalid_payload)
+
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.get_json(),
+                    {
+                        "ok": False,
+                        "error": "invalid settings",
+                        "error_code": "invalid_settings",
+                        "field": expected_field,
+                    },
+                )
+                self.assertEqual(app.config, original_config)
+                self.assertEqual(app.media_types, original_media_types)
+                self.assertEqual(app.date_format, original_date_format)
+                self.assertEqual(
+                    app.cloud_drive_config.__dict__,
+                    original_cloud_config,
+                )
+                update_config.assert_not_called()
+                self.assertEqual(Path(app.config_file).read_bytes(), config_bytes)
+                self.assertEqual(Path(app.app_data_file).read_bytes(), app_data_bytes)
 
     def test_pause_download_mutation_runs_on_owner_loop(self):
         loop = asyncio.new_event_loop()

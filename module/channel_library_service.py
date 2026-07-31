@@ -442,7 +442,7 @@ class ChannelLibraryService:
         existing = self._upload_retry_tasks.get(task_id)
         if existing is not None and not existing.done():
             return False
-        self.task_store.update_task(task_id, status=TaskStatus.QUEUED, error="")
+        self.task_store.retry_task(task_id)
         retry_task = asyncio.create_task(
             self._retry_failed_uploads(batch),
             name=f"channel-library-upload-retry-{task_id}",
@@ -775,21 +775,21 @@ class ChannelLibraryService:
                 continue
             batch = self.store.get_download_batch_header_by_task_id(task.task_id)
             if batch is None:
-                self.task_store.update_task(
+                self.task_store.reconcile_task(
                     task.task_id,
                     status=TaskStatus.FAILED,
                     error=RESTART_INTERRUPTED_ERROR,
                     needs_confirmation=False,
                 )
             elif batch["status"] in {"queued", "downloading"}:
-                self.task_store.update_task(
+                self.task_store.reconcile_task(
                     task.task_id,
                     status=TaskStatus.QUEUED,
                     error="",
                     needs_confirmation=False,
                 )
             elif batch["status"] == "cancelled":
-                self.task_store.update_task(
+                self.task_store.reconcile_task(
                     task.task_id,
                     status=TaskStatus.CANCELLED,
                     error="cancelled",
@@ -805,7 +805,7 @@ class ChannelLibraryService:
                 self.task_store.update_task(task.task_id, error="")
                 self.task_store.complete_task(task.task_id)
             else:
-                self.task_store.update_task(
+                self.task_store.reconcile_task(
                     task.task_id,
                     status=TaskStatus.FAILED,
                     error=batch.get("last_error") or RESTART_INTERRUPTED_ERROR,
@@ -1125,7 +1125,7 @@ class ChannelLibraryService:
                 ),
             )
         if node.is_stop_transmission:
-            self.task_store.update_task(
+            self.task_store.reconcile_task(
                 batch["task_id"], status=TaskStatus.CANCELLED, error="cancelled"
             )
         return results

@@ -3309,3 +3309,36 @@ Changed files:
 
 Rollback:
 - Revert the Phase 3 commit. This does not change runtime databases, configuration, authentication, or deployment paths. Rolling back restores the prior incomplete wheel and ungated image publication, so do not publish or deploy from the rolled-back workflow without an independent verified artifact gate.
+
+## 2026-07-31 - Task: Phase 4 explicit durable state contracts
+
+### What was done
+
+- Added an explicit task-status transition contract, dedicated retry and reconciliation transitions, and detached snapshots from every public task-store method so callers cannot mutate store-owned memory or SQLite state.
+- Prevented ordinary updates and repeated creation from reviving terminal tasks; migrated retained-upload retry and durable channel-batch reconciliation to the explicit recovery entry points.
+- Replaced independent `config.yaml`/`data.yaml` writes with a recoverable paired generation: both staged files and a mode-`0600` SHA-256 journal are made durable before replacement, and startup completes or rejects an interrupted commit before reading either YAML file.
+- Added strict whole-request Web settings validation before any active/configured mutation or persistence. Invalid date directives, trailing `%`, bool-as-int values, ranges, list members, and nested objects now return `400 invalid_settings` with the rejected field and zero side effects.
+- Documented the task lifecycle, settings validation, paired persistence, startup recovery, and failure contracts in English, Chinese, and the Web operations guide.
+
+### Testing
+
+- RED Phase 4 selection: `7 failed`, proving mutable return leakage, implicit terminal revival, missing retry/reconcile APIs, missing paired recovery, and partial Web settings mutation. The first system-`pytest` attempt was blocked by a missing `loguru`; the recorded RED result used the repository `.venv`.
+- Focused state, persistence, application, Web, channel-library, cancellation, prescan, and upload-progress regression: `304 passed`.
+- Simulated a stop after the first YAML replacement and verified deterministic recovery; separately verified that second-value serialization failure leaves both prior files unchanged and that missing staged data plus a target hash mismatch fails without guessing.
+- Complete suite: `730 passed, 1 skipped`.
+- `make style_check PYTHON=.venv/bin/python`: passed with mypy reporting no issues across 16 modules and Pylint error-only clean.
+- `.venv/bin/python -m compileall -q module tests`, `.venv/bin/python -m pip check`, `TMD_TASK_DB_PATH=<temporary>/import.sqlite3 .venv/bin/python check_imports.py`, `TMD_UID=10001 TMD_GID=10001 docker compose -f docker-compose.yaml config`, and `git diff --check`: passed; the import probe created no task database.
+- `SKIP=black .venv/bin/pre-commit run --all-files` passed repository hygiene, isort, mypy, and Pylint; `.venv/bin/pre-commit run black --files module/config_persistence.py` passed the Phase 4 Black boundary. Full-repository Black alone would reformat the unrelated pre-existing `tests/test_release_contract.py`; that out-of-scope change was restored and is not included.
+
+### Notes
+
+Changed files:
+- `module/task_state.py`, `module/channel_library_service.py`: Added valid transitions, explicit retry/reconcile ownership, terminal-state protection, detached snapshots, and migrated durable recovery callers.
+- `module/config_persistence.py`, `module/app.py`: Added paired YAML staging/journaling/recovery and invoked recovery before configuration parsing.
+- `module/web.py`: Added complete payload validation and mutation only after successful normalization.
+- `tests/module/test_task_state.py`, `tests/module/test_config_persistence.py`, `tests/module/test_app.py`, `tests/module/test_web.py`: Added lifecycle, snapshot isolation, crash recovery, serialization failure, mismatch refusal, persistence integration, and zero-side-effect validation regressions.
+- `README.md`, `README_CN.md`, `docs/web-control-console.md`: Documented the new state and configuration contracts.
+- `progress.md`: Recorded Phase 4 red-green, recovery, regression, static, operational, and rollback evidence.
+
+Rollback:
+- Revert the Phase 4 commit. No SQLite schema or row migration is introduced. Before rollback, stop the service and ensure no paired YAML journal remains; if one exists, run the Phase 4 recovery path or restore both YAML files from the same backup generation. Older code cannot interpret or finish the new journal safely.

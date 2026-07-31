@@ -47,6 +47,61 @@ TERMINAL_TASK_STATUSES = {
     TaskStatus.CANCELLED,
     TaskStatus.FAILED,
 }
+TASK_STATUSES = {
+    TaskStatus.CREATED,
+    TaskStatus.SCANNING,
+    TaskStatus.WAITING_CONFIRMATION,
+    TaskStatus.QUEUED,
+    TaskStatus.DOWNLOADING,
+    TaskStatus.UPLOADING,
+    *TERMINAL_TASK_STATUSES,
+}
+ALLOWED_TASK_TRANSITIONS = {
+    TaskStatus.CREATED: TASK_STATUSES,
+    TaskStatus.SCANNING: {
+        TaskStatus.SCANNING,
+        TaskStatus.WAITING_CONFIRMATION,
+        TaskStatus.QUEUED,
+        TaskStatus.CANCELLED,
+        TaskStatus.FAILED,
+    },
+    TaskStatus.WAITING_CONFIRMATION: {
+        TaskStatus.WAITING_CONFIRMATION,
+        TaskStatus.QUEUED,
+        TaskStatus.CANCELLED,
+        TaskStatus.FAILED,
+    },
+    TaskStatus.QUEUED: {
+        TaskStatus.QUEUED,
+        TaskStatus.DOWNLOADING,
+        TaskStatus.UPLOADING,
+        TaskStatus.COMPLETED,
+        TaskStatus.COMPLETED_WITH_ERRORS,
+        TaskStatus.CANCELLED,
+        TaskStatus.FAILED,
+    },
+    TaskStatus.DOWNLOADING: {
+        TaskStatus.QUEUED,
+        TaskStatus.DOWNLOADING,
+        TaskStatus.UPLOADING,
+        TaskStatus.COMPLETED,
+        TaskStatus.COMPLETED_WITH_ERRORS,
+        TaskStatus.CANCELLED,
+        TaskStatus.FAILED,
+    },
+    TaskStatus.UPLOADING: {
+        TaskStatus.UPLOADING,
+        TaskStatus.COMPLETED,
+        TaskStatus.COMPLETED_WITH_ERRORS,
+        TaskStatus.CANCELLED,
+        TaskStatus.FAILED,
+    },
+    **{status: {status} for status in TERMINAL_TASK_STATUSES},
+}
+RETRYABLE_TASK_STATUSES = {
+    TaskStatus.COMPLETED_WITH_ERRORS,
+    TaskStatus.FAILED,
+}
 TASK_STATE_SCHEMA_VERSION = 1
 RESTART_INTERRUPTED_ERROR = "restart_interrupted"
 
@@ -59,6 +114,21 @@ class TaskIdentityConflictError(ValueError):
     def __init__(self, task_id: Any):
         super().__init__(self.code)
         self.task_id = str(task_id)
+
+
+class TaskTransitionError(ValueError):
+    """A task status change violates the public lifecycle contract."""
+
+    code = "invalid_task_transition"
+
+    def __init__(self, task_id: Any, current_status: str, requested_status: str):
+        super().__init__(
+            f"{self.code}: {current_status!r} -> {requested_status!r}"
+        )
+        self.task_id = str(task_id)
+        self.current_status = current_status
+        self.requested_status = requested_status
+
 
 SUCCESS_FILE_STATUSES = {FileStatus.DOWNLOADED, FileStatus.UPLOADED}
 FAILED_FILE_STATUSES = {FileStatus.FAILED, FileStatus.UPLOAD_FAILED}
@@ -366,8 +436,9 @@ class TaskStateStore:
     ) -> TaskSnapshot:
         task_key = str(task_id)
         with self._lock:
-            task = self._active.get(task_key) or self._completed.pop(task_key, None)
-            if not task:
+            existing = self._active.get(task_key) or self._completed.get(task_key)
+            if existing is None:
+                self._validate_status(task_key, status)
                 task = TaskSnapshot(
                     task_id=task_key,
                     source=source,
@@ -376,6 +447,9 @@ class TaskStateStore:
                     title=title,
                     status=status,
                 )
+            else:
+                task = copy.deepcopy(existing)
+                self._validate_updates(task, {"status": status})
             self._apply_updates(
                 task,
                 source=source,
@@ -385,9 +459,8 @@ class TaskStateStore:
                 status=status,
                 **updates,
             )
-            self._active[task_key] = task
-            self._persist_task(task)
-            return task
+            self._store_task(task_key, task)
+            return copy.deepcopy(task)
 
     def ensure_task(
         self,
@@ -425,7 +498,7 @@ class TaskStateStore:
                     for field_name, expected_value in expected_identity.items()
                 ):
                     raise TaskIdentityConflictError(task_key)
-                return existing
+                return copy.deepcopy(existing)
             return self.create_task(
                 task_key,
                 source=source,
@@ -439,17 +512,59 @@ class TaskStateStore:
     def update_task(self, task_id: Any, **updates) -> Optional[TaskSnapshot]:
         task_key = str(task_id)
         with self._lock:
-            task = self._active.get(task_key) or self._completed.get(task_key)
-            if not task:
+            existing = self._active.get(task_key) or self._completed.get(task_key)
+            if not existing:
                 return None
+            self._validate_updates(existing, updates)
+            task = copy.deepcopy(existing)
             self._apply_updates(task, **updates)
-            if task.status in TERMINAL_TASK_STATUSES:
-                self._move_completed(task_key, task)
-            else:
-                self._completed.pop(task_key, None)
-                self._active[task_key] = task
-                self._persist_task(task)
-            return task
+            self._store_task(task_key, task)
+            return copy.deepcopy(task)
+
+    def retry_task(self, task_id: Any, **updates) -> Optional[TaskSnapshot]:
+        """Explicitly reactivate a retryable terminal task."""
+
+        task_key = str(task_id)
+        with self._lock:
+            existing = self._active.get(task_key) or self._completed.get(task_key)
+            if existing is None:
+                return None
+            if existing.status not in RETRYABLE_TASK_STATUSES:
+                raise TaskTransitionError(
+                    task_key,
+                    existing.status,
+                    TaskStatus.QUEUED,
+                )
+            task = copy.deepcopy(existing)
+            self._apply_updates(
+                task,
+                status=TaskStatus.QUEUED,
+                error="",
+                needs_confirmation=False,
+                **updates,
+            )
+            self._store_task(task_key, task)
+            return copy.deepcopy(task)
+
+    def reconcile_task(
+        self,
+        task_id: Any,
+        *,
+        status: str,
+        **updates,
+    ) -> Optional[TaskSnapshot]:
+        """Apply an explicit transition backed by durable reconciliation evidence."""
+
+        task_key = str(task_id)
+        with self._lock:
+            existing = self._active.get(task_key) or self._completed.get(task_key)
+            if existing is None:
+                return None
+            self._validate_status(task_key, status)
+            task = copy.deepcopy(existing)
+            self._apply_updates(task, status=status, **updates)
+            self._store_task(task_key, task)
+            return copy.deepcopy(task)
 
     def update_workflow(
         self,
@@ -460,20 +575,16 @@ class TaskStateStore:
 
         task_key = str(task_id)
         with self._lock:
-            task = self._active.get(task_key) or self._completed.get(task_key)
-            if task is None:
+            existing = self._active.get(task_key) or self._completed.get(task_key)
+            if existing is None:
                 return None
+            task = copy.deepcopy(existing)
             workflow = copy.deepcopy(task.workflow or WorkflowSnapshot())
             for key, value in updates.items():
                 if value is not None and hasattr(workflow, key):
                     setattr(workflow, key, value)
             self._apply_updates(task, workflow=workflow)
-            if task.status in TERMINAL_TASK_STATUSES:
-                self._move_completed(task_key, task)
-            else:
-                self._completed.pop(task_key, None)
-                self._active[task_key] = task
-                self._persist_task(task)
+            self._store_task(task_key, task)
             return copy.deepcopy(task)
 
     def transition_file(
@@ -496,6 +607,7 @@ class TaskStateStore:
                 else TaskSnapshot(task_id=task_key)
             )
             if task_updates:
+                self._validate_updates(task, task_updates)
                 self._apply_updates(task, **task_updates)
 
             file_snapshot = task.files.get(message_key)
@@ -535,46 +647,36 @@ class TaskStateStore:
             if self.storage_path and evicted_keys:
                 with self._connect() as connection:
                     self._delete_task_storage(connection, evicted_keys)
-            return task, file_snapshot
+            returned_task = copy.deepcopy(task)
+            return returned_task, returned_task.files[message_key]
 
     def upsert_file(self, task_id: Any, message_id: Any, **updates) -> FileSnapshot:
-        task_key = str(task_id)
-        message_key = str(message_id)
-        with self._lock:
-            task = (
-                self._active.get(task_key)
-                or self._completed.get(task_key)
-                or self.create_task(task_key)
-            )
-            file_snapshot = task.files.get(message_key)
-            if not file_snapshot:
-                file_snapshot = FileSnapshot(message_id=message_key)
-                task.files[message_key] = file_snapshot
-            for key, value in updates.items():
-                if hasattr(file_snapshot, key) and value is not None:
-                    setattr(file_snapshot, key, value)
-            file_snapshot.updated_at = _now()
-            task.current_file = file_snapshot
-            task.updated_at = file_snapshot.updated_at
-            task.refresh_counts_from_files()
-            self._persist_task(task)
-            self._persist_file(task_key, file_snapshot)
-            return file_snapshot
+        _, file_snapshot = self.transition_file(
+            task_id,
+            message_id,
+            file_updates=updates,
+        )
+        return file_snapshot
 
     def complete_task(self, task_id: Any) -> Optional[TaskSnapshot]:
         task_key = str(task_id)
         with self._lock:
-            task = self._active.get(task_key) or self._completed.get(task_key)
-            if not task:
+            existing = self._active.get(task_key) or self._completed.get(task_key)
+            if not existing:
                 return None
+            task = copy.deepcopy(existing)
             task.refresh_counts_from_files()
-            if task.failed_count:
-                task.status = TaskStatus.COMPLETED_WITH_ERRORS
-            elif task.status not in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
-                task.status = TaskStatus.COMPLETED
+            if task.status in TERMINAL_TASK_STATUSES:
+                target_status = task.status
+            elif task.failed_count:
+                target_status = TaskStatus.COMPLETED_WITH_ERRORS
+            else:
+                target_status = TaskStatus.COMPLETED
+            self._validate_updates(task, {"status": target_status})
+            task.status = target_status
             task.updated_at = _now()
             self._move_completed(task_key, task)
-            return task
+            return copy.deepcopy(task)
 
     def get_task(self, task_id: Any) -> Optional[TaskSnapshot]:
         task_key = str(task_id)
@@ -691,6 +793,32 @@ class TaskStateStore:
         if self.storage_path and evicted_keys:
             with self._connect() as connection:
                 self._delete_task_storage(connection, evicted_keys)
+
+    def _store_task(self, task_key: str, task: TaskSnapshot) -> None:
+        if task.status in TERMINAL_TASK_STATUSES:
+            self._move_completed(task_key, task)
+            return
+        self._completed.pop(task_key, None)
+        self._active[task_key] = task
+        self._persist_task(task)
+
+    @staticmethod
+    def _validate_status(task_id: str, status: str) -> None:
+        if status not in TASK_STATUSES:
+            raise TaskTransitionError(task_id, "<unknown>", status)
+
+    @classmethod
+    def _validate_updates(cls, task: TaskSnapshot, updates: dict) -> None:
+        requested_status = updates.get("status")
+        if requested_status is None:
+            return
+        cls._validate_status(task.task_id, requested_status)
+        if requested_status not in ALLOWED_TASK_TRANSITIONS.get(task.status, set()):
+            raise TaskTransitionError(
+                task.task_id,
+                task.status,
+                requested_status,
+            )
 
     @staticmethod
     def _apply_updates(task: TaskSnapshot, **updates) -> None:
@@ -1148,6 +1276,9 @@ def snapshot_node(
         or getattr(node, "total_task", 0)
         or len(getattr(node, "download_status", {}) or {})
     )
+    resolved_status = _status_from_node(node)
+    if existing is not None and existing.status in TERMINAL_TASK_STATUSES:
+        resolved_status = existing.status
     task = get_task_store().create_task(
         task_id=task_id,
         source=resolved_source,
@@ -1165,7 +1296,7 @@ def snapshot_node(
             or getattr(node, "file_name_tag", "")
             or ""
         ),
-        status=_status_from_node(node),
+        status=resolved_status,
         total_count=(
             preserved_identity.total_count
             if preserved_identity
@@ -1197,7 +1328,9 @@ def snapshot_node(
         )
     if task.status in TERMINAL_TASK_STATUSES:
         get_task_store().complete_task(task.task_id)
-    return task
+    stored_task = get_task_store().get_task(task.task_id)
+    assert stored_task is not None
+    return stored_task
 
 
 def _file_status_from_download_status(status) -> str:
