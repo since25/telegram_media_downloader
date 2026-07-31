@@ -3462,3 +3462,28 @@ Changed files:
 
 Rollback:
 - Revert this task's commit and redeploy the prior release. No database schema or configuration format changes are introduced. Existing retried batch rows use only statuses already understood by the prior release; stop the service before rollback so no retry is active.
+
+## 2026-07-31 - Task: Deploy concurrent-phase and failed-retry repair to production
+
+### What was done
+
+- Pushed commit `402c40e5ec426378e753714f9681d7bb9a270355` to `origin/master` and deployed it to `/root/telegram_media_downloader` with `git pull --ff-only origin master`.
+- Confirmed all Web, channel scan, channel download, package attempt, and resource delivery queues were inactive before stopping `tg-downloader.service`.
+- Created the restricted rollback point `backups/deploy-20260730-224158` on the EDT-configured production server, preserving configuration/runtime state and verified backups of all three SQLite databases.
+- Restarted the non-Docker systemd deployment and left the eight existing partially failed Web tasks terminal so retries remain an explicit user action through “重试失败项”.
+
+### Testing
+
+- Before deployment, all active-queue checks returned zero and `PRAGMA quick_check` returned `ok` for `web_tasks.sqlite3`, `channel_library.sqlite3`, and `resource_bot.sqlite3`.
+- Each SQLite backup passed `PRAGMA integrity_check`.
+- Production `.venv/bin/python check_imports.py`, compileall, `pip check`, `git diff --check`, and the retry-button template contract passed before service startup.
+- After startup, `tg-downloader.service` was `active/running`, port 80 was owned by the service process, `/healthz` returned HTTP 200 with `{"status":"ok"}`, `/` returned the expected HTTP 302 login redirect, and the deployed template contained “重试失败项”.
+- Post-start database quick checks remained `ok`, active queues remained zero, the tracked production worktree remained clean, and the startup journal contained no traceback, exception, error, critical, or failed entries.
+
+### Notes
+
+Changed files:
+- `progress.md`: Recorded the production commit, verified backup point, deployment path, and post-start evidence.
+
+Rollback:
+- Stop `tg-downloader.service`, deploy prior code commit `6e954fc55362d5b2cc3064eadfb3a02dccce99f9`, and restart the service. Preserve current databases by default; `backups/deploy-20260730-224158` contains integrity-verified pre-deployment copies if a confirmed state rollback is also required.
