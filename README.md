@@ -190,6 +190,13 @@ progress line. The container health check reads the atomic
 `/app/state/runtime-health.json` marker and verifies that it belongs to the live ready
 process, so it also works when `enable_web: false`.
 
+Docker publication runs the complete tests, import/compile/dependency checks, the
+blocking static boundary, pre-commit, and Compose rendering in the same workflow before
+the image job becomes reachable. Every pushed image has an immutable
+`sha-<40-character-commit>` tag; release tags are retained, and `latest` is emitted only
+for a verified default-branch build. The Python wheel contains `media_downloader.py`,
+the runtime `module` and `utils` packages, and the Web templates/static assets.
+
 The container paths are explicit and may be overridden when needed:
 
 ```yaml

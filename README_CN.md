@@ -301,6 +301,12 @@ digest，Alpine 构建和运行包固定版本；Pyrogram 分支固定到不可�
 文本。容器健康检查读取原子更新的 `/app/state/runtime-health.json`，并确认它属于
 当前仍存活且已就绪的进程，因此在 `enable_web: false` 时也能正常工作。
 
+Docker 发布与完整测试、导入/编译/依赖检查、阻断式静态门禁、pre-commit 和
+Compose 渲染位于同一个工作流依赖图中；只有这些检查全部通过后，镜像发布 Job
+才可执行。每个镜像都有不可变的 `sha-<40 位提交>` 标签，版本 Tag 保留原名，
+`latest` 只由验证通过的默认分支构建生成。Python wheel 包含
+`media_downloader.py`、运行时 `module`/`utils` 包以及 Web 模板和静态资源。
+
 容器中的状态路径通过以下环境变量明确指定，必要时可以覆盖：
 
 ```yaml

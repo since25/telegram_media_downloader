@@ -1,4 +1,4 @@
-from distutils.core import setup
+from setuptools import find_packages, setup
 
 from utils import __version__
 
@@ -11,6 +11,24 @@ setup(
     url="https://github.com/tangyoha/telegram_media_downloader",
     download_url="https://github.com/tangyoha/telegram_media_downloader/releases/latest",
     py_modules=["media_downloader"],
+    packages=find_packages(
+        include=(
+            "module",
+            "module.*",
+            "utils",
+            "utils.*",
+        )
+    ),
+    package_data={
+        "module": [
+            "templates/*.html",
+            "static/css/*.css",
+            "static/layui/*.js",
+            "static/request/*.js",
+        ]
+    },
+    include_package_data=False,
+    zip_safe=False,
     classifiers=[
         "Development Status :: 5 - Production/Stable",
         "Environment :: Console",

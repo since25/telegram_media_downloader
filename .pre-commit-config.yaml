@@ -8,9 +8,9 @@ repos:
     rev: v6.0.0
     hooks:
     -   id: trailing-whitespace
-        files: ^(\.dockerignore|\.github/workflows/(unittest|code-checks)\.yml|\.pre-commit-config\.yaml|Dockerfile|Makefile|README(_CN)?\.md|docker-compose\.yaml|setup\.py|requirements\.txt|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|task_state|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_runtime_contract|test_web_system_api|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/(test_runtime_health|test_task_state)\.py)$
+        files: ^(\.dockerignore|\.github/workflows/(unittest|code-checks|docker-publish)\.yml|\.pre-commit-config\.yaml|Dockerfile|Makefile|README(_CN)?\.md|docker-compose\.yaml|setup\.py|requirements\.txt|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|task_state|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/(test_runtime_health|test_task_state)\.py)$
     -   id: end-of-file-fixer
-        files: ^(\.dockerignore|\.github/workflows/(unittest|code-checks)\.yml|\.pre-commit-config\.yaml|Dockerfile|Makefile|README(_CN)?\.md|docker-compose\.yaml|setup\.py|requirements\.txt|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|task_state|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_runtime_contract|test_web_system_api|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/(test_runtime_health|test_task_state)\.py)$
+        files: ^(\.dockerignore|\.github/workflows/(unittest|code-checks|docker-publish)\.yml|\.pre-commit-config\.yaml|Dockerfile|Makefile|README(_CN)?\.md|docker-compose\.yaml|setup\.py|requirements\.txt|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|task_state|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/(test_runtime_health|test_task_state)\.py)$
 -   repo: https://github.com/psf/black
     rev: 25.12.0
     hooks:
@@ -18,7 +18,7 @@ repos:
         name: black
         entry: black
         types: [python]
-        files: ^(module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_runtime_contract|test_web_system_api)\.py|tests/module/test_runtime_health\.py)$
+        files: ^(module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api)\.py|tests/module/test_runtime_health\.py)$
 -   repo: https://github.com/pycqa/isort
     rev: 6.1.0
     hooks:
@@ -27,7 +27,7 @@ repos:
         entry: isort
         types: [python]
         args: ["--profile", "black", "--filter-files"]
-        files: ^(module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_runtime_contract|test_web_system_api)\.py|tests/module/test_runtime_health\.py)$
+        files: ^(module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api)\.py|tests/module/test_runtime_health\.py)$
 -   repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.20.2
     hooks:

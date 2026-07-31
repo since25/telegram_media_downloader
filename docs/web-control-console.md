@@ -385,6 +385,15 @@ and transfer, transfer progress, Web authentication, and owned Web serving. Olde
 application areas remain outside that blocking type boundary until they can be migrated
 with dedicated tests.
 
+The Docker publication workflow owns a `verify` job in the same dependency graph as the
+multi-platform push. It runs the complete pytest suite, side-effect-free import probes,
+compileall, `pip check`, the blocking static boundary, pre-commit, and Docker Compose
+rendering before `build-and-push` becomes reachable. Published images always include a
+long commit tag in the form `sha-<40-character-git-sha>`; release tags are additive, and
+`latest` is generated only for a verified default-branch event. The setuptools wheel
+contains the CLI facade, all `module` and `utils` Python packages, and the Flask
+templates/static assets required by the Web console.
+
 Before an upgrade or rollback that could affect these stores:
 
 1. Stop the service so no scan, dispatch, or task update is in flight.

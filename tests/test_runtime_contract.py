@@ -118,6 +118,7 @@ def test_development_and_pre_commit_tools_are_aligned():
         "types-PyYAML==6.0.12.20260724",
         "types-pytz==2026.3.1.20260727",
         "types-croniter==2.0.0.20240423",
+        "wheel==0.47.0",
     }
     assert requirement_lines == expected_requirements
 

@@ -8,11 +8,44 @@ on:
       - 'v*'
 
 jobs:
-  build-and-push:
+  verify:
+    name: Verify release source
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@v7.0.1
+
+    - name: Set up Python
+      uses: actions/setup-python@v7.0.0
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: make dev_install
+
+    - name: Run complete test suite
+      run: python -m pytest -q
+
+    - name: Verify imports, compilation, dependencies, and static boundary
+      run: |
+        runtime_tmp="$(mktemp -d)"
+        TMD_TASK_DB_PATH="${runtime_tmp}/import.sqlite3" python check_imports.py
+        test ! -e "${runtime_tmp}/import.sqlite3"
+        python -m compileall -q module tests
+        python -m pip check
+        make style_check PYTHON=python
+        python -m pre_commit run --all-files
+
+    - name: Verify container contract
+      run: |
+        TMD_UID=10001 TMD_GID=10001 docker compose -f docker-compose.yaml config >/dev/null
+
+  build-and-push:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v7.0.1
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
@@ -23,6 +56,16 @@ jobs:
         username: ${{ secrets.DOCKER_HUB_USERNAME }}
         password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
+    - name: Generate immutable and promoted image tags
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ secrets.DOCKER_HUB_USERNAME }}/telegram_media_downloader
+        tags: |
+          type=sha,format=long,prefix=sha-
+          type=ref,event=tag
+          type=raw,value=latest,enable={{is_default_branch}}
+
     - name: Build and push runtime image
       uses: docker/build-push-action@v6
       with:
@@ -30,6 +73,5 @@ jobs:
         push: true
         platforms: linux/amd64,linux/arm64,linux/arm/v7,linux/arm/v6,linux/386,linux/ppc64le
         target: runtime-image
-        tags: |
-          ${{ secrets.DOCKER_HUB_USERNAME }}/telegram_media_downloader:latest
-          ${{ secrets.DOCKER_HUB_USERNAME }}/telegram_media_downloader:${{ github.ref_name }}
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}

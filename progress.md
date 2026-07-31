@@ -3275,3 +3275,37 @@ Changed files:
 
 Rollback:
 - Revert the Phase 2 commit. No database schema or persisted task/configuration format changes are introduced. If rolling back a container deployment, remove the now-unused `TMD_RUNTIME_HEALTH_PATH` setting and restore the prior Web-based health check only if `enable_web=true`; otherwise the older image has no valid container health probe.
+
+## 2026-07-30 - Task: Phase 3 verified artifact publication and packaging contract
+
+### What was done
+
+- Added a release-source verification Job to the Docker publication workflow and made the multi-platform push depend on it in the same GitHub Actions dependency graph.
+- Required the release gate to run the complete pytest suite, side-effect-free import probes, compileall, `pip check`, the blocking static boundary, all pre-commit hooks, and Docker Compose rendering before registry login/build/push becomes reachable.
+- Replaced unconditional `latest`/ref-name tags with Docker metadata that always publishes a long commit-addressable `sha-<40-character-git-sha>` tag, preserves explicit release tags, and emits `latest` only for a verified default-branch event.
+- Replaced the incomplete single-module distutils wheel with a setuptools package containing the CLI facade, all `module` and `utils` Python packages, and the Flask templates/static assets required at runtime.
+- Added an exact pinned wheel build dependency and documented the release gate, image traceability, promotion rule, and wheel contents.
+
+### Testing
+
+- RED: `.venv/bin/python -m pytest -q tests/test_release_contract.py` produced `3 failed`: the workflow had no `verify` Job, no Docker metadata step, and the built wheel omitted every runtime package and Web asset.
+- Focused release, Docker, and development-tool contract selection after implementation: `5 passed`; final release/Docker/runtime-contract selection: `11 passed`.
+- The wheel regression builds a real wheel in an isolated temporary source copy and verifies `media_downloader.py`, representative `module`/`utils` modules, both Web templates, and all current static asset directories are present.
+- Complete suite: `722 passed, 1 skipped`.
+- `.venv/bin/pre-commit run --all-files`: passed trailing-whitespace, end-of-file, Black, isort, mypy, and Pylint hooks after adding the release workflow and packaging test to the enforced file boundary.
+- `TMD_TASK_DB_PATH=<temporary>/import.sqlite3 .venv/bin/python check_imports.py`: both supported import probes passed and no task database was created.
+- `.venv/bin/python -m compileall -q module tests`, `.venv/bin/python -m pip check`, `make style_check PYTHON=.venv/bin/python`, `TMD_UID=10001 TMD_GID=10001 docker compose -f docker-compose.yaml config`, and `git diff --check`: passed.
+- No registry push or multi-platform remote build was performed in this phase. The final pre-deployment gate still requires the committed workflow to complete successfully for the reviewed commit before production deployment.
+
+### Notes
+
+Changed files:
+- `.github/workflows/docker-publish.yml`: Added the in-graph release verification Job, publish dependency, long-SHA/release/default-branch metadata tags, and a single verified multi-platform runtime-image push.
+- `setup.py`, `dev-requirements.txt`: Packaged the runtime Python namespaces and Web assets with setuptools and pinned the wheel builder.
+- `tests/test_release_contract.py`, `tests/test_runtime_contract.py`: Added executable wheel-content, workflow reachability/tagging, and development-tool contract regressions.
+- `.pre-commit-config.yaml`: Added the release workflow and packaging test to formatting and repository hygiene coverage.
+- `README.md`, `README_CN.md`, `docs/web-control-console.md`: Documented the release verification graph, immutable image identity, guarded `latest`, and complete wheel contents.
+- `progress.md`: Recorded Phase 3 red-green, package build, full-suite, static, import, Compose, and rollback evidence.
+
+Rollback:
+- Revert the Phase 3 commit. This does not change runtime databases, configuration, authentication, or deployment paths. Rolling back restores the prior incomplete wheel and ungated image publication, so do not publish or deploy from the rolled-back workflow without an independent verified artifact gate.
