@@ -35,6 +35,13 @@ def test_docker_publication_depends_on_complete_verification():
         assert required_command in verification_commands
 
 
+def test_docker_publication_supports_controlled_manual_dispatch():
+    triggers = _workflow()["on"]
+
+    assert "push" in triggers
+    assert "workflow_dispatch" in triggers
+
+
 def test_docker_publication_uses_commit_addressable_and_guarded_latest_tags():
     publish = _workflow()["jobs"]["build-and-push"]
     metadata_step = next(
