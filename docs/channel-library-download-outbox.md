@@ -73,9 +73,16 @@ with an unknown media size is not guessed or started: it is marked `failed` with
 
 Cloud upload failures retain their local file and stay visible through
 `GET /api/tasks/<task_id>/upload-retries`. `POST /api/tasks/<task_id>/retry` schedules an
-upload-only retry for a channel-library task. It never recreates a download task or fetches
-Telegram media. A missing retained file remains `upload_source_missing` for an explicit
-user cleanup or a later manual download, rather than being silently downloaded again.
+upload-only retry when retained upload failures exist. A missing retained file remains
+`upload_source_missing` for an explicit user cleanup or a later manual download, rather
+than being silently downloaded again.
+
+When there is no retained upload failure, the same retry endpoint requeues only package
+attempts whose immutable batch result is `completed_with_errors`, `failed`, or
+`not_found`. Completed package attempts stay unchanged. A partially failed package is
+refetched from its original immutable message snapshot; files already present with the
+expected size follow the verified local-file skip path instead of being downloaded or
+uploaded twice.
 `POST /api/tasks/<task_id>/upload-retries/cleanup` explicitly deletes retained sources
 under the configured `save_path`, records `upload_source_removed`, and releases the
 in-process reservation for the affected package.

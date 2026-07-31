@@ -833,6 +833,88 @@ class WebTestCase(unittest.TestCase):
             self.assertEqual(response.status_code, 409)
             self.assertIn("metadata", response.get_json()["error"])
 
+    def test_retry_channel_task_schedules_failed_downloads(self):
+        from module.task_state import FileStatus, TaskStatus, get_task_store
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            scheduled = []
+            future = concurrent.futures.Future()
+            future.set_result(True)
+            app.channel_library_service = SimpleNamespace(
+                store=SimpleNamespace(
+                    get_download_batch_by_task_id=lambda _task_id: {"id": 1}
+                ),
+                schedule_download_retry_threadsafe=lambda task_id: (
+                    scheduled.append(task_id) or future
+                ),
+                schedule_upload_retry_threadsafe=lambda _task_id: (
+                    self.fail("download failure must not use upload-only retry")
+                ),
+            )
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            store = get_task_store()
+            store.create_task(
+                "retry-download",
+                task_type="channel_library",
+                status=TaskStatus.COMPLETED_WITH_ERRORS,
+            )
+            store.upsert_file(
+                "retry-download",
+                101,
+                status=FileStatus.FAILED,
+                error="download_failed",
+            )
+            client = self._csrf_client()
+
+            response = client.post("/api/tasks/retry-download/retry")
+
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.get_json()["mode"], "download_failed")
+            self.assertEqual(scheduled, ["retry-download"])
+
+    def test_retry_channel_task_preserves_upload_only_priority(self):
+        from module.task_state import FileStatus, TaskStatus, get_task_store
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            scheduled = []
+            future = concurrent.futures.Future()
+            future.set_result(True)
+            app.channel_library_service = SimpleNamespace(
+                store=SimpleNamespace(
+                    get_download_batch_by_task_id=lambda _task_id: {"id": 1}
+                ),
+                schedule_upload_retry_threadsafe=lambda task_id: (
+                    scheduled.append(task_id) or future
+                ),
+                schedule_download_retry_threadsafe=lambda _task_id: (
+                    self.fail("retained upload failure must keep upload-only retry")
+                ),
+            )
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            store = get_task_store()
+            store.create_task(
+                "retry-upload",
+                task_type="channel_library",
+                status=TaskStatus.COMPLETED_WITH_ERRORS,
+            )
+            store.upsert_file(
+                "retry-upload",
+                101,
+                status=FileStatus.UPLOAD_FAILED,
+                error="upload_failed",
+            )
+            client = self._csrf_client()
+
+            response = client.post("/api/tasks/retry-upload/retry")
+
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.get_json()["mode"], "upload_only")
+            self.assertEqual(scheduled, ["retry-upload"])
+
     def test_task_submission_rejects_invalid_link(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)

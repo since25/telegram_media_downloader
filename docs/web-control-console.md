@@ -55,6 +55,10 @@ terminal task; retained upload failures use the dedicated retry transition, whil
 startup/final-state repair uses the dedicated reconciliation transition backed by the
 durable channel batch. Every public task-store read or write result is an independent
 snapshot, so caller mutation cannot change the store or its SQLite state.
+Queued, downloading, and uploading are active operational phases rather than monotonic
+milestones: concurrent files and serial packages may legitimately move a live task among
+those phases, while terminal states remain immutable without an explicit retry or
+reconciliation operation.
 
 On restart, non-channel tasks that have no durable command to resume are closed as failed
 with `restart_interrupted`; queued/downloading/uploading file rows are closed at the same
@@ -479,7 +483,7 @@ To keep small 1 vCPU / 1 GiB servers responsive:
 - `POST /api/tasks/<task_id>/clear`: clear one terminal task from Web history.
 - `POST /api/tasks/clear-completed`: clear completed task history.
 - `GET /api/tasks/<task_id>/upload-retries`: returns only files whose retained local copy has an `upload_failed` state.
-- `POST /api/tasks/<task_id>/retry`: channel-library tasks retry only retained cloud uploads. It returns `202` after scheduling; missing local sources remain in the retry list as `upload_source_missing` and are never re-downloaded implicitly. Other task types continue to return `409` because their original command metadata is not persisted.
+- `POST /api/tasks/<task_id>/retry`: channel-library tasks retry retained cloud uploads first. When no retained upload failure exists, the same endpoint requeues only failed/not-found package attempts from the immutable batch snapshot; already completed packages remain terminal, and complete local files inside a partially failed package are skipped rather than downloaded again. It returns `202` after scheduling. Missing retained upload sources remain `upload_source_missing`; other task types continue to return `409` because their original command metadata is not persisted.
 - `POST /api/tasks/<task_id>/upload-retries/cleanup`: explicitly deletes retained channel-library upload-failure source files under `save_path`; each row remains visible as `upload_source_removed` and is never re-downloaded automatically.
 - `GET /api/system`: CPU / memory / disk(save_path 卷)/ throughput 快照。
 

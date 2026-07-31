@@ -752,8 +752,13 @@
       if (task.needs_confirmation || s === 'waiting_confirmation')
         return `<button class="btn btn-primary" data-act="confirm" data-id="${id}">开始</button>`
              + `<button class="btn btn-secondary" data-act="cancel" data-id="${id}">取消</button>`;
-      if (s === 'completed' || s === 'completed_with_errors' || s === 'cancelled' || s === 'failed')
-        return `<button class="btn btn-ghost" data-act="clear" data-id="${id}">清除</button>`;
+      if (s === 'completed' || s === 'completed_with_errors' || s === 'cancelled' || s === 'failed') {
+        const retry = task.task_type === 'channel_library'
+          && (s === 'completed_with_errors' || s === 'failed')
+          ? `<button class="btn btn-secondary" data-act="retry" data-id="${id}">重试失败项</button>`
+          : '';
+        return retry + `<button class="btn btn-ghost" data-act="clear" data-id="${id}">清除</button>`;
+      }
       // scanning / downloading / uploading / queued / created — all cancellable
       return `<button class="btn btn-secondary" data-act="cancel" data-id="${id}">取消</button>`;
     }
@@ -2329,7 +2334,10 @@
     });
     async function runTaskAction(button){
       const id = button.dataset.id, act = button.dataset.act;
-      const url = act==='confirm'?`/api/tasks/${id}/confirm`:act==='cancel'?`/api/tasks/${id}/cancel`:`/api/tasks/${id}/clear`;
+      const url = act==='confirm'?`/api/tasks/${id}/confirm`
+        :act==='cancel'?`/api/tasks/${id}/cancel`
+        :act==='retry'?`/api/tasks/${id}/retry`
+        :`/api/tasks/${id}/clear`;
       const label = button.textContent;
       button.disabled = true;
       button.textContent = '处理中…';

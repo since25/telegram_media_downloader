@@ -220,6 +220,45 @@ class TaskStateStoreTestCase(unittest.TestCase):
         self.assertEqual(file_snapshot.status, FileStatus.DOWNLOADING)
         self.assertEqual(task.files["101"].downloaded_size, 40)
 
+    def test_uploading_task_accepts_later_file_download_phase(self):
+        from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+        store = TaskStateStore()
+        store.create_task("mixed-phases", status=TaskStatus.QUEUED)
+        store.transition_file(
+            "mixed-phases",
+            101,
+            task_updates={"status": TaskStatus.DOWNLOADING},
+            file_updates={"status": FileStatus.DOWNLOADING},
+        )
+        store.transition_file(
+            "mixed-phases",
+            101,
+            task_updates={"status": TaskStatus.UPLOADING},
+            file_updates={"status": FileStatus.UPLOADING},
+        )
+
+        task, second_file = store.transition_file(
+            "mixed-phases",
+            102,
+            task_updates={"status": TaskStatus.DOWNLOADING},
+            file_updates={"status": FileStatus.DOWNLOADING},
+        )
+
+        self.assertEqual(task.status, TaskStatus.DOWNLOADING)
+        self.assertEqual(task.files["101"].status, FileStatus.UPLOADING)
+        self.assertEqual(second_file.status, FileStatus.DOWNLOADING)
+
+    def test_uploading_task_can_queue_the_next_serial_package(self):
+        from module.task_state import TaskStateStore, TaskStatus
+
+        store = TaskStateStore()
+        store.create_task("next-package", status=TaskStatus.UPLOADING)
+
+        task = store.update_task("next-package", status=TaskStatus.QUEUED)
+
+        self.assertEqual(task.status, TaskStatus.QUEUED)
+
     def test_transition_file_rolls_back_memory_and_sqlite_on_file_write_failure(self):
         from module.task_state import TaskStateStore, TaskStatus
 

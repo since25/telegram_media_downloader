@@ -3429,3 +3429,36 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, preserve any state created after this deployment, switch the repository to `efa7391958503afa439b6319b063f35ccf18c77b`, restore the prior virtual-environment packages from `backups/deploy-20260730-220645/installed_packages_before.txt`, and restart the service. The same backup directory contains verified copies of configuration, authentication, sessions, and all three databases if a state rollback is also required.
+
+## 2026-07-31 - Task: Repair concurrent task phases and add failed-download retry
+
+### What was done
+
+- Corrected the task transition contract so a live multi-file or multi-package task may move from uploading back to queued/downloading while other files or the next package still require download work; terminal tasks remain protected from ordinary reactivation.
+- Added a durable channel-batch download retry path that requeues only package attempts ending in `completed_with_errors`, `failed`, or `not_found`, retains completed package attempts, refuses a retry when another active batch owns one of the same packages, and reuses the original immutable batch snapshot.
+- Extended `POST /api/tasks/<task_id>/retry` to preserve upload-only retry priority for retained upload failures and otherwise schedule failed package downloads.
+- Added a “重试失败项” action to failed or partially failed channel-library tasks in both the task list and detail header. Successful local files inside a partially failed package follow the existing verified-size skip path instead of being downloaded or uploaded twice.
+- Updated the Web console and channel download outbox documentation with the active-phase and retry contracts.
+
+### Testing
+
+- RED: the five initial regressions failed with the production `uploading -> downloading` and `uploading -> queued` transition errors, missing download-retry service method, upload-only Web routing, and missing UI action.
+- Focused red-green selection: `7 passed`, covering mixed download/upload phases, next-package queuing, failed-package-only retry, competing active-batch rejection, upload-only priority, failed-download routing, and the retry button contract.
+- Adjacent task, lifecycle, channel-library, Web, UI, cancellation, and clear-history regression selection: `291 passed`.
+- Complete suite: `740 passed, 1 skipped`.
+- `.venv/bin/pre-commit run --all-files`: passed trailing-whitespace, end-of-file, Black, isort, mypy, and Pylint hooks.
+- `make style_check PYTHON=.venv/bin/python`: mypy reported no issues across 18 modules and Pylint error-only passed.
+- `.venv/bin/python -m compileall -q media_downloader.py module tests`, `.venv/bin/python -m pip check`, a temporary-path `check_imports.py` probe with confirmation that no task database was created, and `git diff --check`: passed.
+
+### Notes
+
+Changed files:
+- `module/task_state.py`: Allowed legitimate active-phase cycling while retaining terminal-state protection.
+- `module/channel_library_store.py`, `module/channel_library_service.py`: Added persisted failed-package retry, ownership conflict prevention, task reactivation, and owner-loop scheduling.
+- `module/web.py`, `module/templates/index.html`: Routed upload/download retries correctly and exposed the failed-task retry action.
+- `tests/module/test_task_state.py`, `tests/test_channel_library_download.py`, `tests/module/test_web.py`, `tests/module/test_task_page_ui.py`: Added state, persistence, service, API, and UI regressions.
+- `docs/web-control-console.md`, `docs/channel-library-download-outbox.md`: Documented active-phase interleaving and failed-download retry behavior.
+- `progress.md`: Recorded the production regression, red-green evidence, full gates, and rollback boundary.
+
+Rollback:
+- Revert this task's commit and redeploy the prior release. No database schema or configuration format changes are introduced. Existing retried batch rows use only statuses already understood by the prior release; stop the service before rollback so no retry is active.

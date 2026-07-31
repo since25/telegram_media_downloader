@@ -269,6 +269,75 @@ def test_upload_retry_reuses_retained_file_without_redownloading(tmp_path):
         loop.close()
 
 
+def test_download_retry_requeues_only_failed_packages(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "download-retry")
+        service.store.finish_download_batch_package(
+            batch["id"], 10, "completed", last_error=None
+        )
+        service.store.finish_download_batch_package(
+            batch["id"], 20, "completed_with_errors", last_error="download_failed"
+        )
+        service.task_store.upsert_file(
+            batch["task_id"], 201, status=FileStatus.FAILED, error="download_failed"
+        )
+        service.task_store.update_task(
+            batch["task_id"], status=TaskStatus.COMPLETED_WITH_ERRORS
+        )
+        scheduled = []
+        service._schedule_download_batch_owned = lambda batch_id: (
+            scheduled.append(batch_id) or True
+        )
+
+        retried = loop.run_until_complete(
+            service._schedule_download_retry_command(batch["task_id"])
+        )
+
+        assert retried is True
+        stored = service.store.get_download_batch(batch["id"])
+        assert stored["status"] == "queued"
+        assert [package["status"] for package in stored["packages"]] == [
+            "completed",
+            "queued",
+        ]
+        assert service.task_store.get_task(batch["task_id"]).status == TaskStatus.QUEUED
+        assert scheduled == [batch["id"]]
+    finally:
+        loop.close()
+
+
+def test_download_retry_rejects_package_owned_by_an_active_batch(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch = service.create_download_batch(library["id"], "download-retry-old")
+        service.store.finish_download_batch_package(
+            batch["id"], 10, "completed", last_error=None
+        )
+        service.store.finish_download_batch_package(
+            batch["id"], 20, "failed", last_error="download_failed"
+        )
+        service.task_store.update_task(
+            batch["task_id"], status=TaskStatus.COMPLETED_WITH_ERRORS
+        )
+        competing, _created = service.create_download_batch_result(
+            library["id"],
+            "download-retry-active",
+            redownload=True,
+            package_ids=[20],
+        )
+
+        retried = loop.run_until_complete(
+            service._schedule_download_retry_command(batch["task_id"])
+        )
+
+        assert retried is False
+        assert service.store.get_download_batch(batch["id"])["status"] == "completed_with_errors"
+        assert service.store.get_download_batch(competing["id"])["status"] == "queued"
+    finally:
+        loop.close()
+
+
 def test_upload_retry_cleanup_removes_only_retained_failure_source(tmp_path):
     service, library, loop = make_download_service(tmp_path)
     try:

@@ -473,6 +473,35 @@ class ChannelLibraryService:
         retry_task.add_done_callback(discard)
         return True
 
+    def schedule_download_retry_threadsafe(
+        self, task_id: str
+    ) -> concurrent.futures.Future[bool]:
+        """Schedule failed package downloads from one persisted channel batch."""
+
+        return self._submit_owner_command(
+            lambda: self._schedule_download_retry_command(str(task_id))
+        )
+
+    async def _schedule_download_retry_command(self, task_id: str) -> bool:
+        batch = self.store.get_download_batch_header_by_task_id(task_id)
+        if batch is None:
+            return False
+        batch_id = int(batch["id"])
+        existing = self._download_batch_tasks.get(batch_id)
+        if existing is not None and not existing.done():
+            return False
+        task = self.task_store.get_task(task_id)
+        if task is None or task.status not in {
+            TaskStatus.COMPLETED_WITH_ERRORS,
+            TaskStatus.FAILED,
+        }:
+            return False
+        retried = self.store.retry_download_batch(batch_id)
+        if retried is None:
+            return False
+        self.task_store.retry_task(task_id)
+        return self._schedule_download_batch_owned(batch_id)
+
     def schedule_upload_cleanup_threadsafe(
         self, task_id: str
     ) -> concurrent.futures.Future[bool]:

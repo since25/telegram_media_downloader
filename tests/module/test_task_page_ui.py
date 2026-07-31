@@ -40,6 +40,14 @@ def test_task_panel_exposes_filter_selection_and_keyboard_row_selection():
     assert "['Enter',' '].includes(e.key)" in html
 
 
+def test_failed_channel_tasks_expose_retry_action():
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+
+    assert 'data-act="retry"' in html
+    assert "重试失败项" in html
+    assert "`/api/tasks/${id}/retry`" in html
+
+
 def test_task_detail_has_unified_header_and_guards_async_identity():
     html = INDEX_TEMPLATE.read_text(encoding="utf-8")
 

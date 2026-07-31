@@ -90,6 +90,8 @@ ALLOWED_TASK_TRANSITIONS = {
         TaskStatus.FAILED,
     },
     TaskStatus.UPLOADING: {
+        TaskStatus.QUEUED,
+        TaskStatus.DOWNLOADING,
         TaskStatus.UPLOADING,
         TaskStatus.COMPLETED,
         TaskStatus.COMPLETED_WITH_ERRORS,

@@ -62,6 +62,10 @@ DOWNLOAD_ATTEMPT_TERMINAL_STATUSES = frozenset(
         "not_found",
     }
 )
+RETRYABLE_DOWNLOAD_ATTEMPT_STATUSES = frozenset(
+    {"completed_with_errors", "failed", "not_found"}
+)
+RETRYABLE_DOWNLOAD_BATCH_STATUSES = frozenset({"completed_with_errors", "failed"})
 DOWNLOAD_ERROR_CODES = frozenset(
     {
         "telegram_refetch_failed",
@@ -3432,6 +3436,89 @@ class ChannelLibraryStore:
                 UPDATE channel_download_batches
                 SET status = 'queued', updated_at = ?
                 WHERE id = ? AND status = 'downloading'
+                """,
+                (now, batch_id),
+            )
+        return self.get_download_batch(batch_id)
+
+    def retry_download_batch(
+        self, batch_id: int, now: Optional[float] = None
+    ) -> Optional[dict]:
+        """Requeue only failed package attempts from one terminal batch."""
+
+        now = time.time() if now is None else now
+        retryable_statuses = tuple(sorted(RETRYABLE_DOWNLOAD_ATTEMPT_STATUSES))
+        placeholders = ", ".join("?" for _ in retryable_statuses)
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            batch = connection.execute(
+                "SELECT * FROM channel_download_batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+            if batch is None:
+                raise KeyError(f"Download batch {batch_id} does not exist")
+            if batch["status"] not in RETRYABLE_DOWNLOAD_BATCH_STATUSES:
+                return None
+            package_rows = connection.execute(
+                f"""
+                SELECT package_id FROM channel_download_batch_packages
+                WHERE batch_id = ? AND status IN ({placeholders})
+                ORDER BY ordinal, package_id
+                """,
+                (batch_id, *retryable_statuses),
+            ).fetchall()
+            package_ids = tuple(int(row["package_id"]) for row in package_rows)
+            if not package_ids:
+                return None
+            package_placeholders = ", ".join("?" for _ in package_ids)
+            competing_attempt = connection.execute(
+                f"""
+                SELECT 1
+                FROM channel_download_batch_packages AS attempt
+                JOIN channel_download_batches AS competing
+                  ON competing.id = attempt.batch_id
+                 AND competing.library_id = attempt.library_id
+                WHERE attempt.library_id = ?
+                  AND attempt.package_id IN ({package_placeholders})
+                  AND attempt.batch_id != ?
+                  AND attempt.status IN ('queued', 'downloading')
+                  AND competing.status IN ('queued', 'downloading')
+                LIMIT 1
+                """,
+                (int(batch["library_id"]), *package_ids, batch_id),
+            ).fetchone()
+            if competing_attempt is not None:
+                return None
+            connection.execute(
+                f"""
+                UPDATE channel_download_batch_packages
+                SET status = 'queued', last_error = NULL,
+                    updated_at = ?, completed_at = NULL
+                WHERE batch_id = ? AND package_id IN ({package_placeholders})
+                """,
+                (now, batch_id, *package_ids),
+            )
+            connection.execute(
+                f"""
+                UPDATE channel_packages
+                SET current_download_status = 'queued',
+                    download_attempt_count = download_attempt_count + 1,
+                    updated_at = ?
+                WHERE library_id = ? AND last_download_task_id = ?
+                  AND id IN ({package_placeholders})
+                """,
+                (
+                    now,
+                    int(batch["library_id"]),
+                    batch["task_id"],
+                    *package_ids,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE channel_download_batches
+                SET status = 'queued', last_error = NULL,
+                    updated_at = ?, completed_at = NULL
+                WHERE id = ?
                 """,
                 (now, batch_id),
             )

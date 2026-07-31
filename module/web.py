@@ -2796,16 +2796,23 @@ def cleanup_upload_retry_files(task_id: str):
 @login_required
 @_require_csrf
 def retry_task(task_id: str):
-    """Retry retained upload failures when a channel batch owns the task."""
+    """Retry retained uploads or failed downloads for one channel batch."""
 
     task = get_task_store().get_task(task_id)
     if not task:
         return jsonify({"ok": False, "error": "task not found"}), 404
     service = getattr(_active_app(), "channel_library_service", None)
     if service is not None and service.store.get_download_batch_by_task_id(task_id):
+        upload_only = any(
+            item.status == FileStatus.UPLOAD_FAILED for item in task.files.values()
+        )
         try:
             scheduled = wait_for_web_command(
-                service.schedule_upload_retry_threadsafe(task_id),
+                (
+                    service.schedule_upload_retry_threadsafe(task_id)
+                    if upload_only
+                    else service.schedule_download_retry_threadsafe(task_id)
+                ),
                 timeout=1,
             )
         except WebCommandTimeout:
@@ -2813,12 +2820,21 @@ def retry_task(task_id: str):
         except RuntimeError:
             return jsonify({"ok": False, "error": "service unavailable"}), 503
         if scheduled:
-            return jsonify({"ok": True, "task_id": task_id, "mode": "upload_only"}), 202
+            return (
+                jsonify(
+                    {
+                        "ok": True,
+                        "task_id": task_id,
+                        "mode": "upload_only" if upload_only else "download_failed",
+                    }
+                ),
+                202,
+            )
         return (
             jsonify(
                 {
                     "ok": False,
-                    "error": "task has no retained upload failures to retry",
+                    "error": "task has no retryable failures",
                 }
             ),
             409,
