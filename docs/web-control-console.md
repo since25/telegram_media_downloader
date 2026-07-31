@@ -401,9 +401,18 @@ CI, `Makefile`, pre-commit hooks, and development dependencies use that same con
 `make static_type_check` and the blocking Pylint hook cover the task-state, lifecycle,
 progress, admission, Telegram-activity, Rclone, and Web command boundaries stabilized by
 the architecture hardening work, including configuration persistence, download runtime
-and transfer, transfer progress, Web authentication, and owned Web serving. Older dynamic
-application areas remain outside that blocking type boundary until they can be migrated
-with dedicated tests.
+and transfer, transfer progress, Web authentication, owned Web serving, explicit
+application bootstrap, and the injected download-operation contract. The Pylint
+correctness gate additionally covers the compatibility facade and the repaired Web, Bot,
+channel-library, and CLI orchestration modules. Older dynamic application areas remain
+outside the blocking mypy boundary until they can be migrated with dedicated tests.
+
+Importing `media_downloader` is a read-only compatibility action with respect to process
+resources: it does not construct or install the production event loop, executor, download
+queue, databases, Web credential file, or runtime services. `run_cli()` performs explicit
+bootstrap, and the runtime passes one `DownloadOperations` object into Web, Bot, and
+channel-library startup. Legacy direct imports are served by a distinct facade; it no
+longer aliases or replaces the implementation module in the interpreter registry.
 
 The Docker publication workflow owns a `verify` job in the same dependency graph as the
 multi-platform push. It runs the complete pytest suite, side-effect-free import probes,

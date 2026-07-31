@@ -6,6 +6,8 @@ import signal
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from module.download_operations import DownloadOperations
+
 
 @dataclass(frozen=True)
 class DownloadRuntime:
@@ -13,6 +15,7 @@ class DownloadRuntime:
 
     logger: Any
     translate: Callable[[str], str]
+    operations: DownloadOperations
     initialize_task_store: Callable[..., Any]
     init_web: Callable[..., Any]
     set_max_concurrent_transmissions: Callable[..., Any]
@@ -107,7 +110,7 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
         application.pre_run()
         runtime.initialize_task_store()
         if application.enable_web:
-            web_server = runtime.init_web(application, client)
+            web_server = runtime.init_web(application, client, runtime.operations)
         else:
             runtime.logger.info("Web UI disabled (enable_web=false)")
 
@@ -115,7 +118,11 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
             client, application.max_concurrent_transmissions
         )
         _run_until_complete(application.loop, runtime.start_server(client))
-        runtime.start_channel_library_service(application, client)
+        runtime.start_channel_library_service(
+            application,
+            client,
+            runtime.operations,
+        )
 
         tasks.append(application.loop.create_task(runtime.download_all_chat(client)))
         tasks.append(application.loop.create_task(runtime.periodic_progress_refresh()))
@@ -137,6 +144,7 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
                     client,
                     runtime.add_download_task,
                     runtime.download_chat_task,
+                    runtime.operations,
                 ),
             )
         if runtime_health is not None:

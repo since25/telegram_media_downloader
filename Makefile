@@ -1,11 +1,14 @@
 PYTHON ?= python3.11
 TEST_ARTIFACTS ?= /tmp/coverage
-TYPE_CHECK_PATHS := module/cloud_drive.py module/config_persistence.py \
+TYPE_CHECK_PATHS := module/application_bootstrap.py module/cloud_drive.py \
+	module/config_persistence.py module/download_operations.py \
 	module/download_admission.py module/download_lifecycle.py \
 	module/download_queue.py module/download_runtime.py module/download_stat.py \
 	module/download_transfer.py module/progress_persistence.py module/task_state.py \
 	module/runtime_health.py module/telegram_activity.py module/transfer_progress.py \
 	module/web_auth.py module/web_commands.py module/web_server.py
+PYLINT_PATHS := $(TYPE_CHECK_PATHS) media_downloader.py module/bot.py \
+	module/channel_library_service.py module/download_entry.py module/web.py
 
 .PHONY: install dev_install static_type_check pylint style_check test
 
@@ -20,7 +23,7 @@ static_type_check:
 	$(PYTHON) -m mypy $(TYPE_CHECK_PATHS) --ignore-missing-imports --follow-imports=silent
 
 pylint:
-	$(PYTHON) -m pylint $(TYPE_CHECK_PATHS) -rn -sn --errors-only --rcfile=pylintrc
+	$(PYTHON) -m pylint $(PYLINT_PATHS) -rn -sn --errors-only --rcfile=pylintrc
 
 style_check: static_type_check pylint
 

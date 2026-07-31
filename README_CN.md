@@ -307,6 +307,11 @@ Compose 渲染位于同一个工作流依赖图中；只有这些检查全部通
 `latest` 只由验证通过的默认分支构建生成。Python wheel 包含
 `media_downloader.py`、运行时 `module`/`utils` 包以及 Web 模板和静态资源。
 
+进程启动现在是显式边界。仅导入 `media_downloader` 兼容 facade 不会创建或安装
+生产 event loop、executor、下载队列、数据库、Web 认证文件或运行中服务。CLI
+启动时才创建 Application 与队列，并把同一个 `DownloadOperations` 接口注入
+Web、Bot 和频道库适配器。facade 保持为独立模块，不再替换解释器模块注册表。
+
 容器中的状态路径通过以下环境变量明确指定，必要时可以覆盖：
 
 ```yaml

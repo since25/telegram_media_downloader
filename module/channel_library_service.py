@@ -30,6 +30,11 @@ from module.comment_workflow import (
     build_message_package_workflow_request,
     filter_media_comments,
 )
+from module.download_models import PackageCallbackError
+from module.download_operations import (
+    DownloadOperations,
+    get_compatibility_operations,
+)
 from module.telegram_activity import get_telegram_activity_gate
 from module.task_state import (
     FileStatus,
@@ -97,6 +102,7 @@ class ChannelLibraryService:
         random_uniform: Callable[[float, float], float] = random.uniform,
         task_store: Optional[Any] = None,
         disk_admission: Optional[DiskSpaceAdmission] = None,
+        operations: Optional[DownloadOperations] = None,
     ) -> None:
         self.app = app
         self.client = client
@@ -108,6 +114,7 @@ class ChannelLibraryService:
         self.disk_admission = disk_admission or DiskSpaceAdmission(
             getattr(app, "save_path", "."), config.min_free_disk_bytes
         )
+        self.operations = operations
         self.indexer = ChannelPackageIndexer()
         self.gate = get_telegram_activity_gate()
         self.owner_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -127,6 +134,11 @@ class ChannelLibraryService:
         self._command_lock = threading.Lock()
         self._accepting_commands = False
         self._command_futures: set[concurrent.futures.Future[Any]] = set()
+
+    def _download_operations(self) -> DownloadOperations:
+        """Return explicitly injected operations or the legacy facade adapter."""
+
+        return self.operations or get_compatibility_operations()
 
     async def start(self) -> None:
         """Initialize recovery and start exactly one scheduler task."""
@@ -860,7 +872,6 @@ class ChannelLibraryService:
         memory at once.
         """
 
-        from media_downloader import PackageCallbackError, download_prescan_packages
         from module.app import TaskNode
         from module.comment_workflow import (
             MessagePackagePlan,
@@ -1075,7 +1086,7 @@ class ChannelLibraryService:
             return []
 
         try:
-            results = await download_prescan_packages(
+            results = await self._download_operations().download_prescan_packages(
                 descriptors,
                 channel=batch["channel_title"],
                 parent_node=node,
@@ -1753,8 +1764,6 @@ class ChannelLibraryService:
     ) -> None:
         """Publish comment packages only when Telegram's visible count changed."""
 
-        from media_downloader import scan_post_comments
-
         library = self.store.get_library(int(job["library_id"]))
         if library is None:
             raise KeyError(f"Channel library {job['library_id']} does not exist")
@@ -1780,7 +1789,7 @@ class ChannelLibraryService:
                 async with self.gate.scan_permit():
                     self._mark_request_started()
                     try:
-                        result = await scan_post_comments(
+                        result = await self._download_operations().scan_post_comments(
                             self.client,
                             int(library["chat_id"]),
                             int(source_post["post_id"]),

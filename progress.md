@@ -3342,3 +3342,34 @@ Changed files:
 
 Rollback:
 - Revert the Phase 4 commit. No SQLite schema or row migration is introduced. Before rollback, stop the service and ensure no paired YAML journal remains; if one exists, run the Phase 4 recovery path or restore both YAML files from the same backup generation. Older code cannot interpret or finish the new journal safely.
+
+## 2026-07-31 - Task: Phase 5 explicit application bootstrap and dependency boundaries
+
+### What was done
+
+- Replaced import-time construction of the production `Application`, event loop, executor, and download queue with an explicit process bootstrap plus lazy compatibility proxies.
+- Kept `media_downloader.py` as a distinct compatibility facade without replacing the interpreter module registry, while preserving legacy attribute access and patch restoration behavior.
+- Added an injected `DownloadOperations` contract and passed it through runtime startup to Web, Bot, and channel-library adapters; removed every reverse `from media_downloader import ...` dependency from those services.
+- Moved process logging setup to explicit bootstrap and expanded the blocking static boundary with the bootstrap/operations modules plus Pylint correctness checks for the repaired facade and orchestration modules.
+- Documented the import-safety, bootstrap ownership, operation-injection, and static-boundary contracts in English, Chinese, and the operations guide.
+
+### Testing
+
+- RED Phase 5 contract selection: `4 failed`, proving import-time event-loop/executor/queue creation, facade/implementation module aliasing, reverse service imports, missing factories, and missing static-boundary coverage.
+- Focused runtime, Bot, Web, channel-library, downloader, and guided-workflow regressions: `403 passed`; an intermediate compatibility run exposed six proxy cleanup failures, and the focused six-test rerun passed after restoring symmetric delegated attribute deletion.
+- Complete suite: `732 passed, 1 skipped`.
+- `make style_check PYTHON=.venv/bin/python`: passed; mypy reported no issues across 18 modules and Pylint error-only passed across the expanded facade/Web/Bot/channel/CLI boundary.
+- `.venv/bin/pre-commit run black --files media_downloader.py module/application_bootstrap.py module/download_operations.py module/download_runtime.py tests/test_runtime_contract.py`: passed before and after isort; `SKIP=black .venv/bin/pre-commit run --all-files` passed repository hygiene, isort, mypy, and Pylint without broad legacy formatting changes.
+- `.venv/bin/python -m compileall -q media_downloader.py module tests`, `.venv/bin/python -m pip check`, a temporary-path `check_imports.py` probe with confirmation that no task database was created, `TMD_UID=10001 TMD_GID=10001 docker compose -f docker-compose.yaml config`, and `git diff --check`: passed.
+
+### Notes
+
+Changed files:
+- `module/application_bootstrap.py`, `module/download_entry.py`, `media_downloader.py`: Added explicit resource construction, lazy compatibility access, deferred logging, independent CLI facade delegation, and non-zero configuration-failure cleanup.
+- `module/download_operations.py`, `module/download_runtime.py`, `module/web.py`, `module/bot.py`, `module/channel_library_service.py`: Added the operation contract, propagated it through startup, and removed reverse imports from runtime adapters.
+- `Makefile`, `.pre-commit-config.yaml`, `tests/test_runtime_contract.py`, `tests/module/test_bot_manager.py`: Added import/resource/facade/dependency regressions and expanded static/formatting gates.
+- `README.md`, `README_CN.md`, `docs/web-control-console.md`: Documented explicit bootstrap, import safety, injected operations, and the enlarged correctness boundary.
+- `progress.md`: Recorded Phase 5 red-green, compatibility, full-suite, static, import, and Compose evidence.
+
+Rollback:
+- Revert the Phase 5 commit. No database schema, persisted row, configuration format, authentication format, dependency, CI workflow, or deployment path changes are introduced; rollback restores import-time runtime resource creation and the former facade/reverse-import behavior.

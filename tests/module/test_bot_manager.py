@@ -8,12 +8,16 @@ from types import SimpleNamespace
 import pytest
 
 from module.bot import BotManager, resource_bot_db_path
+from module.download_operations import DownloadOperations
 from module.download_runtime import DownloadRuntime, run_application
 from module.runtime_health import RuntimeHealth, RuntimePhase
 
 
 def run(coroutine):
     return asyncio.run(coroutine)
+
+
+NOOP_OPERATIONS = DownloadOperations(*([lambda *_args, **_kwargs: None] * 8))
 
 
 class FakeAdminRole:
@@ -293,7 +297,14 @@ def test_runtime_uses_single_bot_entry_when_only_resource_token_is_set():
         def update_config(self):
             events.append("update_config")
 
-    async def start_bot(*args):
+    async def start_bot(
+        _app,
+        _client,
+        _add_download_task,
+        _download_chat_task,
+        operations,
+    ):
+        assert operations is NOOP_OPERATIONS
         events.append("bot.start")
 
     async def stop_bot():
@@ -301,6 +312,9 @@ def test_runtime_uses_single_bot_entry_when_only_resource_token_is_set():
 
     async def noop_async(*args):
         return None
+
+    def start_channel(_app, _client, operations):
+        assert operations is NOOP_OPERATIONS
 
     runtime = DownloadRuntime(
         logger=SimpleNamespace(
@@ -310,12 +324,13 @@ def test_runtime_uses_single_bot_entry_when_only_resource_token_is_set():
             exception=lambda *args: None,
         ),
         translate=lambda value: value,
+        operations=NOOP_OPERATIONS,
         initialize_task_store=lambda: events.append("task_store.initialize"),
         init_web=lambda *args: None,
         set_max_concurrent_transmissions=lambda *args: None,
         start_server=noop_async,
         stop_server=noop_async,
-        start_channel_library_service=lambda *args: None,
+        start_channel_library_service=start_channel,
         stop_channel_library_service=lambda *args: None,
         download_all_chat=noop_async,
         periodic_progress_refresh=noop_async,
@@ -347,6 +362,7 @@ def _lifecycle_runtime(events, **overrides):
             exception=lambda *args: None,
         ),
         "translate": lambda value: value,
+        "operations": NOOP_OPERATIONS,
         "initialize_task_store": lambda: events.append("task_store.initialize"),
         "init_web": lambda *args: None,
         "set_max_concurrent_transmissions": lambda *args: None,
@@ -464,10 +480,11 @@ def test_web_server_stops_before_runtime_resources_close():
         def stop(self, timeout):
             events.append(("web.stop", timeout))
 
-    runtime = _lifecycle_runtime(
-        events,
-        init_web=lambda *_args: RecordingWebServer(),
-    )
+    def init_web(_app, _client, operations):
+        assert operations is NOOP_OPERATIONS
+        return RecordingWebServer()
+
+    runtime = _lifecycle_runtime(events, init_web=init_web)
 
     run_application(app, object(), runtime)
 

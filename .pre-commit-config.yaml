@@ -8,9 +8,9 @@ repos:
     rev: v6.0.0
     hooks:
     -   id: trailing-whitespace
-        files: ^(\.dockerignore|\.github/workflows/(unittest|code-checks|docker-publish)\.yml|\.pre-commit-config\.yaml|Dockerfile|Makefile|README(_CN)?\.md|docker-compose\.yaml|setup\.py|requirements\.txt|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|task_state|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/(test_runtime_health|test_task_state)\.py)$
+        files: ^(\.dockerignore|\.github/workflows/(unittest|code-checks|docker-publish)\.yml|\.pre-commit-config\.yaml|Dockerfile|Makefile|README(_CN)?\.md|docker-compose\.yaml|setup\.py|requirements\.txt|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|media_downloader\.py|module/(application_bootstrap|bot|channel_library_service|cloud_drive|config_persistence|download_entry|download_operations|download_runtime|download_stat|download_transfer|runtime_health|task_state|transfer_progress|web|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/(test_runtime_health|test_task_state)\.py)$
     -   id: end-of-file-fixer
-        files: ^(\.dockerignore|\.github/workflows/(unittest|code-checks|docker-publish)\.yml|\.pre-commit-config\.yaml|Dockerfile|Makefile|README(_CN)?\.md|docker-compose\.yaml|setup\.py|requirements\.txt|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|task_state|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/(test_runtime_health|test_task_state)\.py)$
+        files: ^(\.dockerignore|\.github/workflows/(unittest|code-checks|docker-publish)\.yml|\.pre-commit-config\.yaml|Dockerfile|Makefile|README(_CN)?\.md|docker-compose\.yaml|setup\.py|requirements\.txt|dev-requirements\.txt|pylintrc|docs/web-control-console\.md|media_downloader\.py|module/(application_bootstrap|bot|channel_library_service|cloud_drive|config_persistence|download_entry|download_operations|download_runtime|download_stat|download_transfer|runtime_health|task_state|transfer_progress|web|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api|test_media_downloader|test_channel_library_download|test_channel_library_e2e)\.py|tests/module/(test_runtime_health|test_task_state)\.py)$
 -   repo: https://github.com/psf/black
     rev: 25.12.0
     hooks:
@@ -18,7 +18,7 @@ repos:
         name: black
         entry: black
         types: [python]
-        files: ^(module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api)\.py|tests/module/test_runtime_health\.py)$
+        files: ^(media_downloader\.py|module/(application_bootstrap|cloud_drive|config_persistence|download_operations|download_runtime|download_stat|download_transfer|runtime_health|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api)\.py|tests/module/test_runtime_health\.py)$
 -   repo: https://github.com/pycqa/isort
     rev: 6.1.0
     hooks:
@@ -27,7 +27,7 @@ repos:
         entry: isort
         types: [python]
         args: ["--profile", "black", "--filter-files"]
-        files: ^(module/(cloud_drive|config_persistence|download_runtime|download_stat|download_transfer|runtime_health|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api)\.py|tests/module/test_runtime_health\.py)$
+        files: ^(media_downloader\.py|module/(application_bootstrap|cloud_drive|config_persistence|download_operations|download_runtime|download_stat|download_transfer|runtime_health|transfer_progress|web_auth|web_commands|web_server)\.py|tests/(test_docker_contract|test_dependency_contract|test_release_contract|test_runtime_contract|test_web_system_api)\.py|tests/module/test_runtime_health\.py)$
 -   repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.20.2
     hooks:
@@ -42,7 +42,7 @@ repos:
         - types-PyYAML==6.0.12.20260724
         - types-pytz==2026.3.1.20260727
         - types-croniter==2.0.0.20240423
-        files: ^module/(cloud_drive|config_persistence|download_admission|download_lifecycle|download_queue|download_runtime|download_stat|download_transfer|progress_persistence|runtime_health|task_state|telegram_activity|transfer_progress|web_auth|web_commands|web_server)\.py$
+        files: ^module/(application_bootstrap|cloud_drive|config_persistence|download_admission|download_lifecycle|download_operations|download_queue|download_runtime|download_stat|download_transfer|progress_persistence|runtime_health|task_state|telegram_activity|transfer_progress|web_auth|web_commands|web_server)\.py$
         exclude: tests/|module/static/|module/templates
 -   repo: https://github.com/pycqa/pylint
     rev: v3.3.9
@@ -57,5 +57,5 @@ repos:
           "--errors-only", # Block only correctness errors on the typed boundary
           "--rcfile=pylintrc" # Link to your config file
         ]
-        files: ^module/(cloud_drive|config_persistence|download_admission|download_lifecycle|download_queue|download_runtime|download_stat|download_transfer|progress_persistence|runtime_health|task_state|telegram_activity|transfer_progress|web_auth|web_commands|web_server)\.py$
+        files: ^(media_downloader\.py|module/(application_bootstrap|bot|channel_library_service|cloud_drive|config_persistence|download_admission|download_entry|download_lifecycle|download_operations|download_queue|download_runtime|download_stat|download_transfer|progress_persistence|runtime_health|task_state|telegram_activity|transfer_progress|web|web_auth|web_commands|web_server)\.py)$
         exclude: tests/|module/static/|module/templates

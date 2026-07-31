@@ -44,6 +44,10 @@ from module.download_stat import (
     get_total_upload_speed,
     set_download_state,
 )
+from module.download_operations import (
+    DownloadOperations,
+    get_compatibility_operations,
+)
 from module.task_state import TaskStatus, WorkflowSnapshot, get_task_store
 from module.task_state import FileStatus, TERMINAL_TASK_STATUSES, mask_display_name
 from module.telegram_activity import get_telegram_activity_gate
@@ -76,6 +80,7 @@ _login_manager.init_app(_flask_app)
 _web_auth_state: Optional[WebAuthState] = None
 _login_attempt_limiter = LoginAttemptLimiter()
 _current_app: Optional[Application] = None
+_download_operations: Optional[DownloadOperations] = None
 _web_task_counter = 0
 _pending_web_task_previews: dict[str, dict] = {}
 _pending_web_prescans: dict[str, dict] = {}
@@ -178,6 +183,12 @@ def get_flask_app() -> Flask:
     return _flask_app
 
 
+def _get_download_operations() -> DownloadOperations:
+    """Return explicitly bound operations or the legacy facade adapter."""
+
+    return _download_operations or get_compatibility_operations()
+
+
 @_flask_app.route("/healthz")
 def healthz():
     """Return minimal process readiness without operational details."""
@@ -218,7 +229,11 @@ def _ensure_web_auth(app: Application) -> None:
 
 
 # pylint: disable = W0603
-def init_web(app: Application, client=None) -> WebServer:
+def init_web(
+    app: Application,
+    client=None,
+    operations: Optional[DownloadOperations] = None,
+) -> WebServer:
     """
     Set the value of the users variable.
 
@@ -228,8 +243,9 @@ def init_web(app: Application, client=None) -> WebServer:
     Returns:
         None.
     """
-    global _current_app
+    global _current_app, _download_operations
     _current_app = app
+    _download_operations = operations
     if client is not None:
         app.web_client = client
     _ensure_web_auth(app)
@@ -2050,8 +2066,6 @@ async def _run_web_prescan_task(
 ):
     """Run a bounded Web prescan and wait for package selection."""
 
-    from media_downloader import scan_prescan_packages
-
     if not _try_acquire_prescan_slot(task_id):
         get_task_store().update_task(
             task_id,
@@ -2074,7 +2088,7 @@ async def _run_web_prescan_task(
         node = _create_web_task(task_id, "prescan", entity.id, title, "prescan")
         node.client = client
         async with get_telegram_activity_gate().download_permit():
-            scan_result = await scan_prescan_packages(
+            scan_result = await _get_download_operations().scan_prescan_packages(
                 client,
                 entity.id,
                 workflow_request.start_message_id,
@@ -2150,8 +2164,6 @@ async def _run_web_package_task(
 ):
     """Scan an ordinary message package link and wait for Web confirmation."""
 
-    from media_downloader import scan_message_package
-
     node = None
     try:
         async with get_telegram_activity_gate().download_permit():
@@ -2167,7 +2179,7 @@ async def _run_web_package_task(
         )
         node.client = client
         async with get_telegram_activity_gate().download_permit():
-            scan_result = await scan_message_package(
+            scan_result = await _get_download_operations().scan_message_package(
                 client,
                 entity.id,
                 workflow_request.start_message_id,
@@ -2325,8 +2337,6 @@ async def _run_web_comment_task(
 async def _run_confirmed_package_download(preview: dict):
     """Start a confirmed package preview download."""
 
-    from media_downloader import download_prepared_messages
-
     node = preview["node"]
     task_id = node.task_id
     get_task_store().update_task(
@@ -2345,7 +2355,7 @@ async def _run_confirmed_package_download(preview: dict):
         task_type="package",
         publish_snapshot=False,
     )
-    await download_prepared_messages(
+    await _get_download_operations().download_prepared_messages(
         preview.get("messages") or [],
         None,
         node,
@@ -2355,8 +2365,6 @@ async def _run_confirmed_package_download(preview: dict):
 
 async def _run_confirmed_comment_download(preview: dict, client):
     """Start a confirmed comment preview download."""
-
-    from media_downloader import download_comments
 
     node = preview["node"]
     workflow_request = preview["request"]
@@ -2377,7 +2385,7 @@ async def _run_confirmed_comment_download(preview: dict, client):
         task_type="comment",
         publish_snapshot=False,
     )
-    await download_comments(
+    await _get_download_operations().download_comments(
         client,
         preview["entity_id"],
         workflow_request.post_id,
@@ -2390,8 +2398,6 @@ async def _run_confirmed_comment_download(preview: dict, client):
 
 async def _run_confirmed_prescan_download(prescan: dict):
     """Start confirmed Web prescan package downloads."""
-
-    from media_downloader import download_prescan_packages
 
     node = prescan["node"]
     task_id = node.task_id
@@ -2413,7 +2419,7 @@ async def _run_confirmed_prescan_download(prescan: dict):
         task_type="prescan",
         publish_snapshot=False,
     )
-    await download_prescan_packages(
+    await _get_download_operations().download_prescan_packages(
         prescan.get("packages") or [],
         prescan.get("channel") or "",
         node,

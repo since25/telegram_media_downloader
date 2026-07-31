@@ -197,6 +197,13 @@ the image job becomes reachable. Every pushed image has an immutable
 for a verified default-branch build. The Python wheel contains `media_downloader.py`,
 the runtime `module` and `utils` packages, and the Web templates/static assets.
 
+Process bootstrap is explicit. Importing the `media_downloader` compatibility facade
+does not create or install the production event loop, executor, download queue,
+database, Web credential file, or runtime service. The CLI constructs the application
+and queue at startup, then injects one `DownloadOperations` interface into the Web,
+Bot, and channel-library adapters. The facade remains a distinct module and no longer
+replaces the interpreter module registry.
+
 The container paths are explicit and may be overridden when needed:
 
 ```yaml

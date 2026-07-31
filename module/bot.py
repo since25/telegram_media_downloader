@@ -47,6 +47,10 @@ from module.comment_workflow import (
     summarize_comments,
 )
 from module.download_stat import add_active_task_node, remove_active_task_node
+from module.download_operations import (
+    DownloadOperations,
+    get_compatibility_operations,
+)
 from module.filter import Filter
 from module.get_chat_history_v2 import get_chat_history_v2
 from module.language import Language, _t
@@ -149,6 +153,7 @@ class DownloadBot:
         self.client = None
         self.add_download_task: Callable = None
         self.download_chat_task: Callable = None
+        self.operations: DownloadOperations | None = None
         self.app = None
         self.listen_forward_chat: dict = {}
         self.config: dict = {}
@@ -453,6 +458,7 @@ class BotManager:
         client: pyrogram.Client,
         add_download_task: Callable,
         download_chat_task: Callable,
+        operations: DownloadOperations | None = None,
     ) -> None:
         """Start both roles through the existing single application entry."""
 
@@ -461,6 +467,8 @@ class BotManager:
         if app.resource_bot_token and not app.bot_token:
             raise ValueError("resource_bot_token requires bot_token")
         self.app = app
+        if operations is not None:
+            self.admin_role.operations = operations
         admin_start_attempted = False
         resource_started = False
         try:
@@ -591,15 +599,26 @@ _bot_manager = BotManager()
 _bot = _bot_manager.admin_role
 
 
+def _get_download_operations() -> DownloadOperations:
+    """Return operations bound by Bot startup or the legacy facade adapter."""
+
+    return _bot.operations or get_compatibility_operations()
+
+
 async def start_download_bot(
     app: Application,
     client: pyrogram.Client,
     add_download_task: Callable,
     download_chat_task: Callable,
+    operations: DownloadOperations | None = None,
 ):
     """Start download bot"""
     await _bot_manager.start(
-        app, client, add_download_task, download_chat_task
+        app,
+        client,
+        add_download_task,
+        download_chat_task,
+        operations,
     )
 
 
@@ -1206,8 +1225,6 @@ def _comment_scan_end_id(base_message, start_comment_id):
 async def preview_comment_workflow(client, message, workflow_request):
     """Scan a pasted comment link and show guided download naming previews."""
 
-    from media_downloader import scan_comment_range
-
     try:
         entity = await _bot.client.get_chat(workflow_request.source_chat)
         base_message = await _bot.client.get_messages(
@@ -1223,7 +1240,7 @@ async def preview_comment_workflow(client, message, workflow_request):
         )
         scan_warning = None
 
-        scan_result = await scan_comment_range(
+        scan_result = await _get_download_operations().scan_comment_range(
             _bot.client,
             entity.id,
             workflow_request.post_id,
@@ -1329,11 +1346,9 @@ async def preview_comment_workflow(client, message, workflow_request):
 async def preview_package_workflow(client, message, workflow_request):
     """Scan a pasted ordinary message link and show package naming previews."""
 
-    from media_downloader import scan_message_package
-
     try:
         entity = await _bot.client.get_chat(workflow_request.source_chat)
-        scan_result = await scan_message_package(
+        scan_result = await _get_download_operations().scan_message_package(
             _bot.client,
             entity.id,
             workflow_request.start_message_id,
@@ -1520,8 +1535,6 @@ def _build_prescan_workflow_token(workflow_request, message, status_message):
 async def preview_prescan_workflow(client, message, workflow_request):
     """Scan forward from an ordinary link and show package selection controls."""
 
-    from media_downloader import scan_prescan_packages
-
     try:
         entity = await _bot.client.get_chat(workflow_request.source_chat)
         status_message = await client.send_message(
@@ -1547,7 +1560,7 @@ async def preview_prescan_workflow(client, message, workflow_request):
             except Exception as progress_error:
                 logger.warning(f"prescan progress edit failed: {progress_error}")
 
-        scan_result = await scan_prescan_packages(
+        scan_result = await _get_download_operations().scan_prescan_packages(
             _bot.client,
             entity.id,
             workflow_request.start_message_id,
@@ -1903,12 +1916,8 @@ async def download_from_bot(client: pyrogram.Client, message: pyrogram.types.Mes
                 # 设置任务为运行状态
                 node.is_running = True
 
-                # 获取并下载评论
-                # 局部导入避免循环导入
-                from media_downloader import download_comments
-
                 _bot.app.loop.create_task(
-                    download_comments(
+                    _get_download_operations().download_comments(
                         _bot.client,
                         entity.id,
                         base_message_id,
@@ -2601,9 +2610,7 @@ async def start_prescan_selected_download(client, query, token, pending):
     node.client = _bot.client
     node.is_running = True
 
-    from media_downloader import download_prescan_packages
-
-    download_coroutine = download_prescan_packages(
+    download_coroutine = _get_download_operations().download_prescan_packages(
         pending["plan"].packages,
         pending["channel"],
         node,
@@ -2730,7 +2737,6 @@ async def handle_package_workflow_callback(client, query):
     node.is_running = True
 
     if selected_following_package_plans:
-        from media_downloader import download_prescan_packages
         from module.prescan_workflow import build_prescan_package_from_plan
 
         package_plans = [pending["package_plan"], *selected_following_package_plans]
@@ -2744,7 +2750,7 @@ async def handle_package_workflow_callback(client, query):
             )
             for index, package_plan in enumerate(package_plans, start=1)
         ]
-        download_coroutine = download_prescan_packages(
+        download_coroutine = _get_download_operations().download_prescan_packages(
             packages,
             pending["channel"],
             node,
@@ -2760,9 +2766,7 @@ async def handle_package_workflow_callback(client, query):
         node.package_plan = pending.get("package_plan")
         node.package_media_items = pending.get("package_media_items")
 
-        from media_downloader import download_prepared_messages
-
-        download_coroutine = download_prepared_messages(
+        download_coroutine = _get_download_operations().download_prepared_messages(
             pending["messages"],
             None,
             node,
@@ -2860,9 +2864,7 @@ async def handle_comment_workflow_callback(client, query):
     )
     node.is_running = True
 
-    from media_downloader import download_prepared_comments
-
-    download_coroutine = download_prepared_comments(
+    download_coroutine = _get_download_operations().download_prepared_comments(
         pending["comments"],
         None,
         node,

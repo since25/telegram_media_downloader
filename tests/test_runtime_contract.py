@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import subprocess
@@ -38,6 +39,87 @@ def test_cli_configuration_failure_exits_nonzero(tmp_path):
     )
 
     assert result.returncode != 0
+
+
+def test_importing_public_facade_creates_no_runtime_resources(tmp_path):
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = str(ROOT)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["TMD_CONFIG_PATH"] = str(tmp_path / "config.yaml")
+    environment["TMD_DATA_PATH"] = str(tmp_path / "data.yaml")
+    environment["TMD_CHANNEL_LIBRARY_DB_PATH"] = str(
+        tmp_path / "channel-library.sqlite3"
+    )
+    environment["TMD_RESOURCE_BOT_DB_PATH"] = str(tmp_path / "resource-bot.sqlite3")
+    environment["TMD_WEB_AUTH_FILE"] = str(tmp_path / "web-auth.json")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import asyncio
+import concurrent.futures
+import json
+from pathlib import Path
+
+events = []
+
+def record(name):
+    def factory(*_args, **_kwargs):
+        events.append(name)
+        return object()
+    return factory
+
+asyncio.new_event_loop = record("new_event_loop")
+asyncio.set_event_loop = record("set_event_loop")
+asyncio.Queue = record("queue")
+concurrent.futures.ThreadPoolExecutor = record("executor")
+
+import media_downloader
+import module.download_entry
+
+root = Path.cwd()
+files = sorted(
+    str(path.relative_to(root))
+    for path in root.rglob("*")
+    if path.is_file()
+)
+print(json.dumps({
+    "events": events,
+    "files": files,
+    "facade_is_implementation": media_downloader is module.download_entry,
+}))
+""",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=True,
+    )
+
+    payload = json.loads(result.stdout.splitlines()[-1])
+    assert payload == {
+        "events": [],
+        "files": [],
+        "facade_is_implementation": False,
+    }
+
+
+def test_facade_and_services_have_one_way_dependency_boundaries():
+    facade = (ROOT / "media_downloader.py").read_text(encoding="utf-8")
+    service_paths = (
+        "module/web.py",
+        "module/bot.py",
+        "module/channel_library_service.py",
+    )
+
+    assert "sys.modules" not in facade
+    for path in service_paths:
+        source = (ROOT / path).read_text(encoding="utf-8")
+        assert "from media_downloader import" not in source
 
 
 def test_ci_uses_the_python_311_production_contract():
@@ -158,7 +240,9 @@ def test_development_and_pre_commit_tools_are_aligned():
 
 def test_architecture_hardening_modules_are_in_blocking_static_boundary():
     expected_paths = {
+        "module/application_bootstrap.py",
         "module/config_persistence.py",
+        "module/download_operations.py",
         "module/download_runtime.py",
         "module/download_transfer.py",
         "module/runtime_health.py",
@@ -197,9 +281,11 @@ def test_runtime_config_paths_support_directory_mounts(tmp_path):
             sys.executable,
             "-c",
             (
-                "from module.download_entry import app;"
+                "from module.download_entry import create_application;"
+                "app = create_application();"
                 "print(app.config_file);"
-                "print(app.app_data_file)"
+                "print(app.app_data_file);"
+                "app.close_runtime_resources()"
             ),
         ],
         cwd=ROOT,

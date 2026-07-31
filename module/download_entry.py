@@ -32,10 +32,19 @@ from pyrogram.client import Client as PyrogramClient
 from pyrogram.types import Audio, Document, Photo, Video, VideoNote, Voice
 from rich.logging import RichHandler
 
+from module.application_bootstrap import (
+    LazyApplication,
+    LazyDownloadQueue,
+    RuntimeBootstrap,
+)
 from module.app import Application, ChatDownloadConfig, DownloadStatus, TaskNode
 from module.bot import start_download_bot, stop_download_bot
 from module.channel_library_service import ChannelLibraryService
 from module.channel_library_store import ChannelLibraryStore
+from module.download_operations import (
+    DownloadOperations,
+    configure_compatibility_operations,
+)
 from module.download_stat import (
     download_progress_tracker,
     get_active_task_nodes,
@@ -301,25 +310,46 @@ _naming_snapshot_ctx: "contextvars.ContextVar[Optional[dict]]" = contextvars.Con
     "_naming_snapshot_ctx", default=None
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler()],
-)
-
 CONFIG_NAME = os.environ.get("TMD_CONFIG_PATH", "config.yaml")
 DATA_FILE_NAME = os.environ.get("TMD_DATA_PATH", "data.yaml")
 APPLICATION_NAME = "media_downloader"
-app = Application(CONFIG_NAME, DATA_FILE_NAME, APPLICATION_NAME)
-
-queue: asyncio.Queue = asyncio.Queue()
+_bootstrap = RuntimeBootstrap(CONFIG_NAME, DATA_FILE_NAME, APPLICATION_NAME)
+app = LazyApplication(_bootstrap)
+queue = LazyDownloadQueue(_bootstrap)
+_logging_configured = False
 RETRY_TIME_OUT = 3
 STALL_TIMEOUT = 600  # 10分钟无进度就判定卡死
-logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
-logging.getLogger("pyrogram.client").addFilter(LogFilter())
 
-logging.getLogger("pyrogram").setLevel(logging.WARNING)
+
+def _configure_logging() -> None:
+    """Install process logging only when runtime bootstrap begins."""
+
+    global _logging_configured
+    if _logging_configured:
+        return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler()],
+    )
+    logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
+    logging.getLogger("pyrogram.client").addFilter(LogFilter())
+    logging.getLogger("pyrogram").setLevel(logging.WARNING)
+    _logging_configured = True
+
+
+def create_application() -> Application:
+    """Construct an independent application from the process path contract."""
+
+    return _bootstrap.create_application()
+
+
+def bootstrap_application() -> Application:
+    """Explicitly create and retain process-owned runtime resources."""
+
+    _configure_logging()
+    return _bootstrap.initialize().application
 
 
 def _check_download_finish(media_size: int, download_path: str, ui_file_name: str):
@@ -1852,7 +1882,9 @@ def channel_library_db_path() -> Path:
 
 
 def _start_channel_library_service(
-    application: Application, client: PyrogramClient
+    application: Application,
+    client: PyrogramClient,
+    operations: Optional[DownloadOperations] = None,
 ) -> Optional[ChannelLibraryService]:
     """Start the persistent channel service on the application's owner loop."""
 
@@ -1865,6 +1897,7 @@ def _start_channel_library_service(
             ChannelLibraryStore(channel_library_db_path()),
             application.channel_library_config,
             task_store=get_task_store(),
+            operations=operations or create_download_operations(),
         )
         application.loop.run_until_complete(service.start())
     except Exception as error:
@@ -1910,20 +1943,57 @@ def _sanitize_monitor_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
     return safe
 
 
-def main():
+def create_download_operations() -> DownloadOperations:
+    """Bind adapters to the current public operation implementations."""
+
+    return DownloadOperations(
+        scan_comment_range=lambda *args, **kwargs: scan_comment_range(
+            *args, **kwargs
+        ),
+        scan_post_comments=lambda *args, **kwargs: scan_post_comments(
+            *args, **kwargs
+        ),
+        scan_message_package=lambda *args, **kwargs: scan_message_package(
+            *args, **kwargs
+        ),
+        scan_prescan_packages=lambda *args, **kwargs: scan_prescan_packages(
+            *args, **kwargs
+        ),
+        download_comments=lambda *args, **kwargs: download_comments(
+            *args, **kwargs
+        ),
+        download_prescan_packages=lambda *args, **kwargs: download_prescan_packages(
+            *args, **kwargs
+        ),
+        download_prepared_messages=lambda *args, **kwargs: download_prepared_messages(
+            *args, **kwargs
+        ),
+        download_prepared_comments=lambda *args, **kwargs: download_prepared_comments(
+            *args, **kwargs
+        ),
+    )
+
+
+configure_compatibility_operations(create_download_operations())
+
+
+def main(application: Optional[Application] = None):
     """Build the Pyrogram adapter and hand ownership to the runtime module."""
 
+    application = application or bootstrap_application()
+    operations = create_download_operations()
     client = HookClient(
         "media_downloader",
-        api_id=app.api_id,
-        api_hash=app.api_hash,
-        proxy=app.proxy,
-        workdir=app.session_file_path,
-        start_timeout=app.start_timeout,
+        api_id=application.api_id,
+        api_hash=application.api_hash,
+        proxy=application.proxy,
+        workdir=application.session_file_path,
+        start_timeout=application.start_timeout,
     )
     runtime = DownloadRuntime(
         logger=logger,
         translate=_t,
+        operations=operations,
         initialize_task_store=initialize_task_store,
         init_web=init_web,
         set_max_concurrent_transmissions=set_max_concurrent_transmissions,
@@ -1941,4 +2011,15 @@ def main():
         exec_loop=_exec_loop,
         print_performance_stats=print_performance_stats,
     )
-    run_application(app, client, runtime)
+    run_application(application, client, runtime)
+
+
+def run_cli() -> int:
+    """Run the command-line contract and return a process exit code."""
+
+    application = bootstrap_application()
+    if not _check_config():
+        application.close_runtime_resources()
+        return 1
+    main(application)
+    return 0
