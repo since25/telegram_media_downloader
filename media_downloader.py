@@ -9,5 +9,7 @@ if __name__ == "__main__":
     sys.modules["media_downloader"] = _implementation
     if _implementation._check_config():
         _implementation.main()
+    else:
+        raise SystemExit(1)
 else:
     sys.modules[__name__] = _implementation

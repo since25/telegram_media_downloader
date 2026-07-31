@@ -20,6 +20,7 @@ from module.cloud_drive import CloudDrive, CloudDriveConfig
 from module.config_persistence import atomic_write_yaml
 from module.filter import Filter
 from module.language import Language, set_language
+from module.runtime_health import RuntimeHealth
 from utils.format import replace_date_time, validate_title
 from utils.meta_data import MetaData
 
@@ -479,6 +480,7 @@ class Application:
         self.cloud_drive_config = CloudDriveConfig()
         self.channel_library_config = ChannelLibraryConfig()
         self.channel_library_service = None
+        self.runtime_health = RuntimeHealth.from_environment()
         self.resource_bot_store = None
         self.hide_file_name = False
         self.caption_name_dict: dict = {}

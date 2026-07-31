@@ -9,6 +9,7 @@ import pytest
 
 from module.bot import BotManager, resource_bot_db_path
 from module.download_runtime import DownloadRuntime, run_application
+from module.runtime_health import RuntimeHealth, RuntimePhase
 
 
 def run(coroutine):
@@ -380,6 +381,7 @@ class _LifecycleApplication:
         self.events = events
         self.loop = asyncio.new_event_loop()
         self.is_running = True
+        self.runtime_health = RuntimeHealth()
 
     def pre_run(self):
         self.events.append("pre_run")
@@ -487,3 +489,87 @@ def test_config_flush_failure_does_not_skip_runtime_resource_close():
 
     assert "update_config.failed" in events
     assert "resources.close" in events
+
+
+def test_runtime_marks_ready_only_after_required_services_start():
+    events = []
+    app = _LifecycleApplication(events)
+    app.bot_token = "configured"
+
+    async def start_server(*_args):
+        events.append("telegram.start")
+
+    def start_channel(*_args):
+        events.append("channel.start")
+
+    async def start_bot(*_args):
+        events.append("bot.start")
+
+    def exec_loop(_shutdown_request):
+        events.append(("runtime.phase", app.runtime_health.phase))
+
+    runtime = _lifecycle_runtime(
+        events,
+        start_server=start_server,
+        start_channel_library_service=start_channel,
+        start_download_bot=start_bot,
+        exec_loop=exec_loop,
+    )
+
+    run_application(app, object(), runtime)
+
+    ready_event = ("runtime.phase", RuntimePhase.READY)
+    assert ready_event in events
+    assert events.index("telegram.start") < events.index(ready_event)
+    assert events.index("channel.start") < events.index(ready_event)
+    assert events.index("bot.start") < events.index(ready_event)
+    assert app.runtime_health.phase is RuntimePhase.STOPPING
+
+
+def test_runtime_propagates_required_service_startup_failure():
+    events = []
+    app = _LifecycleApplication(events)
+
+    def fail_channel_start(*_args):
+        raise RuntimeError("channel startup failed")
+
+    runtime = _lifecycle_runtime(
+        events,
+        start_channel_library_service=fail_channel_start,
+    )
+
+    with pytest.raises(RuntimeError, match="channel startup failed"):
+        run_application(app, object(), runtime)
+
+    assert app.runtime_health.phase is RuntimePhase.FAILED
+    assert "resources.close" in events
+
+
+def test_runtime_propagates_telegram_startup_failure_without_success_log():
+    events = []
+    app = _LifecycleApplication(events)
+
+    async def fail_telegram_start(*_args):
+        raise RuntimeError("telegram startup failed")
+
+    runtime = _lifecycle_runtime(
+        events,
+        logger=SimpleNamespace(
+            info=lambda *args: None,
+            success=lambda message, *args: events.append(("success", message)),
+            warning=lambda *args: None,
+            exception=lambda *args: None,
+        ),
+        start_server=fail_telegram_start,
+    )
+
+    with pytest.raises(RuntimeError, match="telegram startup failed"):
+        run_application(app, object(), runtime)
+
+    assert app.runtime_health.phase is RuntimePhase.FAILED
+    success_messages = [
+        item[1]
+        for item in events
+        if isinstance(item, tuple) and len(item) == 2 and item[0] == "success"
+    ]
+    assert "Successfully started (Press Ctrl+C to stop)" not in success_messages

@@ -4,21 +4,37 @@ import json
 from types import SimpleNamespace
 
 import module.web as web
+from module.runtime_health import RuntimeHealth
 
 
-def test_healthz_is_public_and_returns_only_process_readiness():
+def test_healthz_is_public_and_reflects_process_readiness(monkeypatch):
+    health = RuntimeHealth()
+    monkeypatch.setattr(
+        web,
+        "_current_app",
+        SimpleNamespace(runtime_health=health),
+        raising=False,
+    )
     app = web.get_flask_app()
     app.config["TESTING"] = True
     old_login_disabled = app.config.get("LOGIN_DISABLED")
     app.config["LOGIN_DISABLED"] = False
     try:
         with app.test_client() as client:
-            resp = client.get("/healthz")
+            starting = client.get("/healthz")
+            health.mark_ready()
+            ready = client.get("/healthz")
+            health.mark_stopping()
+            stopping = client.get("/healthz")
     finally:
         app.config["LOGIN_DISABLED"] = old_login_disabled
 
-    assert resp.status_code == 200
-    assert resp.get_json() == {"status": "ok"}
+    assert starting.status_code == 503
+    assert starting.get_json() == {"status": "not_ready"}
+    assert ready.status_code == 200
+    assert ready.get_json() == {"status": "ok"}
+    assert stopping.status_code == 503
+    assert stopping.get_json() == {"status": "not_ready"}
 
 
 def test_system_metrics_remain_login_protected():

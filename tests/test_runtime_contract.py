@@ -23,6 +23,23 @@ def test_package_metadata_supports_only_python_311():
     assert minor_classifiers == {"3.11"}
 
 
+def test_cli_configuration_failure_exits_nonzero(tmp_path):
+    environment = os.environ.copy()
+    environment["TMD_CONFIG_PATH"] = str(tmp_path / "missing-config.yaml")
+    environment["TMD_DATA_PATH"] = str(tmp_path / "missing-data.yaml")
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "media_downloader.py")],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert result.returncode != 0
+
+
 def test_ci_uses_the_python_311_production_contract():
     unittest_workflow = _load_yaml(".github/workflows/unittest.yml")
     code_checks_workflow = _load_yaml(".github/workflows/code-checks.yml")
@@ -143,6 +160,7 @@ def test_architecture_hardening_modules_are_in_blocking_static_boundary():
         "module/config_persistence.py",
         "module/download_runtime.py",
         "module/download_transfer.py",
+        "module/runtime_health.py",
         "module/transfer_progress.py",
         "module/web_auth.py",
         "module/web_server.py",

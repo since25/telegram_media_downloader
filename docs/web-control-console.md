@@ -360,10 +360,15 @@ argument arrays without a shell; directory cache entries are created only after 
 succeeds, and file deletion/upload counters advance only when the copy process exits
 with code `0`.
 
-`GET /healthz` is public and returns only `{"status":"ok"}`. It does not expose task,
-system, configuration, or credential data; operational endpoints remain login-protected.
-The image and Compose health checks call this endpoint on `127.0.0.1:5000`, so container
-deployments must use `enable_web: true` and bind the Web listener to `0.0.0.0`.
+`GET /healthz` is public and returns only `{"status":"ok"}` after Telegram, the channel
+service, configured Bots, and worker admission have started. Before readiness, during
+shutdown, or after a startup failure it returns `503 {"status":"not_ready"}`. It does
+not expose task, system, configuration, or credential data; operational endpoints remain
+login-protected. The image and Compose probes instead execute
+`python -m module.runtime_health` against the atomic
+`/app/state/runtime-health.json` marker. The marker includes the process ID and Linux
+process-start token, so a stale file cannot make a restarted process ready; container
+health therefore works with either value of `enable_web`.
 
 The optional Aligo adapter is not installed by the base requirements. Install the
 reviewed pinned package with `pip install aligo==5.4.0`, select `upload_adapter: aligo`,

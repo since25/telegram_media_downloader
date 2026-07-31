@@ -20,7 +20,8 @@ ENV HOME=/home/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     TMPDIR=/app/temp \
-    XDG_CACHE_HOME=/app/temp/.cache
+    XDG_CACHE_HOME=/app/temp/.cache \
+    TMD_RUNTIME_HEALTH_PATH=/app/state/runtime-health.json
 
 RUN addgroup -S -g 10001 app \
     && adduser -S -D -u 10001 -G app -h /home/app app \
@@ -39,6 +40,6 @@ COPY --chown=app:app utils /app/utils
 USER app:app
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3).close()"]
+    CMD ["python", "-m", "module.runtime_health"]
 
 CMD ["python", "media_downloader.py"]

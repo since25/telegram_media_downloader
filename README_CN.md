@@ -260,7 +260,7 @@ wget https://raw.githubusercontent.com/since25/telegram_media_downloader/master/
 printf 'TMD_UID=%s\nTMD_GID=%s\n' "$(id -u)" "$(id -g)" > .env
 sudo chown -R "$(id -u):$(id -g)" downloads log rclone sessions state temp
 # 编辑配置文件
-# 容器健康检查要求 enable_web: true、web_host: 0.0.0.0
+# enable_web 可以保持 false；容器健康检查不依赖 Web 监听端口
 vi state/config.yaml
 # 可选：把已有 Rclone 配置复制到项目内挂载目录
 cp "$HOME/.config/rclone/rclone.conf" rclone/rclone.conf
@@ -298,8 +298,8 @@ API 迁移并确认 `PRAGMA integrity_check` 返回 `ok`，不能直接复制仍
 排除在构建上下文之外，必须在运行时挂载。Python 基础镜像固定到已审核的多架构
 digest，Alpine 构建和运行包固定版本；Pyrogram 分支固定到不可变提交和归档校验
 值。Rclone 使用参数数组启动，上传是否成功只依据进程退出码，不再依赖可读进度
-文本。容器健康检查要求 `enable_web: true`，在本地 5000 端口调用公开且最小化的
-`/healthz` 端点。
+文本。容器健康检查读取原子更新的 `/app/state/runtime-health.json`，并确认它属于
+当前仍存活且已就绪的进程，因此在 `enable_web: false` 时也能正常工作。
 
 容器中的状态路径通过以下环境变量明确指定，必要时可以覆盖：
 
@@ -310,6 +310,7 @@ TMD_TASK_DB_PATH: /app/state/web_tasks.sqlite3
 TMD_CHANNEL_LIBRARY_DB_PATH: /app/state/channel_library.sqlite3
 TMD_RESOURCE_BOT_DB_PATH: /app/state/resource_bot.sqlite3
 TMD_WEB_AUTH_FILE: /app/state/.web_auth.json
+TMD_RUNTIME_HEALTH_PATH: /app/state/runtime-health.json
 ```
 
 ## 升级安装

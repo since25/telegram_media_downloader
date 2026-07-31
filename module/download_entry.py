@@ -1857,6 +1857,7 @@ def _start_channel_library_service(
     """Start the persistent channel service on the application's owner loop."""
 
     application.channel_library_service = None
+    service = None
     try:
         service = ChannelLibraryService(
             application,
@@ -1866,10 +1867,19 @@ def _start_channel_library_service(
             task_store=get_task_store(),
         )
         application.loop.run_until_complete(service.start())
-    except Exception:
+    except Exception as error:
+        if service is not None:
+            try:
+                application.loop.run_until_complete(service.stop())
+            except Exception:
+                logger.exception(
+                    "Channel library service cleanup after startup failure failed"
+                )
         logger.exception("Channel library service initialization failed")
         application.channel_library_service = None
-        return None
+        raise RuntimeError(
+            "Channel library service initialization failed"
+        ) from error
     application.channel_library_service = service
     return service
 

@@ -1713,7 +1713,8 @@ class MediaDownloaderTestCase(unittest.TestCase):
     def test_other_exception(self, mock_logger):
         rest_app(MOCK_CONF)
 
-        main()
+        with self.assertRaises(Exception):
+            main()
 
         mock_logger.success.assert_called_with(
             "Updated last read message_id to config file,total download 0, total upload file 0"

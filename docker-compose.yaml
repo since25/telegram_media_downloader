@@ -16,12 +16,13 @@ services:
       TMD_CHANNEL_LIBRARY_DB_PATH: /app/state/channel_library.sqlite3
       TMD_RESOURCE_BOT_DB_PATH: /app/state/resource_bot.sqlite3
       TMD_WEB_AUTH_FILE: /app/state/.web_auth.json
+      TMD_RUNTIME_HEALTH_PATH: /app/state/runtime-health.json
     healthcheck:
       test:
         - CMD
         - python
-        - -c
-        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3).close()
+        - -m
+        - module.runtime_health
       interval: 30s
       timeout: 5s
       start_period: 30s

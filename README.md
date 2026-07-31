@@ -144,7 +144,7 @@ wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master
 wget https://raw.githubusercontent.com/tangyoha/telegram_media_downloader/master/data.example.yaml -O state/data.yaml
 printf 'TMD_UID=%s\nTMD_GID=%s\n' "$(id -u)" "$(id -g)" > .env
 sudo chown -R "$(id -u):$(id -g)" downloads log rclone sessions state temp
-# Set enable_web: true and web_host: 0.0.0.0 for the container health check.
+# enable_web may remain false; container health does not depend on the Web listener.
 vi state/config.yaml
 # Optional: copy an existing Rclone configuration into the project-local mount.
 cp "$HOME/.config/rclone/rclone.conf" rclone/rclone.conf
@@ -186,8 +186,9 @@ runtime. The Python base image is pinned to the reviewed multi-architecture dige
 the Alpine build/runtime packages are version-pinned. The Pyrogram fork is pinned to an
 immutable commit/archive checksum. Rclone commands are executed as argument arrays, and
 upload success is determined by the process exit code rather than a human-readable
-progress line. The container health check requires `enable_web: true`, listens locally
-on port 5000, and calls the public minimal `/healthz` endpoint.
+progress line. The container health check reads the atomic
+`/app/state/runtime-health.json` marker and verifies that it belongs to the live ready
+process, so it also works when `enable_web: false`.
 
 The container paths are explicit and may be overridden when needed:
 
@@ -198,6 +199,7 @@ TMD_TASK_DB_PATH: /app/state/web_tasks.sqlite3
 TMD_CHANNEL_LIBRARY_DB_PATH: /app/state/channel_library.sqlite3
 TMD_RESOURCE_BOT_DB_PATH: /app/state/resource_bot.sqlite3
 TMD_WEB_AUTH_FILE: /app/state/.web_auth.json
+TMD_RUNTIME_HEALTH_PATH: /app/state/runtime-health.json
 ```
 
 ## Upgrade installation

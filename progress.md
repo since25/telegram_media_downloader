@@ -3236,3 +3236,42 @@ Changed files:
 
 Rollback:
 - Revert the Phase 1 commit. No database schema, persisted row, configuration format, deployment path, or authentication contract changes; rollback restores the prior in-process dictionary identity and Web mutation behavior.
+
+## 2026-07-30 - Task: Phase 2 truthful startup, readiness, and container health
+
+### What was done
+
+- Added an explicit process lifecycle state with `starting`, `ready`, `stopping`, and `failed` phases; readiness is published only after Telegram, the required channel service, configured Bots, and worker tasks have started.
+- Made public Web readiness return `503 not_ready` before startup completion and after shutdown begins, while retaining the minimal authenticated-data-free `200 {"status":"ok"}` response only for a ready process.
+- Replaced the Web-port-dependent Docker probe with an atomic runtime-health marker carrying the process ID and Linux process-start token, so container health works when `enable_web=false` and rejects stale markers after process replacement.
+- Stopped swallowing fatal startup failures: Telegram, required service, and other runtime startup errors now remain `failed`, complete cleanup, propagate through `main`, and produce a non-zero process exit; invalid CLI configuration also exits non-zero.
+- Changed channel-library initialization failure from an optional `None` result into a fatal startup error and attempts partial-service cleanup before propagation.
+- Expanded the blocking static boundary to include the new runtime-health module and documented the new readiness and container contracts in English, Chinese, and operations guidance.
+
+### Testing
+
+- RED: the Phase 2 focused selection initially failed collection with `ModuleNotFoundError: module.runtime_health`; the pre-existing runtime also swallowed service/startup errors, always returned Web health `200`, and Docker contracts still required the Web listener.
+- Focused startup/readiness/container regressions: `10 passed`.
+- Expanded runtime, Bot, channel-library, CLI, Web, Docker, and static-contract selection: `225 passed`.
+- Live probe smoke test: a separate ready process produced health exit `0`; after that process exited, the unchanged marker produced exit `1`.
+- `TMD_UID=10001 TMD_GID=10001 docker compose -f docker-compose.yaml config`: passed with the runtime-health environment path and `python -m module.runtime_health` probe while retaining all expected non-root mounts.
+- The first complete-suite run found one over-broad new test assertion that confused the valid shutdown configuration-success log with the forbidden startup-success log (`1 failed, 718 passed, 1 skipped`); the assertion was narrowed to the exact startup message.
+- Final complete suite: `719 passed, 1 skipped`.
+- `.venv/bin/pre-commit run --all-files`: passed trailing-whitespace, end-of-file, Black, isort, mypy, and Pylint hooks.
+- `TMD_TASK_DB_PATH=<temporary>/import.sqlite3 .venv/bin/python check_imports.py`: both supported import probes passed and no task database was created.
+- `.venv/bin/python -m compileall -q module tests`, `.venv/bin/python -m pip check`, `make style_check PYTHON=.venv/bin/python`, and `git diff --check`: passed; the blocking static boundary reported no mypy issues across 16 modules and no Pylint errors.
+- A supplemental whole-file Black check reported historical formatting drift in six touched legacy files that are intentionally outside the current Black boundary; no broad formatting rewrite was applied. The new runtime-health module and files inside the enforced formatting boundary passed.
+
+### Notes
+
+Changed files:
+- `module/runtime_health.py`, `module/app.py`, `module/download_runtime.py`: Added lifecycle state ownership, optional atomic marker persistence, stale-process rejection, truthful ready/stopping/failed transitions, and fatal startup propagation.
+- `module/download_entry.py`, `media_downloader.py`: Made required channel-service initialization and invalid configuration terminate startup instead of returning false success.
+- `module/web.py`, `Dockerfile`, `docker-compose.yaml`: Made Web readiness state-aware and container health independent of the optional Web listener.
+- `Makefile`, `.pre-commit-config.yaml`, `tests/test_runtime_contract.py`: Added runtime health to the blocking mypy/Pylint and formatting contract.
+- `tests/module/test_runtime_health.py`, `tests/module/test_bot_manager.py`, `tests/module/test_channel_library_web.py`, `tests/test_media_downloader.py`, `tests/test_web_system_api.py`, `tests/test_docker_contract.py`: Added lifecycle transition, partial-startup, fatal-failure, CLI exit, Web readiness, channel cleanup, and no-Web container regressions.
+- `README.md`, `README_CN.md`, `docs/web-control-console.md`: Documented readiness status codes, the atomic marker, the new environment path, and `enable_web=false` container health.
+- `progress.md`: Recorded Phase 2 red-green, live probe, full-suite, static, import, container, and rollback evidence.
+
+Rollback:
+- Revert the Phase 2 commit. No database schema or persisted task/configuration format changes are introduced. If rolling back a container deployment, remove the now-unused `TMD_RUNTIME_HEALTH_PATH` setting and restore the prior Web-based health check only if `enable_web=true`; otherwise the older image has no valid container health probe.

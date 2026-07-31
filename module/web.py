@@ -174,6 +174,9 @@ def get_flask_app() -> Flask:
 def healthz():
     """Return minimal process readiness without operational details."""
 
+    runtime_health = getattr(_current_app, "runtime_health", None)
+    if runtime_health is None or not runtime_health.is_ready:
+        return jsonify({"status": "not_ready"}), 503
     return jsonify({"status": "ok"})
 
 

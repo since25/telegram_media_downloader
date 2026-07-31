@@ -4,8 +4,8 @@ TYPE_CHECK_PATHS := module/cloud_drive.py module/config_persistence.py \
 	module/download_admission.py module/download_lifecycle.py \
 	module/download_queue.py module/download_runtime.py module/download_stat.py \
 	module/download_transfer.py module/progress_persistence.py module/task_state.py \
-	module/telegram_activity.py module/transfer_progress.py module/web_auth.py \
-	module/web_commands.py module/web_server.py
+	module/runtime_health.py module/telegram_activity.py module/transfer_progress.py \
+	module/web_auth.py module/web_commands.py module/web_server.py
 
 .PHONY: install dev_install static_type_check pylint style_check test
 

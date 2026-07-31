@@ -81,15 +81,18 @@ def test_docker_publish_builds_runtime_directly_from_checkout():
     assert "target: runtime-image" in workflow
 
 
-def test_container_health_checks_call_the_local_readiness_endpoint():
+def test_container_health_checks_do_not_require_the_optional_web_listener():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     service = _compose_service()
     healthcheck = service.get("healthcheck") or {}
     compose_command = " ".join(str(part) for part in healthcheck.get("test") or [])
 
     assert "HEALTHCHECK" in dockerfile
-    assert "http://127.0.0.1:5000/healthz" in dockerfile
-    assert "http://127.0.0.1:5000/healthz" in compose_command
+    assert 'CMD ["python", "-m", "module.runtime_health"]' in dockerfile
+    assert "python -m module.runtime_health" in compose_command
+    assert "TMD_RUNTIME_HEALTH_PATH=/app/state/runtime-health.json" in dockerfile
+    assert "http://127.0.0.1:5000/healthz" not in dockerfile
+    assert "http://127.0.0.1:5000/healthz" not in compose_command
 
 
 def test_runtime_base_and_apk_inputs_are_immutably_pinned():
@@ -133,7 +136,8 @@ def test_runtime_user_and_writable_mount_migration_are_explicit():
     for document in (readme, readme_cn):
         assert "TMD_UID" in document
         assert "TMD_GID" in document
+        assert "TMD_RUNTIME_HEALTH_PATH" in document
         assert "state/config.yaml" in document
         assert "state/data.yaml" in document
         assert "chown -R" in document
-        assert "enable_web: true" in document
+        assert "runtime-health.json" in document

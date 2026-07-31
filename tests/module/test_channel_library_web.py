@@ -1847,10 +1847,11 @@ def test_media_lifecycle_assigns_after_start_stops_and_survives_init_failure(
             raise RuntimeError("secret-token-sentinel")
 
         monkeypatch.setattr(ChannelLibraryService, "start", fail_start)
-        assert (
+        with pytest.raises(
+            RuntimeError,
+            match="Channel library service initialization failed",
+        ):
             media_downloader._start_channel_library_service(app, SimpleNamespace())
-            is None
-        )
         assert app.channel_library_service is None
     finally:
         if app.channel_library_service is not None:

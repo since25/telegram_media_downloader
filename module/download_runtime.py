@@ -75,11 +75,18 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
 
     tasks = []
     web_server = None
+    runtime_health = getattr(application, "runtime_health", None)
+    startup_failed = False
     shutdown_request = asyncio.Event()
     previous_signal_handlers = {}
 
     def request_shutdown(_signum=None, _frame=None):
         application.is_running = False
+        if runtime_health is not None:
+            try:
+                runtime_health.mark_stopping()
+            except Exception as error:
+                runtime.logger.warning(f"runtime health update failed: {error}")
         try:
             application.loop.call_soon_threadsafe(shutdown_request.set)
         except RuntimeError:
@@ -95,6 +102,8 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
             runtime.logger.warning(f"signal handler unavailable: {error}")
 
     try:
+        if runtime_health is not None:
+            runtime_health.mark_starting()
         application.pre_run()
         runtime.initialize_task_store()
         if application.enable_web:
@@ -107,9 +116,6 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
         )
         _run_until_complete(application.loop, runtime.start_server(client))
         runtime.start_channel_library_service(application, client)
-        runtime.logger.success(
-            runtime.translate("Successfully started (Press Ctrl+C to stop)")
-        )
 
         tasks.append(application.loop.create_task(runtime.download_all_chat(client)))
         tasks.append(application.loop.create_task(runtime.periodic_progress_refresh()))
@@ -133,15 +139,34 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
                     runtime.download_chat_task,
                 ),
             )
+        if runtime_health is not None:
+            runtime_health.mark_ready()
+        runtime.logger.success(
+            runtime.translate("Successfully started (Press Ctrl+C to stop)")
+        )
         runtime.exec_loop(shutdown_request)
     except KeyboardInterrupt:
         request_shutdown()
         runtime.logger.info(runtime.translate("KeyboardInterrupt"))
     except Exception as error:
+        startup_failed = True
+        if runtime_health is not None:
+            try:
+                runtime_health.mark_failed()
+            except Exception as health_error:
+                runtime.logger.warning(
+                    f"runtime health failure update failed: {health_error}"
+                )
         runtime.logger.exception("{}", error)
+        raise
     finally:
         try:
             application.is_running = False
+            if runtime_health is not None and not startup_failed:
+                try:
+                    runtime_health.mark_stopping()
+                except Exception as error:
+                    runtime.logger.warning(f"runtime health update failed: {error}")
             if web_server is not None:
                 try:
                     web_server.stop(timeout=5)
