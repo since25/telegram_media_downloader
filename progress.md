@@ -3517,3 +3517,60 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, preserve the current live databases, and deploy code commit `946e3b30de5a3556674a121410ad4ab80c0b0caa` to remove both queue changes. Restore database files only if state rollback is explicitly required: `backups/deploy-20260809-222911` preserves the post-shutdown cancelled state, while `backups/requeue-repair-20260809-223503` preserves the same state immediately before the exact 179-row requeue transaction. The preferred rollback keeps current databases because both code changes introduce no schema migration.
+
+## 2026-08-10 - Task: Deploy disk-window reservation for oversized packages
+
+### What was done
+
+- Diagnosed the production stall: 176 Web tasks `queued`, zero `downloading`. All four
+  batch slots were held by batches whose first package waited forever in the FIFO disk
+  admission queue for space that can never exist (25.7/21.3 GiB packages on a 24 GiB
+  disk with ~13 GiB free and 3 GiB minimum-free).
+- Deployed `bc6917e` + `84cb344`: packages whose reservation can never fit are failed
+  immediately with `package_exceeds_disk_capacity` instead of blocking the FIFO (and
+  every download slot) forever; the batch continues to its next package.
+- Verified the fix: previously-stuck batches resumed downloading; the two oversized
+  packages were skipped with the capacity error; queue drains normally.
+- Deployed `f9c92a5` (this task): reservation window. A package no longer reserves its
+  full known total size. With cloud upload enabled, local deletion after upload, no
+  zipping, and no Telegram forwarding, each worker holds at most one file on disk at a
+  time (download -> upload -> delete is serial per worker), so the reservation is
+  `min(known_total_size, max_download_task * largest_item_size)`. Packages whose total
+  size exceeds the disk now download file by file within the bounded window.
+
+### Testing
+
+- Local complete suite: `747 passed, 1 skipped`.
+- Production preflight: service active, ~13 GB free, three SQLite databases
+  `PRAGMA quick_check == 'ok'`, tracked files clean.
+- After deployment and restart: `tg-downloader.service` active; downloads resumed
+  immediately; package summaries now include `max_item_size` via a join; queue
+  continues draining with several batches downloading concurrently.
+- Window math verified against live data: a 20.8 GiB package (largest file 1.36 GiB)
+  now reserves 5.4 GiB and downloads; a 25.5 GiB package (largest file 2.59 GiB)
+  reserves 10.3 GiB and still cannot fit with the 3 GiB minimum-free margin.
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`: fail-fast capacity check, `max_item_size`
+  descriptors, `_package_reservation_bytes` window helper.
+- `module/channel_library_store.py`: package summaries include `max_item_size`;
+  preserve `package_exceeds_disk_capacity` error code.
+- `module/package_download.py`: skip-download finalization for rejected packages.
+- `progress.md`: recorded the stall diagnosis and both deployments.
+
+Known boundary:
+- If cloud uploads persistently fail, files are retained for the manual upload retry
+  and can accumulate beyond the reservation window on a small disk; downloads then
+  fail with disk-full errors rather than silently corrupting. Upload retry semantics
+  are unchanged (retry re-uploads the retained local file).
+- A package whose single largest file itself exceeds free disk minus the
+  minimum-free margin still fails with `package_exceeds_disk_capacity`; lowering
+  `channel_library.min_free_disk_bytes` (e.g. to 2 GiB) admits marginally-over
+  packages such as the 25.5 GiB one above.
+
+Rollback:
+- Stop `tg-downloader.service` and deploy code commit `84cb344` to remove the window
+  reservation while keeping the fail-fast capacity fix. No database schema or
+  configuration format changes are introduced.

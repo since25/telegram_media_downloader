@@ -149,6 +149,39 @@ class ChannelLibraryService:
 
         return self.operations or get_compatibility_operations()
 
+    def _package_reservation_bytes(self, descriptor: Any, total_bytes: int) -> int:
+        """Reserve the steady-state disk window instead of the full package size.
+
+        With cloud upload enabled and local deletion after a successful upload,
+        every download worker holds at most one file on disk at a time
+        (download -> upload -> delete is serial per worker), so a package's peak
+        footprint is bounded by the worker count times its largest single file.
+        Reserving that window lets a package whose total size exceeds the disk
+        still download file by file without overflowing it.
+
+        Falls back to the full known size when the upload/delete guarantees do
+        not hold (upload disabled, zipping enabled, or Telegram forwarding), or
+        when individual item sizes are unknown.
+        """
+
+        cloud = getattr(self.app, "cloud_drive_config", None)
+        if cloud is None or not getattr(cloud, "enable_upload_file", False):
+            return total_bytes
+        if not getattr(cloud, "after_upload_file_delete", False):
+            return total_bytes
+        if getattr(cloud, "before_upload_file_zip", False):
+            return total_bytes
+        # Telegram forwarding (node.upload_telegram_chat_id) skips the cloud
+        # upload/delete path entirely, so files would accumulate; channel
+        # library batches never configure it, but stay conservative.
+        if getattr(cloud, "upload_telegram_chat_id", None):
+            return total_bytes
+        max_item = int(getattr(descriptor, "max_item_size", 0) or 0)
+        if max_item <= 0:
+            return total_bytes
+        workers = max(1, int(getattr(self.app, "max_download_task", 1) or 1))
+        return max(int(max_item), min(total_bytes, workers * int(max_item)))
+
     async def start(self) -> None:
         """Initialize recovery and start exactly one scheduler task."""
 
@@ -1043,6 +1076,7 @@ class ChannelLibraryService:
                 start_message_id=int(summary["start_message_id"]),
                 end_message_id=int(summary["end_message_id"]),
                 known_total_size=int(summary["known_total_size"]),
+                max_item_size=int(summary.get("max_item_size") or 0),
                 package_kind=summary.get("package_kind", "channel"),
                 source_chat_id=int(
                     summary.get("source_chat_id")
@@ -1150,11 +1184,14 @@ class ChannelLibraryService:
                 item for item in descriptors if item.attempt_id == attempt_id
             )
             required_bytes = int(descriptor.known_total_size or 0)
+            reservation_bytes = self._package_reservation_bytes(
+                descriptor, required_bytes
+            )
             try:
                 snapshot = await self.disk_admission.snapshot()
                 settled_free_bytes = snapshot.free_bytes + snapshot.reserved_bytes
                 if (
-                    required_bytes + snapshot.minimum_free_bytes
+                    reservation_bytes + snapshot.minimum_free_bytes
                     > settled_free_bytes
                 ):
                     # This package can never fit on the current disk, even after
@@ -1162,12 +1199,14 @@ class ChannelLibraryService:
                     # admission would otherwise hold a download slot forever and
                     # block every later package, so fail it now and keep going.
                     LOGGER.warning(
-                        "Package %s (%s) needs %.1f GiB (size %.1f GiB + "
-                        "minimum-free %.1f GiB) but only %.1f GiB can ever be "
-                        "free; failing it with %s to keep the queue moving",
+                        "Package %s (%s) needs %.1f GiB (reservation %.1f GiB "
+                        "of size %.1f GiB + minimum-free %.1f GiB) but only "
+                        "%.1f GiB can ever be free; failing it with %s to keep "
+                        "the queue moving",
                         descriptor.package_id,
                         descriptor.title,
-                        (required_bytes + snapshot.minimum_free_bytes) / GIB,
+                        (reservation_bytes + snapshot.minimum_free_bytes) / GIB,
+                        reservation_bytes / GIB,
                         required_bytes / GIB,
                         snapshot.minimum_free_bytes / GIB,
                         settled_free_bytes / GIB,
@@ -1199,7 +1238,7 @@ class ChannelLibraryService:
                 error="waiting_for_disk_space",
             )
             reservation = await self.disk_admission.acquire(
-                str(attempt_id), required_bytes
+                str(attempt_id), reservation_bytes
             )
             reservations[str(attempt_id)] = reservation
             self.store.mark_download_batch_package_started(

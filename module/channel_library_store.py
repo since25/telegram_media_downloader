@@ -3244,8 +3244,18 @@ class ChannelLibraryStore:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM channel_download_batch_packages
-                WHERE batch_id = ? ORDER BY ordinal, package_id
+                SELECT pkg.*, COALESCE(
+                    (SELECT MAX(media.file_size)
+                     FROM channel_download_batch_items AS item
+                     JOIN channel_media_messages AS media
+                       ON media.library_id = item.library_id
+                      AND media.message_id = item.message_id
+                     WHERE item.batch_id = pkg.batch_id
+                       AND item.package_id = pkg.package_id),
+                    0
+                ) AS max_item_size
+                FROM channel_download_batch_packages AS pkg
+                WHERE pkg.batch_id = ? ORDER BY pkg.ordinal, pkg.package_id
                 """,
                 (batch_id,),
             ).fetchall()
