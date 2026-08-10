@@ -76,6 +76,7 @@ DOWNLOAD_ERROR_CODES = frozenset(
         "upload_failed",
         "not_found",
         "unknown_package_size",
+        "package_exceeds_disk_capacity",
     }
 )
 DEFAULT_PAGE_SIZE = 50
