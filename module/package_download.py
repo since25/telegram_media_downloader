@@ -209,6 +209,24 @@ async def run_packages(
                 await run_package_callback(
                     on_package_started, attempt_id, package, logger=logger
                 )
+            if getattr(package, "skip_download", False):
+                # The package was rejected before download (for example, its
+                # known size can never fit on the current disk). Finalize it as
+                # a failed attempt without queueing any files.
+                logger.info(
+                    f"Package {package.package_id} skipped before download "
+                    f"(task {parent_node.task_id})"
+                )
+                result = build_package_result(package, parent_node)
+                results.append(result)
+                if on_package_finished is not None:
+                    await run_package_callback(
+                        on_package_finished,
+                        attempt_id,
+                        result.message_results,
+                        logger=logger,
+                    )
+                continue
             await download_prepared_messages(
                 package.messages,
                 None,

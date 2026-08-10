@@ -20,7 +20,7 @@ from croniter import croniter
 from pyrogram import errors
 
 from module.channel_library_store import ChannelLibraryConfig, ChannelLibraryStore
-from module.download_admission import DiskReservation, DiskSpaceAdmission
+from module.download_admission import DiskReservation, DiskSpaceAdmission, GIB
 from module.channel_library_workflow import (
     ChannelPackageIndexer,
     extract_media_row,
@@ -87,6 +87,14 @@ def _package_error_code(status: str) -> Optional[str]:
     if status in {"upload_failed", "not_found", "cancelled"}:
         return status
     return "download_failed"
+
+
+# A package is failed with this code instead of waiting forever when its full
+# known size plus the configured free-disk margin can never fit, even after
+# every in-flight reservation settles. Failing it immediately keeps the FIFO
+# disk admission queue (and therefore every download slot) from deadlocking
+# behind a package that can never run on the current disk.
+PACKAGE_EXCEEDS_DISK_CAPACITY = "package_exceeds_disk_capacity"
 
 
 class ChannelLibraryService:
@@ -1141,13 +1149,57 @@ class ChannelLibraryService:
             descriptor = next(
                 item for item in descriptors if item.attempt_id == attempt_id
             )
+            required_bytes = int(descriptor.known_total_size or 0)
+            try:
+                snapshot = await self.disk_admission.snapshot()
+                settled_free_bytes = snapshot.free_bytes + snapshot.reserved_bytes
+                if (
+                    required_bytes + snapshot.minimum_free_bytes
+                    > settled_free_bytes
+                ):
+                    # This package can never fit on the current disk, even after
+                    # every in-flight download releases its reservation. The FIFO
+                    # admission would otherwise hold a download slot forever and
+                    # block every later package, so fail it now and keep going.
+                    LOGGER.warning(
+                        "Package %s (%s) needs %.1f GiB (size %.1f GiB + "
+                        "minimum-free %.1f GiB) but only %.1f GiB can ever be "
+                        "free; failing it with %s to keep the queue moving",
+                        descriptor.package_id,
+                        descriptor.title,
+                        (required_bytes + snapshot.minimum_free_bytes) / GIB,
+                        required_bytes / GIB,
+                        snapshot.minimum_free_bytes / GIB,
+                        settled_free_bytes / GIB,
+                        PACKAGE_EXCEEDS_DISK_CAPACITY,
+                    )
+                    descriptor.skip_download = True
+                    _package.skip_download = True
+                    self.store.finish_download_batch_package(
+                        batch_id,
+                        attempt_packages[attempt_id],
+                        "failed",
+                        last_error=PACKAGE_EXCEEDS_DISK_CAPACITY,
+                    )
+                    self.task_store.update_task(
+                        batch["task_id"],
+                        status=TaskStatus.QUEUED,
+                        error="",
+                    )
+                    return
+            except Exception:  # pragma: no cover - defensive fallback
+                LOGGER.exception(
+                    "Disk capacity check failed for package %s; falling back "
+                    "to FIFO admission",
+                    descriptor.package_id,
+                )
             self.task_store.update_task(
                 batch["task_id"],
                 status=TaskStatus.QUEUED,
                 error="waiting_for_disk_space",
             )
             reservation = await self.disk_admission.acquire(
-                str(attempt_id), descriptor.known_total_size
+                str(attempt_id), required_bytes
             )
             reservations[str(attempt_id)] = reservation
             self.store.mark_download_batch_package_started(
@@ -1176,15 +1228,29 @@ class ChannelLibraryService:
                     status = "cancelled"
                 else:
                     status = "failed"
+                descriptor = next(
+                    item for item in descriptors if item.attempt_id == attempt_id
+                )
+                if getattr(descriptor, "skip_download", False):
+                    last_error = PACKAGE_EXCEEDS_DISK_CAPACITY
+                    for item in self.store.get_download_batch_package_items(
+                        batch_id, attempt_packages[attempt_id]
+                    ):
+                        self.task_store.upsert_file(
+                            batch["task_id"],
+                            item.get("source_message_id") or item["message_id"],
+                            status=FileStatus.FAILED,
+                            error=PACKAGE_EXCEEDS_DISK_CAPACITY,
+                        )
+                elif attempt_errors.get(attempt_id):
+                    last_error = "telegram_refetch_failed"
+                else:
+                    last_error = _package_error_code(status)
                 self.store.finish_download_batch_package(
                     batch_id,
                     attempt_packages[attempt_id],
                     status,
-                    last_error=(
-                        "telegram_refetch_failed"
-                        if attempt_errors.get(attempt_id)
-                        else _package_error_code(status)
-                    ),
+                    last_error=last_error,
                 )
             finally:
                 reservation = reservations.pop(str(attempt_id), None)
