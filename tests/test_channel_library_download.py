@@ -136,6 +136,64 @@ def test_download_batch_admission_matches_worker_capacity(tmp_path):
         loop.close()
 
 
+def test_shutdown_keeps_active_download_batch_resumable(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch, _created = service.create_download_batch_result(
+            library["id"], "shutdown-resume", package_ids=(10,)
+        )
+        started = asyncio.Event()
+
+        async def blocked_run(_batch_id):
+            service.store.mark_download_batch_package_started(batch["id"], 10)
+            started.set()
+            await asyncio.Event().wait()
+
+        service._run_download_batch_owned = blocked_run
+        service._stopping = True
+
+        async def exercise():
+            task = asyncio.create_task(service.run_download_batch(batch["id"]))
+            await asyncio.wait_for(started.wait(), timeout=1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        loop.run_until_complete(exercise())
+
+        stored = service.store.get_download_batch(batch["id"])
+        assert stored["status"] == "queued"
+        assert stored["packages"][0]["status"] == "queued"
+        assert service.task_store.get_task(batch["task_id"]).status == TaskStatus.QUEUED
+    finally:
+        loop.close()
+
+
+def test_explicit_cancel_while_waiting_for_admission_stays_cancelled(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        batch, _created = service.create_download_batch_result(
+            library["id"], "cancel-admission-wait", package_ids=(10,)
+        )
+        service.owner_loop = loop
+
+        async def exercise():
+            service._download_batch_slots = asyncio.Semaphore(0)
+            assert service._schedule_download_batch_owned(batch["id"])
+            await asyncio.sleep(0)
+            return await service._cancel_download_batch_command(batch["task_id"])
+
+        assert loop.run_until_complete(exercise()) is True
+        stored = service.store.get_download_batch(batch["id"])
+        assert stored["status"] == "cancelled"
+        assert stored["packages"][0]["status"] == "cancelled"
+        assert (
+            service.task_store.get_task(batch["task_id"]).status == TaskStatus.CANCELLED
+        )
+    finally:
+        loop.close()
+
+
 def test_create_download_batch_clears_selection(tmp_path):
     service, library, loop = make_download_service(tmp_path)
     try:

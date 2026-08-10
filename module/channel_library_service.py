@@ -435,6 +435,7 @@ class ChannelLibraryService:
         if download_task is not None and not download_task.done():
             download_task.cancel()
             await asyncio.gather(download_task, return_exceptions=True)
+            self._cancel_unfinished_download_batch(batch_id)
         else:
             self._cancel_unfinished_download_batch(batch_id)
         return True
@@ -738,12 +739,8 @@ class ChannelLibraryService:
                 max(1, int(getattr(self.app, "max_download_task", 1) or 1))
             )
             self._download_batch_slots = slots
-        try:
-            async with slots:
-                return await self.run_download_batch(batch_id)
-        except asyncio.CancelledError:
-            self._cancel_unfinished_download_batch(batch_id)
-            raise
+        async with slots:
+            return await self.run_download_batch(batch_id)
 
     def _schedule_download_batch_owned(self, batch_id: int) -> bool:
         existing = self._download_batch_tasks.get(batch_id)
@@ -944,12 +941,26 @@ class ChannelLibraryService:
             self.store.prepare_download_batch_for_run(batch_id)
             return await self._run_download_batch_owned(batch_id)
         except asyncio.CancelledError:
-            self._cancel_unfinished_download_batch(batch_id)
+            if self._stopping:
+                self._requeue_interrupted_download_batch(batch_id)
+            else:
+                self._cancel_unfinished_download_batch(batch_id)
             raise
         finally:
             self._running_download_batch_ids.discard(batch_id)
             with _DOWNLOAD_BATCH_RUNNER_LOCK:
                 _DOWNLOAD_BATCH_RUNNERS.discard(runner_key)
+
+    def _requeue_interrupted_download_batch(self, batch_id: int) -> None:
+        """Keep shutdown-interrupted work resumable for the next process."""
+
+        header = self.store.get_download_batch_header(batch_id)
+        if header is None or header["status"] not in {"queued", "downloading"}:
+            return
+        self.store.prepare_download_batch_for_run(batch_id)
+        self.task_store.reconcile_task(
+            header["task_id"], status=TaskStatus.QUEUED, error=""
+        )
 
     def _cancel_unfinished_download_batch(self, batch_id: int) -> None:
         header = self.store.get_download_batch_header(batch_id)
