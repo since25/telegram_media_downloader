@@ -499,6 +499,17 @@
                 <button type="submit" class="btn btn-primary" id="keyword_group_save">保存</button>
               </div>
             </form>
+            <div class="keyword-monitor-progress" id="keyword_monitor_progress" hidden>
+              <div class="keyword-monitor-progress-main">
+                <div class="keyword-monitor-progress-heading">
+                  <strong>任务进度</strong>
+                  <span class="nums text-muted" id="keyword_progress_text">0/0 已处理</span>
+                </div>
+                <div class="track"><i id="keyword_progress_track" style="width:0%"></i></div>
+              </div>
+              <div class="keyword-monitor-progress-counts nums" id="keyword_progress_counts"></div>
+              <button type="button" class="btn btn-secondary" id="keyword_retry_failures" hidden>重试失败项</button>
+            </div>
             <div class="keyword-monitor-history">
               <header>
                 <strong>监控历史</strong>
@@ -709,7 +720,7 @@
       }, aggregate:{items:[],nextCursor:null,expandedItems:{},selection:null,loading:false,
         pendingLibraryId:null,pendingPackageId:null},
       keywordMonitor:{groups:[],selectedGroupId:null,history:[],historyNextCursor:null,
-        draftDirty:false,draft:null},
+        summary:null,retrying:false,draftDirty:false,draft:null},
       resourceDelivery:{items:[],payload:null,polling:false,filter:'all'} };
     let taskFilter = 'all';
 
@@ -968,6 +979,11 @@
         upload_failed:'上传失败',
         upload_source_missing:'上传源文件不存在',
         download_failed:'下载失败',
+        telegram_refetch_failed:'Telegram 消息回查失败',
+        callback_failed:'任务状态写入失败',
+        unknown_package_size:'资源大小未知',
+        not_found:'资源已不可用',
+        waiting_for_disk_space:'等待磁盘空间',
         cancelled:'任务已取消',
       })[error] || error;
     }
@@ -2024,34 +2040,61 @@
     }
     async function loadKeywordHistory({append=false}={}){
       const groupId = state.keywordMonitor.selectedGroupId;
-      if (!groupId){ state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null; renderKeywordHistory(); return; }
+      if (!groupId){ state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null; state.keywordMonitor.summary=null; renderKeywordHistory(); return; }
       const params = new URLSearchParams({page_size:'50'});
       if (append&&state.keywordMonitor.historyNextCursor) params.set('cursor',state.keywordMonitor.historyNextCursor);
       try {
         const data = await channelRequest(`/api/keyword-monitor-groups/${groupId}/history?${params}`);
         state.keywordMonitor.history = append ? [...state.keywordMonitor.history,...(data.items||[])] : (data.items||[]);
         state.keywordMonitor.historyNextCursor = data.next_cursor||null;
+        state.keywordMonitor.summary = data.summary||null;
         renderKeywordHistory();
       } catch (error){ $('#keyword_group_notice').textContent=error.message; }
     }
+    function renderKeywordProgress(){
+      const summary = state.keywordMonitor.summary;
+      const box = $('#keyword_monitor_progress');
+      box.hidden = !summary || Number(summary.total_count)<=0;
+      if (box.hidden) return;
+      const total = Number(summary.total_count)||0;
+      const processed = Number(summary.processed_count)||0;
+      const percent = total ? Math.round(processed/total*100) : 0;
+      $('#keyword_progress_text').textContent = `${processed}/${total} 已处理 · ${percent}%`;
+      $('#keyword_progress_track').style.width = `${percent}%`;
+      $('#keyword_progress_counts').innerHTML = `
+        <span><b>${Number(summary.downloading_count)||0}</b> 下载中</span>
+        <span><b>${Number(summary.queued_count)||0}</b> 排队</span>
+        <span><b>${Number(summary.completed_count)||0}</b> 成功</span>
+        <span class="${Number(summary.failed_count)?'has-failure':''}"><b>${Number(summary.failed_count)||0}</b> 失败</span>`;
+      const retry = $('#keyword_retry_failures');
+      retry.hidden = Number(summary.failed_count)<=0;
+      retry.disabled = state.keywordMonitor.retrying;
+    }
     function renderKeywordHistory(){
       const history = state.keywordMonitor.history;
-      $('#keyword_history_count').textContent = `${history.length} 条`;
+      const summary = state.keywordMonitor.summary;
+      $('#keyword_history_count').textContent = `${summary?Number(summary.total_count)||0:history.length} 条`;
       $('#keyword_history_more').hidden = !state.keywordMonitor.historyNextCursor;
-      $('#keyword_history_rows').innerHTML = history.length ? history.map(item=>`<tr>
+      renderKeywordProgress();
+      $('#keyword_history_rows').innerHTML = history.length ? history.map(item=>{
+        const status = (item.progress&&item.progress.status)||item.batch_status||item.package_download_status;
+        const processed = item.progress ? (Number(item.progress.success_count)||0)+(Number(item.progress.failed_count)||0)+(Number(item.progress.skipped_count)||0) : 0;
+        const queue = status==='queued'&&Number(item.queue_position)>0 ? `<br><span class="text-muted nums">全局队列 #${Number(item.queue_position)}</span>` : '';
+        const failure = item.last_error ? `<br><span class="keyword-history-error" title="${escapeHtml(taskErrorLabel(item.last_error))}">${escapeHtml(taskErrorLabel(item.last_error))}</span>` : '';
+        return `<tr>
         <td>${formatChannelTime(item.created_at)}</td><td>${escapeHtml(item.channel_title||'未命名频道')}</td>
         <td>${escapeHtml(item.package_title||'未命名包')}<br><span class="text-muted nums">#${Number(item.package_id)}</span></td>
         <td>${item.matched_keywords.map(keyword=>`<span class="tag tag-neutral">${escapeHtml(keyword)}</span>`).join(' ')}</td>
-        <td>${statusTag((item.progress&&item.progress.status)||item.batch_status||item.package_download_status)}
-          ${item.progress?`<br><span class="text-muted nums">${Number(item.progress.success_count)||0}/${Number(item.progress.total_count)||0} 完成 · ${Number(item.progress.failed_count)||0} 失败</span>`:''}</td>
+        <td>${statusTag(status)}${queue}
+          ${item.progress?`<br><span class="text-muted nums">${processed}/${Number(item.progress.total_count)||0} 已处理 · ${Number(item.progress.failed_count)||0} 失败</span>`:''}${failure}</td>
         <td class="nums" title="${escapeHtml(item.task_id)}">${escapeHtml(shortId(item.task_id))}</td>
-      </tr>`).join('') : '<tr><td colspan="6" class="text-muted" style="padding:32px;text-align:center">暂无监控历史</td></tr>';
+      </tr>`; }).join('') : '<tr><td colspan="6" class="text-muted" style="padding:32px;text-align:center">暂无监控历史</td></tr>';
     }
     async function selectKeywordGroup(groupId){
       const group = state.keywordMonitor.groups.find(item=>Number(item.id)===Number(groupId));
       if (!group) return;
       state.keywordMonitor.selectedGroupId=Number(group.id);
-      state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null;
+      state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null; state.keywordMonitor.summary=null;
       renderKeywordGroups(); fillKeywordGroup(group); await loadKeywordHistory();
     }
     async function loadKeywordGroups({selectFirst=true}={}){
@@ -2060,7 +2103,7 @@
       const selected = state.keywordMonitor.groups.find(item=>Number(item.id)===state.keywordMonitor.selectedGroupId);
       if (selected&&!state.keywordMonitor.draftDirty){ fillKeywordGroup(selected); }
       else if (selectFirst&&!state.keywordMonitor.draftDirty&&state.keywordMonitor.groups.length){ await selectKeywordGroup(Number(state.keywordMonitor.groups[0].id)); }
-      else if (!state.keywordMonitor.groups.length&&!state.keywordMonitor.draftDirty){ state.keywordMonitor.selectedGroupId=null; fillKeywordGroup(null); renderKeywordHistory(); }
+      else if (!state.keywordMonitor.groups.length&&!state.keywordMonitor.draftDirty){ state.keywordMonitor.selectedGroupId=null; state.keywordMonitor.summary=null; fillKeywordGroup(null); renderKeywordHistory(); }
     }
     async function activateKeywordMonitor(){
       try { await ensureChannelCsrf(); await loadKeywordGroups(); }
@@ -2075,7 +2118,7 @@
       const row=e.target.closest('[data-keyword-group]'); if (row) selectKeywordGroup(Number(row.dataset.keywordGroup));
     });
     $('#keyword_group_new').addEventListener('click',()=>{
-      state.keywordMonitor.selectedGroupId=null; state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null;
+      state.keywordMonitor.selectedGroupId=null; state.keywordMonitor.history=[]; state.keywordMonitor.historyNextCursor=null; state.keywordMonitor.summary=null;
       renderKeywordGroups(); fillKeywordGroup(null); state.keywordMonitor.draftDirty=true;
       renderKeywordHistory(); $('#keyword_group_name').focus();
     });
@@ -2105,6 +2148,17 @@
       } catch (error){ $('#keyword_group_notice').textContent=error.message; }
     });
     $('#keyword_history_more').addEventListener('click',()=>loadKeywordHistory({append:true}));
+    $('#keyword_retry_failures').addEventListener('click',async()=>{
+      const groupId=state.keywordMonitor.selectedGroupId;
+      if (!groupId||state.keywordMonitor.retrying) return;
+      state.keywordMonitor.retrying=true; renderKeywordProgress();
+      try {
+        const result=await channelApiWrite('POST',`/api/keyword-monitor-groups/${groupId}/retry-failures`);
+        $('#keyword_group_notice').textContent=`已重新排队 ${Number(result.scheduled_count)||0} 项`;
+        await loadKeywordHistory();
+      } catch (error){ $('#keyword_group_notice').textContent=error.message; }
+      finally { state.keywordMonitor.retrying=false; renderKeywordProgress(); }
+    });
 
     $('#resource_delivery_filter').addEventListener('change', e => {
       state.resourceDelivery.filter = e.target.value;

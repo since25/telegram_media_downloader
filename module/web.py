@@ -704,8 +704,7 @@ def _resource_delivery_payload(job: dict, package: Optional[dict]) -> dict:
         "public_id": job["public_id"],
         "telegram_user_id": int(job["telegram_user_id"]),
         "package_id": int(job["package_id"]),
-        "package_title": package_data.get("title")
-        or f"资源包 #{job['package_id']}",
+        "package_title": package_data.get("title") or f"资源包 #{job['package_id']}",
         "source_title": package_data.get("channel_title")
         or package_data.get("source_chat_title"),
         "target_chat_id": int(job["target_chat_id"]),
@@ -742,9 +741,7 @@ def resource_deliveries():
     )
     channel_service = getattr(_active_app(), "channel_library_service", None)
     channel_store = (
-        getattr(channel_service, "store", None)
-        if channel_service is not None
-        else None
+        getattr(channel_service, "store", None) if channel_service is not None else None
     )
     package_cache = {}
     items = []
@@ -756,9 +753,7 @@ def resource_deliveries():
                 if channel_store is not None
                 else None
             )
-        items.append(
-            _resource_delivery_payload(job, package_cache[package_id])
-        )
+        items.append(_resource_delivery_payload(job, package_cache[package_id]))
     return jsonify(
         {
             "items": items,
@@ -770,9 +765,7 @@ def resource_deliveries():
     )
 
 
-@_flask_app.route(
-    "/api/resource-deliveries/<public_id>/cancel", methods=["POST"]
-)
+@_flask_app.route("/api/resource-deliveries/<public_id>/cancel", methods=["POST"])
 @login_required
 @_channel_api
 @_require_csrf
@@ -791,9 +784,7 @@ def cancel_resource_delivery(public_id: str):
     return jsonify({"job": _resource_delivery_payload(job, None)})
 
 
-@_flask_app.route(
-    "/api/resource-deliveries/<public_id>/clear", methods=["POST"]
-)
+@_flask_app.route("/api/resource-deliveries/<public_id>/clear", methods=["POST"])
 @login_required
 @_channel_api
 @_require_csrf
@@ -812,9 +803,7 @@ def clear_resource_delivery(public_id: str):
     return jsonify({"cleared": cleared, "public_id": public_id})
 
 
-@_flask_app.route(
-    "/api/resource-deliveries/clear-terminal", methods=["POST"]
-)
+@_flask_app.route("/api/resource-deliveries/clear-terminal", methods=["POST"])
 @login_required
 @_channel_api
 @_require_csrf
@@ -1579,7 +1568,43 @@ def keyword_monitor_history(group_id: int):
         else:
             item["progress"] = None
         items.append(item)
-    return jsonify({"items": items, "next_cursor": page.next_cursor})
+    return jsonify(
+        {
+            "items": items,
+            "next_cursor": page.next_cursor,
+            "summary": service.store.get_keyword_monitor_summary(group_id),
+        }
+    )
+
+
+@_flask_app.route(
+    "/api/keyword-monitor-groups/<int:group_id>/retry-failures",
+    methods=["POST"],
+)
+@login_required
+@_channel_api
+@_require_csrf
+def retry_keyword_monitor_failures(group_id: int):
+    """Requeue every currently recoverable failure in one monitor group."""
+
+    _require_empty_command_input()
+    service = _channel_service()
+    try:
+        result = wait_for_web_command(
+            service.retry_keyword_monitor_failures_threadsafe(group_id),
+            timeout=5,
+        )
+    except WebCommandTimeout:
+        raise _ChannelApiError(503, "service_unavailable", "Retry scheduling timed out")
+    except RuntimeError:
+        raise _ChannelApiError(
+            503, "service_unavailable", "Channel service is unavailable"
+        )
+    if result["scheduled_count"] <= 0:
+        raise _ChannelApiError(
+            409, "state_conflict", "No recoverable failures are available"
+        )
+    return jsonify({"ok": True, **result}), 202
 
 
 @_flask_app.route("/get_download_status")
@@ -1687,9 +1712,7 @@ def get_download_list():
                 "id": message_id,
                 "filename": os.path.basename(value["file_name"]),
                 "total_size": format_byte(value["total_size"]),
-                "download_progress": round(
-                    value["down_byte"] / total_size * 100, 1
-                ),
+                "download_progress": round(value["down_byte"] / total_size * 100, 1),
                 "download_speed": download_speed,
                 "save_path": value["file_name"].replace("\\", "/"),
             }
@@ -3069,9 +3092,7 @@ def _validate_date_format(value: Any) -> str:
         "date_format",
         allow_empty=False,
     )
-    supported_directives = frozenset(
-        "aAwdbBmyYHIpMSfzZjUWcxXGguV%"
-    )
+    supported_directives = frozenset("aAwdbBmyYHIpMSfzZjUWcxXGguV%")
     index = 0
     while index < len(date_format):
         if date_format[index] != "%":
@@ -3084,10 +3105,7 @@ def _validate_date_format(value: Any) -> str:
             index += 1
         while index < len(date_format) and date_format[index].isdigit():
             index += 1
-        if (
-            index >= len(date_format)
-            or date_format[index] not in supported_directives
-        ):
+        if index >= len(date_format) or date_format[index] not in supported_directives:
             raise _SettingsValidationError("date_format")
         index += 1
     return date_format
@@ -3362,9 +3380,7 @@ def _configured_settings_from_app(app: Application) -> dict:
             app.max_concurrent_transmissions,
         )
     )
-    configured["start_timeout"] = int(
-        config.get("start_timeout", app.start_timeout)
-    )
+    configured["start_timeout"] = int(config.get("start_timeout", app.start_timeout))
 
     upload_config = config.get("upload_drive")
     if isinstance(upload_config, dict):
@@ -3474,9 +3490,9 @@ def _update_chat_config(app: Application, chats: Any) -> None:
             config_entry["download_filter"] = chat_config.download_filter
         if "upload_telegram_chat_id" in chat_payload:
             if chat_config.upload_telegram_chat_id:
-                config_entry[
-                    "upload_telegram_chat_id"
-                ] = chat_config.upload_telegram_chat_id
+                config_entry["upload_telegram_chat_id"] = (
+                    chat_config.upload_telegram_chat_id
+                )
             else:
                 config_entry.pop("upload_telegram_chat_id", None)
 

@@ -98,6 +98,44 @@ def make_download_service(tmp_path, *, task_store=None, client=None):
     return service, library, loop
 
 
+def test_download_batch_admission_matches_worker_capacity(tmp_path):
+    service, _library, loop = make_download_service(tmp_path)
+    active = 0
+    peak = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_run(_batch_id):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == 2:
+            started.set()
+        await release.wait()
+        active -= 1
+        return []
+
+    async def exercise():
+        service._download_batch_slots = asyncio.Semaphore(2)
+        service.run_download_batch = blocked_run
+        tasks = [
+            asyncio.create_task(service._run_download_batch_with_admission(value))
+            for value in (1, 2, 3)
+        ]
+        await asyncio.wait_for(started.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert peak == 2
+        assert active == 2
+        release.set()
+        await asyncio.gather(*tasks)
+
+    try:
+        loop.run_until_complete(exercise())
+        assert peak == 2
+    finally:
+        loop.close()
+
+
 def test_create_download_batch_clears_selection(tmp_path):
     service, library, loop = make_download_service(tmp_path)
     try:
@@ -332,7 +370,10 @@ def test_download_retry_rejects_package_owned_by_an_active_batch(tmp_path):
         )
 
         assert retried is False
-        assert service.store.get_download_batch(batch["id"])["status"] == "completed_with_errors"
+        assert (
+            service.store.get_download_batch(batch["id"])["status"]
+            == "completed_with_errors"
+        )
         assert service.store.get_download_batch(competing["id"])["status"] == "queued"
     finally:
         loop.close()
@@ -393,6 +434,109 @@ def test_unknown_package_size_fails_that_package_and_continues(tmp_path):
         assert service.task_store.get_task(batch["task_id"]).files["101"].error == (
             "unknown_package_size"
         )
+    finally:
+        loop.close()
+
+
+def test_keyword_monitor_history_reports_queue_progress_and_retryable_failures(
+    tmp_path,
+):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        group = service.store.save_keyword_monitor_group(
+            "Original packages",
+            required_keywords=(),
+            match_keywords=("original",),
+            blacklist_keywords=(),
+        )
+        batch, created = service.create_download_batch_result(
+            library["id"],
+            "monitor-progress",
+            package_ids=(10,),
+            keyword_monitor_hits=(
+                {
+                    "group_id": group["id"],
+                    "package_id": 10,
+                    "matched_keywords": ("original",),
+                },
+            ),
+        )
+
+        assert created is True
+        queued = service.store.list_keyword_monitor_history(group["id"]).items[0]
+        assert queued["queue_position"] == 1
+        assert service.store.get_keyword_monitor_summary(group["id"]) == {
+            "total_count": 1,
+            "queued_count": 1,
+            "downloading_count": 0,
+            "completed_count": 0,
+            "failed_count": 0,
+            "cancelled_count": 0,
+            "updated_at": queued["updated_at"],
+            "processed_count": 0,
+        }
+
+        service.store.finish_download_batch_package(
+            batch["id"], 10, "failed", last_error="telegram_refetch_failed"
+        )
+
+        failed = service.store.list_keyword_monitor_history(group["id"]).items[0]
+        summary = service.store.get_keyword_monitor_summary(group["id"])
+        assert failed["queue_position"] is None
+        assert failed["last_error"] == "telegram_refetch_failed"
+        assert summary["failed_count"] == 1
+        assert summary["processed_count"] == 1
+        assert service.store.list_keyword_monitor_retry_task_ids(group["id"]) == [
+            batch["task_id"]
+        ]
+    finally:
+        loop.close()
+
+
+def test_keyword_monitor_bulk_retry_requeues_failed_downloads(tmp_path):
+    service, library, loop = make_download_service(tmp_path)
+    try:
+        group = service.store.save_keyword_monitor_group(
+            "Retry failures",
+            required_keywords=(),
+            match_keywords=("original",),
+            blacklist_keywords=(),
+        )
+        batch, _created = service.create_download_batch_result(
+            library["id"],
+            "monitor-retry",
+            package_ids=(10,),
+            keyword_monitor_hits=(
+                {
+                    "group_id": group["id"],
+                    "package_id": 10,
+                    "matched_keywords": ("original",),
+                },
+            ),
+        )
+        service.store.finish_download_batch_package(
+            batch["id"], 10, "failed", last_error="telegram_refetch_failed"
+        )
+        service.task_store.update_task(
+            batch["task_id"], status=TaskStatus.FAILED, error="download_failed"
+        )
+        scheduled = []
+        service._schedule_download_batch_owned = lambda batch_id: (
+            scheduled.append(batch_id) or True
+        )
+
+        result = loop.run_until_complete(
+            service._retry_keyword_monitor_failures_command(group["id"])
+        )
+
+        assert result == {
+            "candidate_count": 1,
+            "scheduled_count": 1,
+            "skipped_count": 0,
+        }
+        assert scheduled == [batch["id"]]
+        assert service.store.get_download_batch(batch["id"])["status"] == "queued"
+        assert service.task_store.get_task(batch["task_id"]).status == TaskStatus.QUEUED
     finally:
         loop.close()
 

@@ -1308,7 +1308,9 @@ def test_cancel_channel_task_delegates_to_persisted_batch_service(web_env):
 def test_keyword_monitor_group_api_triggers_existing_index_and_returns_history(web_env):
     env = web_env
     library, job = create_library(env, title="Courses")
-    package_id = insert_package(env.store, library["id"], 10, title="课程 Python 完整版")
+    package_id = insert_package(
+        env.store, library["id"], 10, title="课程 Python 完整版"
+    )
     insert_package_item(env.store, library["id"], package_id, 10)
     with env.store.connect() as connection:
         connection.execute(
@@ -1353,6 +1355,9 @@ def test_keyword_monitor_group_api_triggers_existing_index_and_returns_history(w
     assert history.get_json()["items"][0]["package_id"] == package_id
     assert history.get_json()["items"][0]["matched_keywords"] == ["Python"]
     assert history.get_json()["items"][0]["package_download_status"] == "queued"
+    assert history.get_json()["items"][0]["queue_position"] == 1
+    assert history.get_json()["summary"]["queued_count"] == 1
+    assert history.get_json()["summary"]["processed_count"] == 0
     assert history.get_json()["items"][0]["progress"] == {
         "status": "queued",
         "total_count": 1,
@@ -1363,6 +1368,68 @@ def test_keyword_monitor_group_api_triggers_existing_index_and_returns_history(w
         "updated_at": history.get_json()["items"][0]["progress"]["updated_at"],
     }
     assert updated.get_json()["group"]["enabled"] is False
+
+
+def test_keyword_monitor_bulk_retry_uses_one_owner_loop_command(web_env):
+    env = web_env
+    group = env.store.save_keyword_monitor_group(
+        "Retry group",
+        required_keywords=(),
+        match_keywords=("retry",),
+        blacklist_keywords=(),
+    )
+    calls = []
+    env.service.retry_keyword_monitor_failures_threadsafe = lambda group_id: (
+        calls.append(group_id)
+        or ImmediateFuture(
+            value={
+                "candidate_count": 3,
+                "scheduled_count": 2,
+                "skipped_count": 1,
+            }
+        )
+    )
+
+    response = env.client.post(
+        f"/api/keyword-monitor-groups/{group['id']}/retry-failures",
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 202
+    assert response.get_json() == {
+        "ok": True,
+        "candidate_count": 3,
+        "scheduled_count": 2,
+        "skipped_count": 1,
+    }
+    assert calls == [group["id"]]
+
+
+def test_keyword_monitor_bulk_retry_rejects_empty_failure_set(web_env):
+    env = web_env
+    group = env.store.save_keyword_monitor_group(
+        "Empty retry group",
+        required_keywords=(),
+        match_keywords=("retry",),
+        blacklist_keywords=(),
+    )
+    env.service.retry_keyword_monitor_failures_threadsafe = lambda _group_id: (
+        ImmediateFuture(
+            value={
+                "candidate_count": 0,
+                "scheduled_count": 0,
+                "skipped_count": 0,
+            }
+        )
+    )
+
+    response = env.client.post(
+        f"/api/keyword-monitor-groups/{group['id']}/retry-failures",
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["error_code"] == "state_conflict"
 
 
 @pytest.mark.parametrize(
@@ -1951,12 +2018,18 @@ def test_aggregate_package_and_keyword_monitor_tabs_have_complete_dom_contracts(
         "keyword_match",
         "keyword_blacklist",
         "keyword_history_rows",
+        "keyword_monitor_progress",
+        "keyword_progress_track",
+        "keyword_retry_failures",
     }
 
     assert html.count('data-tab="packages"') == 1
     assert html.count('data-tab="keyword-monitor"') == 1
     assert "/api/packages" in html
     assert "/api/keyword-monitor-groups" in html
+    assert "/retry-failures" in html
+    assert "全局队列 #" in html
+    assert "function renderKeywordProgress" in html
     assert "pkg.current_download_status==='never'" in html
     assert 'data-aggregate-download="${id}"' in html
     assert "aggregate-package-download-placeholder" in html

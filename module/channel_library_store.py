@@ -1243,9 +1243,7 @@ class ChannelLibraryStore:
                         """,
                         (job_id,),
                     )
-                    excluded_kind = (
-                        "comment" if scan_mode == "messages" else "channel"
-                    )
+                    excluded_kind = "comment" if scan_mode == "messages" else "channel"
                     if scan_mode != "both":
                         connection.execute(
                             """
@@ -1705,14 +1703,10 @@ class ChannelLibraryStore:
             predicates.append("p.published_at < ?")
             parameters.append(date_to)
         if package_filter.message_id_min is not None:
-            predicates.append(
-                "COALESCE(p.source_post_id, p.end_message_id) >= ?"
-            )
+            predicates.append("COALESCE(p.source_post_id, p.end_message_id) >= ?")
             parameters.append(package_filter.message_id_min)
         if package_filter.message_id_max is not None:
-            predicates.append(
-                "COALESCE(p.source_post_id, p.start_message_id) <= ?"
-            )
+            predicates.append("COALESCE(p.source_post_id, p.start_message_id) <= ?")
             parameters.append(package_filter.message_id_max)
         if package_filter.media_count_min is not None:
             predicates.append("p.media_count >= ?")
@@ -1968,7 +1962,20 @@ class ChannelLibraryStore:
                 SELECT h.*, l.title AS channel_title, l.chat_id,
                        b.status AS batch_status,
                        bp.status AS package_download_status,
-                       bp.last_error
+                       bp.last_error,
+                       CASE WHEN b.status = 'queued' THEN (
+                           SELECT COUNT(*)
+                           FROM channel_download_batches AS queued_batch
+                           WHERE queued_batch.dispatch_status = 'dispatched'
+                             AND queued_batch.status = 'queued'
+                             AND (
+                                 queued_batch.created_at < b.created_at
+                                 OR (
+                                     queued_batch.created_at = b.created_at
+                                     AND queued_batch.id <= b.id
+                                 )
+                             )
+                       ) END AS queue_position
                 FROM keyword_monitor_history AS h
                 JOIN channel_libraries AS l ON l.id = h.library_id
                 JOIN channel_download_batches AS b ON b.id = h.batch_id
@@ -1991,6 +1998,90 @@ class ChannelLibraryStore:
             _encode_cursor({"id": int(page_rows[-1]["id"])}) if has_more else None
         )
         return QueryPage(items, next_cursor)
+
+    def get_keyword_monitor_summary(self, group_id: int) -> dict:
+        """Return durable package-level progress for one monitor group."""
+
+        with self.connect() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM keyword_monitor_groups WHERE id = ?",
+                    (int(group_id),),
+                ).fetchone()
+                is None
+            ):
+                raise KeyError(f"Keyword monitor group {group_id} does not exist")
+            row = connection.execute(
+                """
+                SELECT COUNT(*) AS total_count,
+                       SUM(CASE WHEN bp.status = 'queued' THEN 1 ELSE 0 END)
+                           AS queued_count,
+                       SUM(CASE WHEN bp.status = 'downloading' THEN 1 ELSE 0 END)
+                           AS downloading_count,
+                       SUM(CASE WHEN bp.status = 'completed' THEN 1 ELSE 0 END)
+                           AS completed_count,
+                       SUM(CASE WHEN bp.status IN (
+                           'completed_with_errors', 'failed',
+                           'upload_failed', 'not_found'
+                       ) THEN 1 ELSE 0 END) AS failed_count,
+                       SUM(CASE WHEN bp.status = 'cancelled' THEN 1 ELSE 0 END)
+                           AS cancelled_count,
+                       MAX(bp.updated_at) AS updated_at
+                FROM keyword_monitor_history AS h
+                JOIN channel_download_batch_packages AS bp
+                  ON bp.batch_id = h.batch_id AND bp.package_id = h.package_id
+                WHERE h.group_id = ?
+                """,
+                (int(group_id),),
+            ).fetchone()
+        result = {key: row[key] for key in row.keys()}
+        for key in (
+            "total_count",
+            "queued_count",
+            "downloading_count",
+            "completed_count",
+            "failed_count",
+            "cancelled_count",
+        ):
+            result[key] = int(result[key] or 0)
+        result["processed_count"] = (
+            result["completed_count"]
+            + result["failed_count"]
+            + result["cancelled_count"]
+        )
+        return result
+
+    def list_keyword_monitor_retry_task_ids(self, group_id: int) -> list[str]:
+        """List each failed monitor batch once in chronological order."""
+
+        with self.connect() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM keyword_monitor_groups WHERE id = ?",
+                    (int(group_id),),
+                ).fetchone()
+                is None
+            ):
+                raise KeyError(f"Keyword monitor group {group_id} does not exist")
+            rows = connection.execute(
+                """
+                SELECT h.task_id, MIN(h.id) AS first_history_id
+                FROM keyword_monitor_history AS h
+                JOIN channel_download_batches AS b ON b.id = h.batch_id
+                JOIN channel_download_batch_packages AS bp
+                  ON bp.batch_id = h.batch_id AND bp.package_id = h.package_id
+                WHERE h.group_id = ?
+                  AND b.status IN ('completed_with_errors', 'failed')
+                  AND bp.status IN (
+                      'completed_with_errors', 'failed',
+                      'upload_failed', 'not_found'
+                  )
+                GROUP BY h.task_id
+                ORDER BY first_history_id
+                """,
+                (int(group_id),),
+            ).fetchall()
+        return [str(row["task_id"]) for row in rows]
 
     def list_keyword_monitor_candidates(self, group_id: int) -> list[dict]:
         """Return cross-channel stable packages matching one monitor group."""
@@ -3539,9 +3630,7 @@ class ChannelLibraryStore:
         summary_status = (
             "completed"
             if status == "completed"
-            else "cancelled"
-            if status == "cancelled"
-            else "failed"
+            else "cancelled" if status == "cancelled" else "failed"
         )
         with self.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -4540,15 +4629,9 @@ class ChannelLibraryStore:
                     for row in desired_media
                 ),
             )
-            changed = (
-                (existing is not None or bool(desired_media))
-                and (
-                    old_signature != new_signature
-                    or (
-                        existing is not None
-                        and existing["boundary_status"] != "stable"
-                    )
-                )
+            changed = (existing is not None or bool(desired_media)) and (
+                old_signature != new_signature
+                or (existing is not None and existing["boundary_status"] != "stable")
             )
             if (
                 changed

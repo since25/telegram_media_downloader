@@ -129,6 +129,7 @@ class ChannelLibraryService:
         self._shutdown_task: Optional[asyncio.Task[None]] = None
         self._running_download_batch_ids: set[int] = set()
         self._download_batch_tasks: dict[int, asyncio.Task[Any]] = {}
+        self._download_batch_slots: Optional[asyncio.Semaphore] = None
         self._upload_retry_tasks: dict[str, asyncio.Task[Any]] = {}
         self._retained_upload_reservations: dict[str, DiskReservation] = {}
         self._command_lock = threading.Lock()
@@ -152,6 +153,9 @@ class ChannelLibraryService:
         self._acquire_store_ownership()
         try:
             self.owner_loop = loop
+            self._download_batch_slots = asyncio.Semaphore(
+                max(1, int(getattr(self.app, "max_download_task", 1) or 1))
+            )
             self.store.initialize()
             self.store.recover_interrupted_jobs()
             self.dispatch_pending_batches()
@@ -187,6 +191,7 @@ class ChannelLibraryService:
             if owned_tasks:
                 await asyncio.gather(*owned_tasks, return_exceptions=True)
             self._download_batch_tasks.clear()
+            self._download_batch_slots = None
             self._release_store_ownership()
             raise
 
@@ -247,6 +252,7 @@ class ChannelLibraryService:
             if owned_tasks:
                 await asyncio.gather(*owned_tasks, return_exceptions=True)
             self._download_batch_tasks.clear()
+            self._download_batch_slots = None
             self._upload_retry_tasks.clear()
             self._retained_upload_reservations.clear()
             self.incremental_cron_task = None
@@ -502,6 +508,59 @@ class ChannelLibraryService:
         self.task_store.retry_task(task_id)
         return self._schedule_download_batch_owned(batch_id)
 
+    def retry_keyword_monitor_failures_threadsafe(
+        self, group_id: int
+    ) -> concurrent.futures.Future[dict[str, int]]:
+        """Retry all currently recoverable batches for one monitor group."""
+
+        return self._submit_owner_command(
+            lambda: self._retry_keyword_monitor_failures_command(int(group_id))
+        )
+
+    async def _retry_keyword_monitor_failures_command(
+        self, group_id: int
+    ) -> dict[str, int]:
+        task_ids = self.store.list_keyword_monitor_retry_task_ids(group_id)
+        scheduled_count = 0
+        skipped_count = 0
+        for task_id in task_ids:
+            try:
+                task = self.task_store.get_task(task_id)
+                if task is None:
+                    batch = self.store.get_download_batch_by_task_id(task_id)
+                    if batch is None:
+                        skipped_count += 1
+                        continue
+                    retried = self.store.retry_download_batch(int(batch["id"]))
+                    if retried is None:
+                        skipped_count += 1
+                        continue
+                    self._dispatch_download_batch_task(retried)
+                    scheduled = self._schedule_download_batch_owned(int(retried["id"]))
+                elif any(
+                    item.status == FileStatus.UPLOAD_FAILED
+                    for item in task.files.values()
+                ):
+                    scheduled = await self._schedule_upload_retry_command(task_id)
+                else:
+                    scheduled = await self._schedule_download_retry_command(task_id)
+            except (
+                Exception
+            ):  # noqa: BLE001 - one bad history row must not block the rest
+                LOGGER.exception(
+                    "Keyword monitor retry scheduling failed for task %s", task_id
+                )
+                scheduled = False
+            if scheduled:
+                scheduled_count += 1
+            else:
+                skipped_count += 1
+        return {
+            "candidate_count": len(task_ids),
+            "scheduled_count": scheduled_count,
+            "skipped_count": skipped_count,
+        }
+
     def schedule_upload_cleanup_threadsafe(
         self, task_id: str
     ) -> concurrent.futures.Future[bool]:
@@ -670,6 +729,22 @@ class ChannelLibraryService:
         self.task_store.complete_task(task_id)
         return removed_message_ids
 
+    async def _run_download_batch_with_admission(self, batch_id: int) -> list[Any]:
+        """Bound Telegram refetch and queue producers to the worker capacity."""
+
+        slots = self._download_batch_slots
+        if slots is None:
+            slots = asyncio.Semaphore(
+                max(1, int(getattr(self.app, "max_download_task", 1) or 1))
+            )
+            self._download_batch_slots = slots
+        try:
+            async with slots:
+                return await self.run_download_batch(batch_id)
+        except asyncio.CancelledError:
+            self._cancel_unfinished_download_batch(batch_id)
+            raise
+
     def _schedule_download_batch_owned(self, batch_id: int) -> bool:
         existing = self._download_batch_tasks.get(batch_id)
         if existing is not None and not existing.done():
@@ -677,7 +752,7 @@ class ChannelLibraryService:
         if self.owner_loop is None:
             raise RuntimeError("ChannelLibraryService is not running")
         task = self.owner_loop.create_task(
-            self.run_download_batch(batch_id),
+            self._run_download_batch_with_admission(batch_id),
             name=f"channel-library-download-{batch_id}",
         )
         self._download_batch_tasks[batch_id] = task
@@ -1104,9 +1179,9 @@ class ChannelLibraryService:
                 reservation = reservations.pop(str(attempt_id), None)
                 if reservation is not None:
                     if status == "upload_failed":
-                        self._retained_upload_reservations[
-                            str(attempt_id)
-                        ] = reservation
+                        self._retained_upload_reservations[str(attempt_id)] = (
+                            reservation
+                        )
                     else:
                         await reservation.release()
 
@@ -1545,10 +1620,10 @@ class ChannelLibraryService:
                     raise KeyError(
                         f"Channel library {current['library_id']} does not exist"
                     )
-                if (
-                    current["kind"] == "incremental"
-                    and library.get("scan_mode") in {"comments", "both"}
-                ):
+                if current["kind"] == "incremental" and library.get("scan_mode") in {
+                    "comments",
+                    "both",
+                }:
                     if not await self._refresh_comment_posts(current):
                         return
                     current = self._get_required_job(current["id"])
@@ -1733,9 +1808,7 @@ class ChannelLibraryService:
             rows,
             end_id=batch_ids[-1],
             source_posts=(
-                source_posts
-                if library.get("scan_mode") in {"comments", "both"}
-                else ()
+                source_posts if library.get("scan_mode") in {"comments", "both"} else ()
             ),
             repair_failure_id=job.get("repair_failure_id"),
         )
@@ -1760,9 +1833,7 @@ class ChannelLibraryService:
             if self.store.consume_job_control(current["id"]) is not None:
                 return False
             if await self.gate.has_download_activity():
-                self.store.transition_job(
-                    current["id"], "auto_paused_download"
-                )
+                self.store.transition_job(current["id"], "auto_paused_download")
                 await self.gate.wait_until_downloads_idle()
                 paused = self.store.get_job(current["id"])
                 if paused is not None and paused["status"] == "auto_paused_download":
@@ -1781,9 +1852,7 @@ class ChannelLibraryService:
             await self._scan_changed_comment_posts(current, source_posts)
             self.store.upsert_source_posts(int(job["library_id"]), source_posts)
             if index + batch_size < len(post_ids):
-                await self.sleep(
-                    self.random_uniform(*self._incremental_delay_range())
-                )
+                await self.sleep(self.random_uniform(*self._incremental_delay_range()))
         return True
 
     async def _scan_changed_comment_posts(

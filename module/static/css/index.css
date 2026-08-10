@@ -823,6 +823,27 @@ textarea.input { min-height: 90px; resize: vertical; }
   gap: 8px; min-height: 54px; padding: 8px 18px; border-top: 1px solid var(--color-divider);
 }
 .keyword-monitor-actions > span { margin-right: auto; }
+.keyword-monitor-progress {
+  display: grid; grid-template-columns: minmax(220px, 1fr) auto auto;
+  align-items: center; gap: 20px; padding: 12px 18px;
+  border-bottom: 1px solid var(--color-divider);
+}
+.keyword-monitor-progress[hidden],
+.keyword-monitor-progress .btn[hidden] { display: none; }
+.keyword-monitor-progress-main { min-width: 0; }
+.keyword-monitor-progress-heading {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; margin-bottom: 7px; font-size: 12px;
+}
+.keyword-monitor-progress-counts { display: flex; gap: 16px; font-size: 12px; }
+.keyword-monitor-progress-counts span { white-space: nowrap; }
+.keyword-monitor-progress-counts b { margin-right: 3px; font-size: 14px; }
+.keyword-monitor-progress-counts .has-failure b,
+.keyword-history-error { color: var(--color-accent-800); }
+.keyword-history-error {
+  display: inline-block; max-width: 190px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; font-size: 11px;
+}
 .keyword-monitor-history > header {
   display: flex; align-items: center; justify-content: space-between;
   min-height: 50px; padding: 8px 18px; border-bottom: 1px solid var(--color-divider);
@@ -850,6 +871,8 @@ textarea.input { min-height: 90px; resize: vertical; }
   .keyword-monitor-sidebar { border-right: 0; border-bottom: 1px solid var(--color-divider); }
   .keyword-monitor-groups { flex-direction: row; overflow-x: auto; }
   .keyword-monitor-groups .channel-library-row { flex: 0 0 220px; border-right: 1px solid var(--color-divider); }
+  .keyword-monitor-progress { grid-template-columns: minmax(220px, 1fr) auto; }
+  .keyword-monitor-progress .btn { grid-column: 1 / -1; justify-self: end; }
   .channel-operation-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
 
@@ -877,6 +900,9 @@ textarea.input { min-height: 90px; resize: vertical; }
   .aggregate-channel-filter { grid-column: auto; grid-row: auto; }
   .keyword-monitor-form-head, .keyword-monitor-terms { grid-template-columns: 1fr; }
   .keyword-monitor-form-head { align-items: start; }
+  .keyword-monitor-progress { grid-template-columns: 1fr; gap: 12px; }
+  .keyword-monitor-progress-counts { justify-content: space-between; gap: 8px; }
+  .keyword-monitor-progress .btn { grid-column: auto; justify-self: stretch; }
   .channel-library-filter-wide { grid-column: auto; }
   .channel-library-filter-actions { justify-content: flex-start; }
   .channel-library-notice { margin-inline: 12px; }
