@@ -3487,3 +3487,33 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, deploy prior code commit `6e954fc55362d5b2cc3064eadfb3a02dccce99f9`, and restart the service. Preserve current databases by default; `backups/deploy-20260730-224158` contains integrity-verified pre-deployment copies if a confirmed state rollback is also required.
+
+## 2026-08-09 - Task: Deploy bounded keyword-monitor queue and progress visibility
+
+### What was done
+
+- Pushed and deployed `38e9ead124b9f4646f9fab1d8c3fd55cd0300159`, adding keyword-monitor batch admission bounded by the configured four download workers, durable aggregate progress, global queue positions, safe failure reasons, and group-level failed-item retry.
+- Production preflight found `179` persisted keyword-monitor batches queued, no downloading/uploading batches, a healthy service, approximately `13 GB` free disk, clean tracked files, and `PRAGMA quick_check == 'ok'` for all three SQLite databases.
+- Stopped the service and created mode-`0700` rollback point `backups/deploy-20260809-222911`; all three SQLite backups passed `PRAGMA integrity_check` and the backup occupied approximately `179 MB`.
+- Detected that the prior graceful-shutdown path had converted the 179 queued batches to cancelled while stopping the old process. Identified the exact affected set as keyword-monitor batches cancelled during `2026-08-10T02:29:11Z` through `02:29:16Z`; the set contained 179 distinct tasks and single-package batches with no file rows. The 11 older cancelled histories were outside this set.
+- Added and deployed `0a13c3af420840b7aca8413027e2948195a0178a`, preserving queued/admitted work during service shutdown while retaining explicit user cancellation semantics. Created second mode-`0700` rollback point `backups/requeue-repair-20260809-223503` before state repair.
+- Requeued exactly those 179 deployment-cancelled batch, package, channel-package, and Web-task rows in one attached SQLite transaction. Stored the exact target IDs in `backups/requeue-repair-20260809-223503/requeue-targets.json`.
+
+### Testing
+
+- Local complete suite after queue/progress implementation: `745 passed, 1 skipped`; after shutdown recovery repair and new regressions: `747 passed, 1 skipped`.
+- Black, `git diff --check`, Python compilation, JavaScript syntax, import probes, and `pip check` passed. Production tracked files remained clean after both fast-forward-only updates.
+- Production startup reached `active/running`; `/healthz` returned HTTP `200` with `{"status":"ok"}`, `/` returned the expected HTTP `302`, and all three databases continued to pass `PRAGMA quick_check`.
+- Post-repair queue state was `2 downloading + 177 queued`, with active task timestamps advancing and no new bulk cancellation. This is within the configured four-batch admission ceiling; two admitted tasks were waiting for disk reservations.
+- Startup and observation journals contained no warning, traceback, exception, critical, failed, or error entries. Root filesystem retained approximately `13 GB` free.
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`, `module/channel_library_store.py`, `module/web.py`: Added bounded admission, shutdown-safe recovery, durable summaries/queue positions, and bulk failed-item retry.
+- `module/templates/index.html`, `module/static/css/index.css`: Added compact monitor progress, queue position, failure reason, and retry controls.
+- `tests/test_channel_library_download.py`, `tests/module/test_channel_library_web.py`: Added admission, shutdown, summary, queue, retry, API, and UI regressions.
+- `progress.md`: Recorded production deployment, the shutdown-state incident, exact repair set, rollback points, and final health evidence.
+
+Rollback:
+- Stop `tg-downloader.service`, preserve the current live databases, and deploy code commit `946e3b30de5a3556674a121410ad4ab80c0b0caa` to remove both queue changes. Restore database files only if state rollback is explicitly required: `backups/deploy-20260809-222911` preserves the post-shutdown cancelled state, while `backups/requeue-repair-20260809-223503` preserves the same state immediately before the exact 179-row requeue transaction. The preferred rollback keeps current databases because both code changes introduce no schema migration.
