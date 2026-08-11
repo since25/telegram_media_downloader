@@ -52,6 +52,20 @@ async def _transition_file(
     )
 
 
+async def _phase_task_updates(store, task_id, status: str) -> dict:
+    """Avoid reopening a legacy terminal task while persisting file progress."""
+
+    task = await asyncio.to_thread(store.get_task, task_id)
+    if task is not None and task.status in {
+        TaskStatus.COMPLETED,
+        TaskStatus.COMPLETED_WITH_ERRORS,
+        TaskStatus.CANCELLED,
+        TaskStatus.FAILED,
+    }:
+        return {}
+    return {"status": status}
+
+
 async def run_download_phase(
     client,
     message,
@@ -174,7 +188,9 @@ async def run_upload_phase(
                 runtime.task_store,
                 node.task_id,
                 message_id,
-                task_updates={"status": TaskStatus.UPLOADING},
+                task_updates=await _phase_task_updates(
+                    runtime.task_store, node.task_id, TaskStatus.UPLOADING
+                ),
                 file_updates={
                     "status": FileStatus.UPLOADING,
                     "filename": file_name,
@@ -193,7 +209,9 @@ async def run_upload_phase(
                     runtime.task_store,
                     node.task_id,
                     message_id,
-                    task_updates={"status": TaskStatus.UPLOADING},
+                    task_updates=await _phase_task_updates(
+                        runtime.task_store, node.task_id, TaskStatus.UPLOADING
+                    ),
                     file_updates={
                         "status": FileStatus.UPLOADED,
                         "filename": file_name,
@@ -212,7 +230,9 @@ async def run_upload_phase(
                 runtime.task_store,
                 node.task_id,
                 message_id,
-                task_updates={"status": TaskStatus.UPLOADING},
+                task_updates=await _phase_task_updates(
+                    runtime.task_store, node.task_id, TaskStatus.UPLOADING
+                ),
                 file_updates={
                     "status": FileStatus.UPLOAD_FAILED,
                     "filename": file_name,
@@ -227,7 +247,9 @@ async def run_upload_phase(
                 runtime.task_store,
                 node.task_id,
                 message_id,
-                task_updates={"status": TaskStatus.UPLOADING},
+                task_updates=await _phase_task_updates(
+                    runtime.task_store, node.task_id, TaskStatus.UPLOADING
+                ),
                 file_updates={
                     "status": FileStatus.UPLOAD_FAILED,
                     "filename": file_name,
