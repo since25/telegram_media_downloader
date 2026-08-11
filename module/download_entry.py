@@ -1636,6 +1636,7 @@ async def download_prepared_messages(
             await report_bot_status(node.bot, node)
             await asyncio.sleep(5)
 
+        await queue.join()
         await report_bot_status(node.bot, node)
         logger.info(
             "消息下载任务已全部完成 - "
