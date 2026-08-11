@@ -1002,6 +1002,11 @@ class ChannelLibraryService:
         self._running_download_batch_ids.add(batch_id)
         try:
             self.store.prepare_download_batch_for_run(batch_id)
+            header = self.store.get_download_batch_header(batch_id)
+            if header is not None:
+                self.task_store.reconcile_task(
+                    header["task_id"], status=TaskStatus.QUEUED, error=""
+                )
             return await self._run_download_batch_owned(batch_id)
         except asyncio.CancelledError:
             if self._stopping:
