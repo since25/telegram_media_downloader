@@ -38,6 +38,8 @@ class CloudDriveConfig:
         self.dir_cache: dict = {}  # for remote mkdir
         self.total_upload_success_file_count = 0
         self.aligo = None
+        self.upload_timeout_sec = 3600.0
+        self.mkdir_timeout_sec = 120.0
 
     def pre_run(self):
         """pre run init aligo"""
@@ -71,6 +73,7 @@ class CloudDrive:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             check=False,
+            timeout=max(float(getattr(drive_config, "mkdir_timeout_sec", 120.0)), 1.0),
         )
         return completed.returncode == 0
 
@@ -93,6 +96,41 @@ class CloudDrive:
             zip_writer.write(local_file_path)
 
         return zip_file_name
+
+    @staticmethod
+    async def _consume_rclone_process(
+        proc,
+        progress_callback: Optional[Callable],
+        progress_args: tuple,
+        timeout_sec: float,
+    ) -> int:
+        """Drain rclone output with a hard deadline and kill stuck processes."""
+
+        async def consume_output() -> None:
+            if not proc.stdout:
+                return
+            async for output in proc.stdout:
+                s = output.decode(errors="replace")
+                match = re.search(
+                    r"Transferred: (.*?) / (.*?), (.*?)%, (.*?/s)?, ETA (.*?)$", s
+                )
+                if match and progress_callback:
+                    callback_result = progress_callback(
+                        match.group(1), match.group(2), match.group(3),
+                        match.group(4), match.group(5), *progress_args
+                    )
+                    if inspect.isawaitable(callback_result):
+                        await callback_result
+
+        try:
+            await asyncio.wait_for(consume_output(), timeout=timeout_sec)
+            return await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.error("rclone upload timed out after %ss", timeout_sec)
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+            return -1
 
     # pylint: disable = R0914
     @staticmethod
@@ -140,26 +178,12 @@ class CloudDrive:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )
-            if proc.stdout:
-                async for output in proc.stdout:
-                    s = output.decode(errors="replace")
-                    pattern = (
-                        r"Transferred: (.*?) / (.*?), (.*?)%, (.*?/s)?, ETA (.*?)$"
-                    )
-                    transferred_match = re.search(pattern, s)
-                    if transferred_match and progress_callback:
-                        callback_result = progress_callback(
-                            transferred_match.group(1),
-                            transferred_match.group(2),
-                            transferred_match.group(3),
-                            transferred_match.group(4),
-                            transferred_match.group(5),
-                            *progress_args,
-                        )
-                        if inspect.isawaitable(callback_result):
-                            await callback_result
-
-            return_code = await proc.wait()
+            return_code = await CloudDrive._consume_rclone_process(
+                proc,
+                progress_callback,
+                progress_args,
+                max(float(getattr(drive_config, "upload_timeout_sec", 3600.0)), 1.0),
+            )
             if return_code != 0:
                 return False
 

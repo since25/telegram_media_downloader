@@ -2,6 +2,8 @@
 
 from typing import AbstractSet, Any, Awaitable, Callable, Optional, Sequence
 
+import asyncio
+
 from module.download_models import (
     PackageCallbackError,
     PackageDownloadResult,
@@ -233,6 +235,8 @@ async def run_packages(
                 parent_node,
                 failed_message_ids=list(package.failed_message_ids),
             )
+            while getattr(parent_node, "active_file_lifecycles", 0):
+                await asyncio.sleep(0.1)
             result = build_package_result(package, parent_node)
             results.append(result)
             if on_package_finished is not None:

@@ -197,6 +197,7 @@ class TaskNode:
         # Guided ordinary message package workflow naming context.
         self.package_naming_context = None
         self.prescan_batch_in_progress = False
+        self.active_file_lifecycles = 0
 
     def skip_msg_id(self, msg_id: int):
         """Skip if message id out of range"""
@@ -587,6 +588,21 @@ class Application:
                 self.cloud_drive_config.upload_adapter = upload_drive_config[
                     "upload_adapter"
                 ]
+            if "upload_timeout_sec" in upload_drive_config:
+                self.cloud_drive_config.upload_timeout_sec = float(
+                    upload_drive_config["upload_timeout_sec"]
+                )
+            if "mkdir_timeout_sec" in upload_drive_config:
+                self.cloud_drive_config.mkdir_timeout_sec = float(
+                    upload_drive_config["mkdir_timeout_sec"]
+                )
+
+        self.channel_library_refetch_timeout_sec = float(
+            _config.get("channel_library_refetch_timeout_sec", 120.0)
+        )
+        self.channel_library_batch_timeout_sec = float(
+            _config.get("channel_library_batch_timeout_sec", 21600.0)
+        )
 
         self.file_name_prefix_split = _config.get(
             "file_name_prefix_split", self.file_name_prefix_split

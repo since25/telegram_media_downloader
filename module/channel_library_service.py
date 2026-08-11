@@ -97,6 +97,10 @@ def _package_error_code(status: str) -> Optional[str]:
 PACKAGE_EXCEEDS_DISK_CAPACITY = "package_exceeds_disk_capacity"
 
 
+class _BatchTimeout(Exception):
+    """Internal marker for a batch that exceeded its execution deadline."""
+
+
 class ChannelLibraryService:
     """Own channel resolution and one global scan scheduler on Application.loop."""
 
@@ -143,6 +147,12 @@ class ChannelLibraryService:
         self._command_lock = threading.Lock()
         self._accepting_commands = False
         self._command_futures: set[concurrent.futures.Future[Any]] = set()
+        self.refetch_timeout_sec = max(
+            float(getattr(app, "channel_library_refetch_timeout_sec", 120.0)), 1.0
+        )
+        self.batch_timeout_sec = max(
+            float(getattr(app, "channel_library_batch_timeout_sec", 21600.0)), 60.0
+        )
 
     def _download_operations(self) -> DownloadOperations:
         """Return explicitly injected operations or the legacy facade adapter."""
@@ -780,8 +790,20 @@ class ChannelLibraryService:
                 max(1, int(getattr(self.app, "max_download_task", 1) or 1))
             )
             self._download_batch_slots = slots
-        async with slots:
-            return await self.run_download_batch(batch_id)
+        try:
+            async with slots:
+                return await asyncio.wait_for(
+                    self.run_download_batch(batch_id),
+                    timeout=self.batch_timeout_sec,
+                )
+        except asyncio.TimeoutError as error:
+            self._requeue_interrupted_download_batch(batch_id)
+            LOGGER.error(
+                "Channel download batch %s exceeded %.0fs and was requeued",
+                batch_id,
+                self.batch_timeout_sec,
+            )
+            raise _BatchTimeout(batch_id) from error
 
     def _schedule_download_batch_owned(self, batch_id: int) -> bool:
         existing = self._download_batch_tasks.get(batch_id)
@@ -1108,9 +1130,19 @@ class ChannelLibraryService:
             fetch_error: Optional[str] = None
             try:
                 async with self.gate.download_permit():
-                    raw_messages = await self.client.get_messages(
-                        int(descriptor.source_chat_id), message_ids
+                    raw_messages = await asyncio.wait_for(
+                        self.client.get_messages(
+                            int(descriptor.source_chat_id), message_ids
+                        ),
+                        timeout=self.refetch_timeout_sec,
                     )
+            except asyncio.TimeoutError:
+                LOGGER.error(
+                    "Telegram refetch timed out for package %s after %.0fs",
+                    descriptor.package_id,
+                    self.refetch_timeout_sec,
+                )
+                raise
             except Exception:  # noqa: BLE001 - contained to one package
                 raw_messages = []
                 fetch_error = "telegram_refetch_failed"

@@ -294,6 +294,9 @@ async def run_file_lifecycle(
     file_size = 0
     message_id = None
     try:
+        node.active_file_lifecycles = (
+            int(getattr(node, "active_file_lifecycles", 0) or 0) + 1
+        )
         if not message:
             runtime.logger.info("download_task: message is None，跳过下载")
             node.skip_not_found_download_task += 1
@@ -403,6 +406,10 @@ async def run_file_lifecycle(
             except Exception as report_error:
                 runtime.logger.error(f"Error reporting download status: {report_error}")
     finally:
+        node.active_file_lifecycles = max(
+            int(getattr(node, "active_file_lifecycles", 1) or 1) - 1,
+            0,
+        )
         _record_performance(node, message_id, download_status, runtime)
         if message_id:
             runtime.remove_download_result(node, message_id)
