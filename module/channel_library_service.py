@@ -707,7 +707,9 @@ class ChannelLibraryService:
         if refreshed is not None:
             for package in batch["packages"]:
                 item_files = [
-                    refreshed.files.get(str(item["message_id"]))
+                    refreshed.files.get(
+                        str(item.get("source_message_id") or item["message_id"])
+                    )
                     for item in package["items"]
                 ]
                 if item_files and all(
