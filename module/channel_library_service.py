@@ -714,7 +714,12 @@ class ChannelLibraryService:
                 ]
                 if item_files and all(
                     item is not None
-                    and item.status in {FileStatus.DOWNLOADED, FileStatus.UPLOADED}
+                    and item.status
+                    in {
+                        FileStatus.DOWNLOADED,
+                        FileStatus.UPLOADED,
+                        FileStatus.SKIPPED,
+                    }
                     for item in item_files
                 ):
                     self.store.finish_download_batch_package(
