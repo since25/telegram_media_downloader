@@ -188,7 +188,10 @@ class ChannelLibraryService:
             return total_bytes
         max_item = int(getattr(descriptor, "max_item_size", 0) or 0)
         if max_item <= 0:
-            return total_bytes
+            # Individual sizes unknown: never reserve the whole package. Fall
+            # back to a bounded window so oversized packages can still stream
+            # file by file instead of being rejected outright.
+            return min(total_bytes, max(1, workers) * GIB)
         workers = max(1, int(getattr(self.app, "max_download_task", 1) or 1))
         return max(int(max_item), min(total_bytes, workers * int(max_item)))
 
@@ -1037,12 +1040,51 @@ class ChannelLibraryService:
             header["task_id"], status=TaskStatus.QUEUED, error=""
         )
 
+    def _cleanup_package_local_files(self, batch: dict, package_id: int) -> None:
+        """Remove downloaded-but-unuploaded local files for a failed package.
+
+        Cancelled and download-failed packages otherwise leave their partially
+        downloaded files on disk forever. Upload-failed files are intentionally
+        kept for a later upload-only retry, so this only runs for terminal
+        states that can never be resumed from local data.
+        """
+
+        save_root = os.path.realpath(str(getattr(self.app, "save_path", ".")))
+        task = self.task_store.get_task(str(batch["task_id"]))
+        if task is None:
+            return
+        for item in self.store.get_download_batch_package_items(
+            int(batch["id"]), package_id
+        ):
+            message_key = str(item.get("source_message_id") or item["message_id"])
+            file_snapshot = task.files.get(message_key)
+            if file_snapshot is None:
+                continue
+            raw_path = file_snapshot.save_path or ""
+            if not raw_path:
+                continue
+            file_path = os.path.realpath(raw_path)
+            try:
+                inside = os.path.commonpath((save_root, file_path)) == save_root
+            except ValueError:
+                inside = False
+            if not inside:
+                continue
+            if os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except OSError:
+                    LOGGER.exception(
+                        "Unable to remove failed package file %s", file_path
+                    )
+
     def _cancel_unfinished_download_batch(self, batch_id: int) -> None:
         header = self.store.get_download_batch_header(batch_id)
         if header is None:
             return
         for summary in self.store.list_download_batch_package_summaries(batch_id):
             if summary["status"] in {"queued", "downloading"}:
+                self._cleanup_package_local_files(header, int(summary["package_id"]))
                 self.store.finish_download_batch_package(
                     batch_id,
                     int(summary["package_id"]),
@@ -1234,24 +1276,34 @@ class ChannelLibraryService:
             try:
                 snapshot = await self.disk_admission.snapshot()
                 settled_free_bytes = snapshot.free_bytes + snapshot.reserved_bytes
+                single_file_window = int(
+                    getattr(descriptor, "max_item_size", 0) or 0
+                )
+                if single_file_window <= 0:
+                    single_file_window = min(
+                        int(descriptor.known_total_size or 0),
+                        max(
+                            1,
+                            int(getattr(self.app, "max_download_task", 1) or 1),
+                        )
+                        * GIB,
+                    )
                 if (
-                    reservation_bytes + snapshot.minimum_free_bytes
+                    single_file_window + snapshot.minimum_free_bytes
                     > settled_free_bytes
                 ):
-                    # This package can never fit on the current disk, even after
-                    # every in-flight download releases its reservation. The FIFO
-                    # admission would otherwise hold a download slot forever and
-                    # block every later package, so fail it now and keep going.
+                    # Even the smallest useful window (one file plus the
+                    # safety margin) can never fit on the current disk. The
+                    # FIFO admission would otherwise hold a download slot
+                    # forever and block every later package, so fail it now
+                    # and keep going.
                     LOGGER.warning(
-                        "Package %s (%s) needs %.1f GiB (reservation %.1f GiB "
-                        "of size %.1f GiB + minimum-free %.1f GiB) but only "
-                        "%.1f GiB can ever be free; failing it with %s to keep "
-                        "the queue moving",
+                        "Package %s (%s) single-file window %.1f GiB + "
+                        "minimum-free %.1f GiB cannot fit in %.1f GiB; "
+                        "failing with %s to keep the queue moving",
                         descriptor.package_id,
                         descriptor.title,
-                        (reservation_bytes + snapshot.minimum_free_bytes) / GIB,
-                        reservation_bytes / GIB,
-                        required_bytes / GIB,
+                        single_file_window / GIB,
                         snapshot.minimum_free_bytes / GIB,
                         settled_free_bytes / GIB,
                         PACKAGE_EXCEEDS_DISK_CAPACITY,
@@ -1316,6 +1368,9 @@ class ChannelLibraryService:
                 )
                 if getattr(descriptor, "skip_download", False):
                     last_error = PACKAGE_EXCEEDS_DISK_CAPACITY
+                    self._cleanup_package_local_files(
+                        batch, attempt_packages[attempt_id]
+                    )
                     for item in self.store.get_download_batch_package_items(
                         batch_id, attempt_packages[attempt_id]
                     ):
@@ -1327,8 +1382,15 @@ class ChannelLibraryService:
                         )
                 elif attempt_errors.get(attempt_id):
                     last_error = "telegram_refetch_failed"
+                    self._cleanup_package_local_files(
+                        batch, attempt_packages[attempt_id]
+                    )
                 else:
                     last_error = _package_error_code(status)
+                    if status in {"failed", "not_found"}:
+                        self._cleanup_package_local_files(
+                            batch, attempt_packages[attempt_id]
+                        )
                 self.store.finish_download_batch_package(
                     batch_id,
                     attempt_packages[attempt_id],
@@ -1370,6 +1432,9 @@ class ChannelLibraryService:
             LOGGER.exception("Channel package batch download failed")
             for summary in self.store.list_download_batch_package_summaries(batch_id):
                 if summary["status"] in {"queued", "downloading"}:
+                    self._cleanup_package_local_files(
+                        batch, int(summary["package_id"])
+                    )
                     self.store.finish_download_batch_package(
                         batch_id,
                         int(summary["package_id"]),
