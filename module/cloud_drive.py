@@ -28,6 +28,8 @@ class CloudDriveConfig:
         ),
         remote_dir: str = "",
         upload_adapter: str = "rclone",
+        rclone_transfers: int = 1,
+        max_upload_concurrency: int = 2,
     ):
         self.enable_upload_file = enable_upload_file
         self.before_upload_file_zip = before_upload_file_zip
@@ -35,11 +37,27 @@ class CloudDriveConfig:
         self.rclone_path = rclone_path
         self.remote_dir = remote_dir
         self.upload_adapter = upload_adapter
+        self.rclone_transfers = max(1, int(rclone_transfers))
+        self.max_upload_concurrency = max(1, int(max_upload_concurrency))
         self.dir_cache: dict = {}  # for remote mkdir
         self.total_upload_success_file_count = 0
         self.aligo = None
         self.upload_timeout_sec = 3600.0
         self.mkdir_timeout_sec = 120.0
+        self._upload_semaphore: Optional[asyncio.Semaphore] = None
+
+    def upload_semaphore(self) -> asyncio.Semaphore:
+        """Bounded global gate for concurrent cloud uploads.
+
+        Every rclone upload (both normal downloads and upload-only retries)
+        acquires this gate so at most max_upload_concurrency transfers run at
+        once; combined with --transfers this keeps the remote endpoint from
+        being flooded by parallel connections.
+        """
+
+        if self._upload_semaphore is None:
+            self._upload_semaphore = asyncio.Semaphore(self.max_upload_concurrency)
+        return self._upload_semaphore
 
     def pre_run(self):
         """pre run init aligo"""
@@ -142,6 +160,20 @@ class CloudDrive:
         progress_args: tuple = (),
     ) -> bool:
         """Use Rclone upload file"""
+        async with drive_config.upload_semaphore():
+            return await CloudDrive._rclone_upload_owned(
+                drive_config, save_path, local_file_path, progress_callback, progress_args
+            )
+
+    @staticmethod
+    async def _rclone_upload_owned(
+        drive_config: CloudDriveConfig,
+        save_path: str,
+        local_file_path: str,
+        progress_callback: Optional[Callable] = None,
+        progress_args: tuple = (),
+    ) -> bool:
+        """Run one rclone copy under the global upload gate."""
         upload_status: bool = False
         try:
             remote_dir = (
@@ -175,6 +207,8 @@ class CloudDrive:
                 "--create-empty-src-dirs",
                 "--ignore-existing",
                 "--progress",
+                "--transfers",
+                str(drive_config.rclone_transfers),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )

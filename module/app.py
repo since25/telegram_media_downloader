@@ -596,6 +596,14 @@ class Application:
                 self.cloud_drive_config.mkdir_timeout_sec = float(
                     upload_drive_config["mkdir_timeout_sec"]
                 )
+            if "rclone_transfers" in upload_drive_config:
+                self.cloud_drive_config.rclone_transfers = int(
+                    upload_drive_config["rclone_transfers"]
+                )
+            if "max_upload_concurrency" in upload_drive_config:
+                self.cloud_drive_config.max_upload_concurrency = int(
+                    upload_drive_config["max_upload_concurrency"]
+                )
 
         self.channel_library_refetch_timeout_sec = float(
             _config.get("channel_library_refetch_timeout_sec", 120.0)

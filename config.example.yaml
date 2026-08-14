@@ -40,5 +40,18 @@ channel_library:
   incremental_scan_delay_min_sec: 1
   incremental_scan_delay_max_sec: 2
   transient_retry_delays_sec: [5, 15, 45]
+# cloud upload (rclone). upload_timeout_sec raises the per-file hard deadline;
+# rclone_transfers caps connections per rclone process; max_upload_concurrency
+# caps how many rclone processes may run at once to protect the remote link.
+upload_drive:
+  enable_upload_file: true
+  upload_adapter: rclone
+  rclone_path: /usr/bin/rclone
+  remote_dir: your_rclone_remote:/telegram
+  before_upload_file_zip: false
+  after_upload_file_delete: true
+  upload_timeout_sec: 7200
+  rclone_transfers: 1
+  max_upload_concurrency: 2
 # in linux please use /
 # save_path: E:\github\telegram_media_downloader
