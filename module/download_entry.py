@@ -628,6 +628,11 @@ async def _get_media_meta(
             # The generic chat_title/media_datetime prefix is skipped because
             # build_package_name_for_strategy already encodes the folder layout.
             file_save_path = app.save_path
+        elif node and getattr(node, "comment_naming_context", None):
+            # Comment packages (build_name_for_strategy) also carry the full
+            # folder layout in the relative name, so skip the channel/date
+            # prefix here as well.
+            file_save_path = app.save_path
         else:
             file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
 

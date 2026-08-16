@@ -674,7 +674,6 @@ def build_name_for_strategy(
 ) -> str:
     """Build a relative display path for a comment and naming context."""
 
-    channel = clean_segment(context.channel, "channel", 40)
     post_title = clean_segment(context.post_title, f"post-{context.post_id}", 60)
     original_file_name = original_file_name_for_comment(comment)
     caption_summary = caption_summary_for_comment(comment)
@@ -685,9 +684,9 @@ def build_name_for_strategy(
     if context.strategy is NamingStrategy.CAPTION:
         return f"{post_title}/{comment.id} - {caption_summary} - {original_file_name}"
     if context.strategy is NamingStrategy.MONTH_CAPTION:
-        return f"{channel}/{month_for_comment(comment)}/{post_title}/{comment.id} - {caption_summary}.{extension}"
+        return f"{post_title}/{comment.id} - {caption_summary}.{extension}"
     return (
-        f"{channel}/{context.post_id}-{post_title}/{comment.id} - {original_file_name}"
+        f"{context.post_id}-{post_title}/{comment.id} - {original_file_name}"
     )
 
 
