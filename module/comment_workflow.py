@@ -713,10 +713,8 @@ def build_package_name_for_strategy(
     if context.strategy is NamingStrategy.CAPTION:
         return f"{title}/{message.id} - {caption_summary} - {original_file_name}"
     if context.strategy is NamingStrategy.MONTH_CAPTION:
-        channel = clean_segment(context.channel, "channel", 40)
         return (
-            f"{channel}/{month_for_comment(message)}/{title}/"
-            f"{message.id} - {caption_summary}.{extension}"
+            f"{title}/{message.id} - {caption_summary}.{extension}"
         )
     return f"{context.start_message_id}-{title}/{message.id} - {original_file_name}"
 

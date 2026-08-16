@@ -622,7 +622,14 @@ async def _get_media_meta(
 
             gen_file_name = build_package_name_for_strategy(package_item, context)
 
-        file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
+        if node and context:
+            # Channel-library / comment package downloads keep the package
+            # folder directly under the save root: <save_path>/<package>/<file>.
+            # The generic chat_title/media_datetime prefix is skipped because
+            # build_package_name_for_strategy already encodes the folder layout.
+            file_save_path = app.save_path
+        else:
+            file_save_path = app.get_file_save_path(_type, dirname, datetime_dir_name)
 
         temp_file_name = os.path.join(app.temp_save_path, dirname, gen_file_name)
 
