@@ -178,8 +178,24 @@ class DownloadBot:
         self.pending_prescan_workflows: dict = {}
 
     def gen_task_id(self) -> int:
-        """Gen task id"""
+        """Generate a task id that never collides with persisted task ids.
+
+        The counter starts at zero on every process start, while the task
+        store persists bot task ids across restarts. Reusing a previously
+        terminal id makes every subsequent transition fail with
+        'completed' -> 'queued', so skip ids already present in the store.
+        """
         self.task_id += 1
+        try:
+            from module.task_state import get_task_store
+
+            store = get_task_store()
+        except RuntimeError:
+            # The task store is not initialized (e.g. during tests); the
+            # in-process counter is the only id source available.
+            return self.task_id
+        while store.get_task(self.task_id) is not None:
+            self.task_id += 1
         return self.task_id
 
     def add_task_node(self, node: TaskNode):
