@@ -365,6 +365,64 @@ class TaskStateStoreTestCase(unittest.TestCase):
         self.assertEqual(snapshot.skipped_count, 1)
         self.assertEqual(snapshot.upload_success_count, 1)
 
+    def test_snapshot_does_not_finalize_active_prescan_batch(self):
+        """A running multi-package batch must stay open between packages.
+
+        Regression: after the first package's files all completed,
+        snapshot_node persisted the parent task as 'completed' (terminal).
+        The next package then failed to enqueue with TaskTransitionError
+        'completed' -> 'queued', which surfaced as spurious download failures
+        in the finish summary.
+        """
+        from module.task_state import (
+            FileStatus,
+            TaskStatus,
+            get_task_store,
+            snapshot_node,
+        )
+
+        node = TaskNode(chat_id=-1005, task_id=23)
+        node.is_running = True
+        node.prescan_batch_in_progress = True
+        # First package: 7 files, all downloaded successfully.
+        node.total_download_task = 7
+        node.success_download_task = 7
+        node.download_status = {
+            message_id: DownloadStatus.SuccessDownload
+            for message_id in (12, 13, 14, 15, 17, 18, 19)
+        }
+
+        snapshot = snapshot_node(node)
+
+        self.assertEqual(snapshot.status, TaskStatus.DOWNLOADING)
+        self.assertNotIn(
+            snapshot.status,
+            {TaskStatus.COMPLETED, TaskStatus.COMPLETED_WITH_ERRORS},
+        )
+
+        # The next package must still be able to enqueue on the same task.
+        get_task_store().transition_file(
+            node.task_id,
+            24,
+            task_updates={"status": TaskStatus.QUEUED},
+            file_updates={"status": FileStatus.QUEUED},
+        )
+        stored = get_task_store().get_task(node.task_id)
+        self.assertEqual(stored.files["24"].status, FileStatus.QUEUED)
+
+        # Once the whole batch finishes, the final snapshot reflects all
+        # packages and reaches a terminal status again.
+        node.prescan_batch_in_progress = False
+        node.total_download_task = 9
+        node.success_download_task = 8
+        node.failed_download_task = 1
+        node.download_status[24] = DownloadStatus.SuccessDownload
+        node.download_status[26] = DownloadStatus.FailedDownload
+
+        final_snapshot = snapshot_node(node)
+
+        self.assertEqual(final_snapshot.status, TaskStatus.COMPLETED_WITH_ERRORS)
+
     def test_upload_state_is_not_regressed_by_download_snapshot(self):
         import module.task_state as task_state_module
 

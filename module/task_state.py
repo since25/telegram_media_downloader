@@ -1238,7 +1238,13 @@ def _status_from_node(node) -> str:
     success = int(getattr(node, "success_download_task", 0) or 0)
     skipped = int(getattr(node, "skip_download_task", 0) or 0)
     if total and success + failed + skipped >= total:
-        return TaskStatus.COMPLETED_WITH_ERRORS if failed else TaskStatus.COMPLETED
+        # A multi-package prescan batch keeps appending files to the same
+        # parent task between packages, so the current counters are not final
+        # yet. Mirror TaskNode.is_finish(): never finalize while the batch
+        # runs, otherwise the next package cannot enqueue (a terminal task
+        # refuses 'completed' -> 'queued').
+        if not getattr(node, "prescan_batch_in_progress", False):
+            return TaskStatus.COMPLETED_WITH_ERRORS if failed else TaskStatus.COMPLETED
     if getattr(node, "is_stop_transmission", False):
         return TaskStatus.CANCELLED
     if getattr(node, "is_running", False):
