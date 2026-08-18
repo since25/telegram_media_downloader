@@ -3602,3 +3602,29 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, fast-forward the production checkout back to commit `54dbc4a`, and restart. No database schema or configuration format changes are introduced.
+
+## 2026-08-18 - Task: Fix persisted task-id collision and verify batch re-run
+
+### What was done
+
+- After deploying the mid-batch finalization fix, a `/retry_failed` re-run still failed with the same `invalid_task_transition: 'completed' -> 'queued'`. Root cause was a second, independent bug: `DownloadBot.gen_task_id` is an in-memory counter starting at zero every process start, while the task store persists bot task ids across restarts. The first new task after restart therefore reused previously terminal id `1`, so every enqueue on the new node was rejected.
+- Fix (`module/bot.py`): `gen_task_id` now skips ids already present in the task store (`get_task_store().get_task(...)`), falling back to the raw counter when the store is not initialized (tests). This covers all bot flows that mint task ids (prescan, retry, comment, package, link download).
+- Added regression tests `test_gen_task_id_skips_persisted_task_ids` and `test_gen_task_id_falls_back_to_counter_without_task_store` (tests/module/test_bot_commands.py).
+- Committed `1591883`, pushed to `origin/master`, deployed to `/root/telegram_media_downloader` (fast-forward pull + `systemctl restart tg-downloader.service`).
+
+### Verification (production)
+
+- User re-ran `/retry_failed -1001638138979|24 -1001638138979|26 -1001638138979|29 -1001638138979|30 -1001638138979|31` at 11:21 EDT; new task id 3 (skipped persisted 1/2).
+- All 5 previously-failed messages downloaded and uploaded successfully: 24 (IMG_5817, 11.1 MB), 26 (IMG_5824, 22.8 MB), 29 (IMG_5932, 50.8 MB), 30 (IMG_5934, 14.8 MB), 31 (IMG_5933, 39.5 MB); `success=5, failed=0, skip=0`, `upload_success_count=5`, zero `invalid_task_transition` errors.
+- Files landed under `/data/tg/公主的㊙️㊙️花园/2026_08/` and were removed locally after upload per `after_upload_file_delete`.
+- Service healthy after restart: `active`, `/healthz` `{"status":"ok"}`, clean startup journal.
+
+### Notes
+
+Changed files:
+- `module/bot.py`: collision-free `gen_task_id`.
+- `tests/module/test_bot_commands.py`: persisted-id collision and no-store fallback tests.
+- `progress.md`: recorded the second fix and its production verification.
+
+Rollback:
+- Stop `tg-downloader.service`, fast-forward the production checkout back to commit `765dd75`, and restart. No database schema or configuration format changes are introduced.
