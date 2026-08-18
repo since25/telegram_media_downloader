@@ -3574,3 +3574,31 @@ Rollback:
 - Stop `tg-downloader.service` and deploy code commit `84cb344` to remove the window
   reservation while keeping the fail-fast capacity fix. No database schema or
   configuration format changes are introduced.
+
+## 2026-08-18 - Task: Fix multi-package batch finalized between packages (spurious download failures)
+
+### What was done
+
+- Diagnosed a production bot batch task (task id 2, channel -1001638138979) that reported 7 downloads success + 5 failures (messages 24, 26, 29, 30, 31) while every failed message actually never downloaded: all five enqueue attempts raised
+  `TaskTransitionError: invalid_task_transition: 'completed' -> 'queued'` in `module/task_state.py:transition_file`.
+- Root cause: a multi-package prescan batch (`run_packages` → `download_prepared_messages`) runs several packages on one parent task. After the first package's files all completed, `snapshot_node` persisted the task as `completed` (terminal) because `_status_from_node` finalized as soon as `success + failed + skipped >= total`. Every later package then failed to enqueue on the same task, surfacing as bogus "Download Failed" rows.
+- Fix (`module/task_state.py`): `_status_from_node` now mirrors `TaskNode.is_finish()` and refuses to finalize while `prescan_batch_in_progress` is set, so intermediate package completion keeps the task in `downloading` and later packages can still enqueue. The final snapshot after the whole batch still reaches its true terminal status (`completed` / `completed_with_errors`) with all package counts.
+- Added regression test `test_snapshot_does_not_finalize_active_prescan_batch` (tests/module/test_task_state.py) covering: package-1-all-done snapshot stays non-terminal, next-package enqueue (`transition_file` to `queued`) succeeds, and the batch-end snapshot reaches `completed_with_errors`.
+- Committed `800400f`, pushed to `origin/master`, and deployed to `/root/telegram_media_downloader` (fast-forward pull + `systemctl restart tg-downloader.service`).
+
+### Testing
+
+- Local complete suite: `741 passed, 1 skipped`; the only failures (`7`) are pre-existing and unrelated: five comment/package naming-preview expectations from the save-root layout work and one rclone exec test on this Mac. Verified identical failures on the clean tree before the fix.
+- Focused suites: `tests/module/test_task_state.py`, `tests/module/test_task_invariants.py`, `tests/test_channel_library_download.py` → `88 passed`.
+- Production preflight before restart: service `active`, no active/queued web tasks or channel batches (all terminal), `PRAGMA quick_check` unchanged, ~13 GB free disk.
+- After restart: `tg-downloader.service` `active/running`, deployed commit `800400f`, `/healthz` returned `{"status":"ok"}`, startup log `成功启动(按Ctrl+C停止)`, and the startup journal contained no error/exception/traceback/critical/failed entries.
+
+### Notes
+
+Changed files:
+- `module/task_state.py`: `_status_from_node` defers terminal finalization while a prescan batch is in progress.
+- `tests/module/test_task_state.py`: added the multi-package batch regression test.
+- `progress.md`: recorded this diagnosis, fix, and deployment.
+
+Rollback:
+- Stop `tg-downloader.service`, fast-forward the production checkout back to commit `54dbc4a`, and restart. No database schema or configuration format changes are introduced.
