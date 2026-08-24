@@ -31,3 +31,17 @@ def test_every_installed_python_requirement_is_version_or_hash_pinned():
             assert re.search(r"#sha256=[0-9a-f]{64}$", requirement)
         else:
             assert re.fullmatch(r"[A-Za-z0-9_.-]+==[^=<>!~]+", requirement)
+
+
+def test_mcp_adapter_requirements_are_version_pinned():
+    lines = [
+        line.strip()
+        for line in (ROOT / "mcp-requirements.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert lines
+    for requirement in lines:
+        assert re.fullmatch(r"[A-Za-z0-9_.-]+==[^=<>!~]+", requirement)

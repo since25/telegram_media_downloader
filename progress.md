@@ -3964,3 +3964,32 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove MCP download submission; the existing Web download paths remain unchanged.
+
+## 2026-08-24 - Task: Add the MCP stdio adapter for Hermes
+
+### What was done
+
+- Added the Hermes-side MCP stdio adapter with a Bearer-authenticated HTTP client for package search/detail, system status, task reads, and explicit download submission.
+- Added six MCP tool definitions with JSON input schemas and required download idempotency fields.
+- Pinned the adapter dependencies to `mcp==2.0.0` and `requests==2.32.3`.
+- Kept the MCP SDK import inside `main()` and restricted adapter logging to stderr.
+
+### Testing
+
+- TDD red: `./.venv311/bin/python -m pytest tests/test_mcp_server.py tests/test_dependency_contract.py -q` failed during collection with the expected missing `mcp_server` module.
+- TDD green: `./.venv311/bin/python -m pytest tests/test_mcp_server.py tests/test_dependency_contract.py -q` → `9 passed`.
+- Protocol smoke test: launched `mcp_server.py` with `mcp==2.0.0`, exchanged `initialize` and `tools/list`, and verified two valid JSON-RPC stdout frames with six tools and no stderr output.
+- `./.venv311/bin/python -m py_compile mcp_server.py` passed.
+- `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `mcp_server.py`: added the Hermes-side stdio protocol adapter and HTTP client.
+- `mcp-requirements.txt`: pinned MCP adapter dependencies.
+- `tests/test_mcp_server.py`: added client, tool-schema, error-mapping, and stderr contract tests.
+- `tests/test_dependency_contract.py`: added pinned-dependency coverage for the adapter.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove the stdio adapter; the downloader-side `/api/mcp/` routes remain unchanged.
