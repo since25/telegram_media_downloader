@@ -4084,3 +4084,31 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove the MCP documentation and stdio control-tool expansion; the downloader-side routes remain independently revertible by their earlier task commits.
+
+## 2026-08-24 - Deployment: Hermes MCP control to RackNerd
+
+### What was done
+
+- Pushed `codex/hermes-mcp-control` to `origin` and fast-forwarded `origin/master` to commit `e647d6dd3716fd3b936949a85cccf904c8d6bed`.
+- Stopped `tg-downloader.service`, created a protected pre-deploy backup, fast-forwarded the RackNerd checkout, enabled `mcp.enabled: true`, generated the missing `/root/telegram_media_downloader/mcp_api_key`, set its mode to `0600`, and restarted the service.
+- Kept the existing Web login/session behavior unchanged; MCP uses the independent Bearer Key.
+
+### Testing
+
+- RackNerd service: `active`.
+- RackNerd source-local MCP probe: unauthenticated `401`, authenticated `200`.
+- Public MCP probe: unauthenticated `401`, authenticated `200`.
+- Public package probe returned JSON with `boundary_status` and `downloadable`.
+- No key material was printed, logged, or added to the repository.
+
+### Notes
+
+Changed files:
+- `/root/telegram_media_downloader`: fast-forwarded to `e647d6dd3716fd3b936949a85cccf904c8d6bed`.
+- `/root/telegram_media_downloader/config.yaml`: enabled MCP.
+- `/root/telegram_media_downloader/mcp_api_key`: generated protected API Key file, mode `0600`.
+- `/root/telegram_media_downloader/backups/mcp-deploy-20260824-090022`: pre-deploy backup.
+- `progress.md`: recorded deployment evidence.
+
+Rollback:
+- Stop `tg-downloader.service`, restore the recorded pre-deploy commit from `/root/telegram_media_downloader/backups/mcp-deploy-20260824-090022/pre-deploy-commit.txt`, restore the backed-up configuration, and start the service. Disable MCP with `mcp.enabled: false` if only the new control layer needs to be withdrawn.
