@@ -370,3 +370,75 @@ def submit_download():
     return jsonify({"batches": batches, "created": any_created}), (
         202 if any_created else 200
     )
+
+
+def _set_download_state(target):
+    """Set the global download state explicitly on the owner loop."""
+
+    from module.download_stat import get_download_state, set_download_state
+    from module.web_commands import (
+        WebCommandTimeout,
+        submit_web_coroutine,
+        wait_for_web_command,
+    )
+
+    async def apply():
+        set_download_state(target)
+        return get_download_state().name
+
+    try:
+        return wait_for_web_command(
+            submit_web_coroutine(getattr(_current_app, "loop", None), apply()),
+            timeout=1,
+        )
+    except WebCommandTimeout as error:
+        raise McpError(
+            503, "service_unavailable", "The state change timed out"
+        ) from error
+    except RuntimeError as error:
+        raise McpError(
+            503, "service_unavailable", "The owner loop is unavailable"
+        ) from error
+
+
+@mcp_blueprint.route("/downloads/pause", methods=["POST"])
+@mcp_route
+def pause_downloads():
+    """Pause downloads idempotently; a second call keeps the paused state."""
+
+    from module.download_stat import DownloadState
+
+    return jsonify({"download_state": _set_download_state(DownloadState.StopDownload)})
+
+
+@mcp_blueprint.route("/downloads/resume", methods=["POST"])
+@mcp_route
+def resume_downloads():
+    """Resume downloads idempotently."""
+
+    from module.download_stat import DownloadState
+
+    return jsonify({"download_state": _set_download_state(DownloadState.Downloading)})
+
+
+@mcp_blueprint.route("/tasks/<task_id>/cancel", methods=["POST"])
+@mcp_route
+def cancel_task(task_id: str):
+    """Cancel through the same owner-loop path the browser console uses."""
+
+    from module import web
+
+    payload, status = web._cancel_task_payload(task_id)
+    if status == 404:
+        raise KeyError(f"Task {task_id} does not exist")
+    if status == 409:
+        raise McpError(
+            409,
+            str(payload.get("error_code") or "state_conflict"),
+            str(payload.get("error") or "The task cannot be cancelled"),
+        )
+    if status >= 400:
+        raise McpError(
+            503, "service_unavailable", "The downloader service is unavailable"
+        )
+    return jsonify(payload)

@@ -3993,3 +3993,31 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove the stdio adapter; the downloader-side `/api/mcp/` routes remain unchanged.
+
+## 2026-08-24 - Task: Expose explicit pause, resume, and cancel over MCP
+
+### What was done
+
+- Added idempotent MCP pause and resume controls that set the requested download state through the application owner loop.
+- Added MCP task cancellation using the same cancellation payload and owner-loop behavior as the Web console.
+- Extracted the existing Web cancellation logic into a shared payload helper without changing its response contract.
+
+### Testing
+
+- TDD red: `./.venv311/bin/python -m pytest tests/module/test_mcp_controls.py -q` returned the expected missing-route failures.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_mcp_controls.py tests/test_web_cancel_task.py -q` → `9 passed`.
+- MCP regression: `./.venv311/bin/python -m pytest tests/module/test_mcp_controls.py tests/test_web_cancel_task.py tests/module/test_mcp_control.py tests/module/test_mcp_packages.py tests/module/test_mcp_status.py tests/module/test_mcp_submit.py -q` → `27 passed`.
+- `./.venv311/bin/python -m black --check module/mcp_control.py module/web.py tests/module/test_mcp_controls.py` passed.
+- `git diff --check` passed.
+- The repository's existing isort layout check reports pre-existing import-layout differences in `module/mcp_control.py` and `module/web.py`; no broad import reformatting was applied.
+
+### Notes
+
+Changed files:
+- `module/mcp_control.py`: added explicit pause, resume, and cancel MCP routes.
+- `module/web.py`: extracted the shared cancellation response helper.
+- `tests/module/test_mcp_controls.py`: added owner-loop-bound control tests.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove MCP task controls; the Web cancellation endpoint remains available with its existing authentication and CSRF behavior.

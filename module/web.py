@@ -2630,16 +2630,8 @@ def confirm_task(task_id: str):
     return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.QUEUED})
 
 
-@_flask_app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
-@login_required
-@_require_csrf
-def cancel_task(task_id: str):
-    """Cancel a Web task.
-
-    Persisted channel batches and actively running tasks are stopped and kept
-    visible with a cancelled status. Non-persisted waiting, queued, created,
-    or restart-orphaned Web tasks are discarded so they do not remain stuck.
-    """
+def _cancel_task_payload(task_id: str) -> tuple[dict, int]:
+    """Build the cancellation response shared by Web and MCP callers."""
 
     service = (
         getattr(_current_app, "channel_library_service", None)
@@ -2656,18 +2648,18 @@ def cancel_task(task_id: str):
                 timeout=1,
             )
         except WebCommandTimeout:
-            return jsonify({"ok": False, "error": "cancellation timed out"}), 503
+            return {"ok": False, "error": "cancellation timed out"}, 503
         except RuntimeError:
-            return jsonify({"ok": False, "error": "service unavailable"}), 503
+            return {"ok": False, "error": "service unavailable"}, 503
         if not cancelled:
-            return jsonify({"ok": False, "error": "task cannot be cancelled"}), 409
+            return {"ok": False, "error": "task cannot be cancelled"}, 409
         service.task_store.update_task(
             task_id,
             status=TaskStatus.CANCELLED,
             needs_confirmation=False,
             error="cancelled",
         )
-        return jsonify({"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED})
+        return {"ok": True, "task_id": task_id, "status": TaskStatus.CANCELLED}, 200
 
     with _web_task_state_lock:
         preview = _pending_web_task_previews.get(task_id)
@@ -2692,26 +2684,31 @@ def cancel_task(task_id: str):
                 timeout=1,
             )
         except WebCommandTimeout:
-            return jsonify({"ok": False, "error": "cancellation timed out"}), 503
+            return {"ok": False, "error": "cancellation timed out"}, 503
         except RuntimeError:
-            return jsonify({"ok": False, "error": "service unavailable"}), 503
-        return jsonify(result)
+            return {"ok": False, "error": "service unavailable"}, 503
+        return result, 200
     if not node and not task:
-        return jsonify({"ok": False, "error": "task not found"}), 404
+        return {"ok": False, "error": "task not found"}, 404
     status = task.status if task else None
     if status in {TaskStatus.DOWNLOADING, TaskStatus.UPLOADING, TaskStatus.SCANNING}:
-        return (
-            jsonify(
-                {
-                    "ok": False,
-                    "error": "runtime handle is unavailable",
-                    "error_code": "runtime_handle_missing",
-                }
-            ),
-            409,
-        )
+        return {
+            "ok": False,
+            "error": "runtime handle is unavailable",
+            "error_code": "runtime_handle_missing",
+        }, 409
     get_task_store().remove_task(task_id)
-    return jsonify({"ok": True, "task_id": task_id, "removed": True})
+    return {"ok": True, "task_id": task_id, "removed": True}, 200
+
+
+@_flask_app.route("/api/tasks/<task_id>/cancel", methods=["POST"])
+@login_required
+@_require_csrf
+def cancel_task(task_id: str):
+    """Cancel a Web task using the shared cancellation contract."""
+
+    payload, status = _cancel_task_payload(task_id)
+    return jsonify(payload), status
 
 
 async def _cancel_web_task_owned(task_id: str, node, workflow_type: str) -> dict:
