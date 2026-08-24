@@ -1475,3 +1475,108 @@ async def test_comment_mode_rescans_historical_post_only_when_count_changes(
     assert scan_counts == [2, 3, 3]
     assert refreshed["media_count"] == 3
     assert refreshed["source_comment_count"] == 3
+
+
+def test_explicit_package_batches_never_touch_selection_state(tmp_path):
+    from module.task_state import TaskStateStore
+    from tests.module.test_channel_library_web import (
+        build_app,
+        insert_package,
+        insert_package_item,
+    )
+
+    app = build_app(tmp_path)
+    store = ChannelLibraryStore(tmp_path / "channel-library.sqlite3")
+    store.initialize()
+    service = ChannelLibraryService(
+        app,
+        SimpleNamespace(),
+        store,
+        ChannelLibraryConfig(),
+        task_store=TaskStateStore(storage_path=tmp_path / "web-tasks.sqlite3"),
+    )
+    library, _job, _created = store.create_or_get_library_with_full_job(
+        -1001, "channel", "demo", "Demo", "https://t.me/demo/1", 10
+    )
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+    first = insert_package(store, library["id"], 10)
+    second = insert_package(store, library["id"], 20)
+    insert_package_item(store, library["id"], first, 10)
+    insert_package_item(store, library["id"], second, 20)
+    store.set_package_selected_aggregate(first, True)
+    before = store.selection_summary_aggregate()
+
+    results = service.create_download_batches_for_packages([first, second], "mcp-key-1")
+
+    assert len(results) == 1
+    assert all(created for _batch, created in results)
+    assert store.selection_summary_aggregate() == before
+    app.loop.close()
+
+
+def test_explicit_package_batches_are_idempotent(tmp_path):
+    from module.task_state import TaskStateStore
+    from tests.module.test_channel_library_web import (
+        build_app,
+        insert_package,
+        insert_package_item,
+    )
+
+    app = build_app(tmp_path)
+    store = ChannelLibraryStore(tmp_path / "channel-library.sqlite3")
+    store.initialize()
+    service = ChannelLibraryService(
+        app,
+        SimpleNamespace(),
+        store,
+        ChannelLibraryConfig(),
+        task_store=TaskStateStore(storage_path=tmp_path / "web-tasks.sqlite3"),
+    )
+    library, _job, _created = store.create_or_get_library_with_full_job(
+        -1001, "channel", "demo", "Demo", "https://t.me/demo/1", 10
+    )
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+    package_id = insert_package(store, library["id"], 10)
+    insert_package_item(store, library["id"], package_id, 10)
+
+    first = service.create_download_batches_for_packages([package_id], "mcp-key-2")
+    second = service.create_download_batches_for_packages([package_id], "mcp-key-2")
+
+    assert first[0][1] is True
+    assert second[0][1] is False
+    assert first[0][0]["task_id"] == second[0][0]["task_id"]
+    app.loop.close()
+
+
+def test_explicit_package_batches_reject_unstable_packages(tmp_path):
+    from module.task_state import TaskStateStore
+    from tests.module.test_channel_library_web import build_app, insert_package
+
+    app = build_app(tmp_path)
+    store = ChannelLibraryStore(tmp_path / "channel-library.sqlite3")
+    store.initialize()
+    service = ChannelLibraryService(
+        app,
+        SimpleNamespace(),
+        store,
+        ChannelLibraryConfig(),
+        task_store=TaskStateStore(storage_path=tmp_path / "web-tasks.sqlite3"),
+    )
+    library, _job, _created = store.create_or_get_library_with_full_job(
+        -1001, "channel", "demo", "Demo", "https://t.me/demo/1", 10
+    )
+    package_id = insert_package(
+        store, library["id"], 10, boundary_status="provisional"
+    )
+
+    with pytest.raises(ValueError):
+        service.create_download_batches_for_packages([package_id], "mcp-key-3")
+    app.loop.close()

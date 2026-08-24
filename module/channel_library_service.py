@@ -364,6 +364,49 @@ class ChannelLibraryService:
         )
         return self._dispatch_download_batch_task(batch), created
 
+    def create_download_batches_for_packages(
+        self,
+        package_ids: Sequence[int],
+        idempotency_key: str,
+        redownload: bool = False,
+    ) -> list[tuple[dict, bool]]:
+        """Create batches for exactly these packages without reading selection."""
+
+        key = str(idempotency_key or "").strip()
+        if not key:
+            raise ValueError("Idempotency key is required")
+        if len(key) > 160:
+            raise ValueError("Idempotency key is too long")
+        ordered_ids = list(dict.fromkeys(int(value) for value in package_ids))
+        if not ordered_ids:
+            raise ValueError("At least one package is required")
+
+        groups: dict[tuple[int, int], list[int]] = {}
+        for package_id in ordered_ids:
+            package = self.store.get_package(package_id)
+            if package is None:
+                raise KeyError(f"Channel package {package_id} does not exist")
+            if package["boundary_status"] != "stable":
+                raise ValueError(
+                    f"Channel package {package_id} is not a stable package"
+                )
+            library_id = int(package["library_id"])
+            source_chat_id = int(
+                package["source_chat_id"] or package["chat_id"]
+            )
+            groups.setdefault((library_id, source_chat_id), []).append(package_id)
+
+        results = []
+        for (library_id, source_chat_id), grouped_ids in groups.items():
+            batch, created = self.create_download_batch_result(
+                library_id,
+                f"{key}:library:{library_id}:source:{source_chat_id}",
+                redownload=redownload,
+                package_ids=grouped_ids,
+            )
+            results.append((batch, created))
+        return results
+
     def _trigger_auto_downloads(self, _library_id: int) -> list[int]:
         return self.trigger_keyword_monitors()
 

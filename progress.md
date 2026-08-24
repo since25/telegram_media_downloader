@@ -3918,3 +3918,26 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove MCP system/task read routes; existing Web task routes remain unchanged.
+
+## 2026-08-24 - Task: Create download batches from explicit package IDs
+
+### What was done
+
+- Added `ChannelLibraryService.create_download_batches_for_packages(...)` for MCP submissions.
+- The method validates all requested packages before creation, rejects non-stable packages, groups by library/source chat, derives scoped idempotency keys, and never reads or clears Web selection state.
+- Added regression coverage for selection isolation, idempotent replay, and unstable-package rejection.
+
+### Testing
+
+- TDD red: `./.venv311/bin/python -m pytest tests/module/test_channel_library_service.py -q -k explicit_package_batches` first failed with the expected missing-method error; fixture setup was then corrected to mark the test library ready and add media items required by the existing store contract.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_channel_library_service.py -q` → `50 passed`.
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`: added the explicit package batch creation service method.
+- `tests/module/test_channel_library_service.py`: added explicit-batch isolation, idempotency, and validation tests.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove the MCP-specific service entry point; existing selection-based Web download creation remains unchanged.
