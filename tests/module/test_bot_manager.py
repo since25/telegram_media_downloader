@@ -146,7 +146,7 @@ def test_only_management_role_starts_without_resource_token():
     run(scenario())
 
 
-def test_both_roles_and_delivery_start_from_one_manager():
+def test_resource_role_and_delivery_never_start_from_one_manager():
     async def scenario():
         events = []
         manager = make_manager(events)
@@ -159,62 +159,48 @@ def test_both_roles_and_delivery_start_from_one_manager():
             object(),
         )
 
-        assert events[:5] == [
-            "admin.start",
-            ("store.initialize", Path("/tmp/resource-bot-test.sqlite3")),
-            "resource.start",
-            "delivery.start",
-            "admin.commands",
-        ]
-        assert manager.resource_role.delivery_service is manager.delivery_service
-        assert app.resource_bot_store is manager.resource_store
+        assert events == ["admin.start"]
+        assert manager.resource_role is None
+        assert manager.delivery_service is None
+        assert app.resource_bot_store is None
 
         await manager.stop()
-        assert events[-3:] == [
-            "delivery.stop",
-            "resource.stop",
-            "admin.stop",
-        ]
+        assert events[-1] == "admin.stop"
         assert app.resource_bot_store is None
 
     run(scenario())
 
 
-def test_resource_token_without_management_token_is_rejected():
+def test_resource_token_without_management_token_no_longer_blocks_startup():
     async def scenario():
-        manager = make_manager([])
-        with pytest.raises(ValueError, match="resource_bot_token requires bot_token"):
-            await manager.start(
-                app_config(admin_token="", resource_token="resource"),
-                object(),
-                object(),
-                object(),
-            )
+        events = []
+        manager = make_manager(events)
+        await manager.start(
+            app_config(admin_token="", resource_token="resource"),
+            object(),
+            object(),
+            object(),
+        )
+        assert manager.started is True
+        assert events == ["admin.start"]
 
     run(scenario())
 
 
-def test_partial_start_failure_unwinds_started_roles():
+def test_resource_start_failure_is_unreachable_when_publishing_is_disabled():
     async def scenario():
         events = []
         manager = make_manager(events, resource_fail=True)
 
-        with pytest.raises(RuntimeError, match="resource start failed"):
-            await manager.start(
-                app_config(resource_token="resource"),
-                object(),
-                object(),
-                object(),
-            )
+        await manager.start(
+            app_config(resource_token="resource"),
+            object(),
+            object(),
+            object(),
+        )
 
-        assert events == [
-            "admin.start",
-            ("store.initialize", Path("/tmp/resource-bot-test.sqlite3")),
-            "resource.start",
-            "resource.stop",
-            "admin.stop",
-        ]
-        assert not manager.started
+        assert events == ["admin.start"]
+        assert manager.started
 
     run(scenario())
 
@@ -251,10 +237,10 @@ def test_repeated_start_and_stop_are_safe():
 
         assert events.count("admin.start") == 1
         assert events.count("admin.stop") == 1
-        assert events.count("resource.start") == 1
-        assert events.count("resource.stop") == 1
-        assert events.count("delivery.start") == 1
-        assert events.count("delivery.stop") == 1
+        assert "resource.start" not in events
+        assert "resource.stop" not in events
+        assert "delivery.start" not in events
+        assert "delivery.stop" not in events
 
     run(scenario())
 
@@ -270,7 +256,7 @@ def test_resource_database_path_default_and_environment_override(
     assert resource_bot_db_path() == override
 
 
-def test_runtime_uses_single_bot_entry_when_only_resource_token_is_set():
+def test_runtime_does_not_start_a_bot_when_only_resource_token_is_set():
     events = []
 
     class FakeLoop:
@@ -346,8 +332,41 @@ def test_runtime_uses_single_bot_entry_when_only_resource_token_is_set():
     run_application(FakeApplication(), object(), runtime)
 
     assert events[:2] == ["pre_run", "task_store.initialize"]
-    assert "bot.start" in events
-    assert "bot.stop" in events
+    assert "bot.start" not in events
+    assert "bot.stop" not in events
+
+
+def test_resource_role_is_never_started_even_when_token_is_configured(tmp_path):
+    events = []
+    manager = BotManager(
+        FakeAdminRole(events),
+        store_factory=lambda path: (_ for _ in ()).throw(
+            AssertionError("resource store must not be created")
+        ),
+        resource_role_factory=lambda *args: (_ for _ in ()).throw(
+            AssertionError("resource role must not be created")
+        ),
+        delivery_factory=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("delivery service must not be created")
+        ),
+        db_path_resolver=lambda: tmp_path / "resource_bot.sqlite3",
+    )
+    app = SimpleNamespace(
+        bot_token="admin-token",
+        resource_bot_token="resource-token",
+        resource_staging_chat_id=0,
+        temp_save_path=str(tmp_path),
+        channel_library_service=None,
+        resource_bot_store="sentinel",
+    )
+
+    run(manager.start(app, SimpleNamespace(), lambda *_: None, lambda *_: None))
+
+    assert manager.started is True
+    assert manager.resource_role is None
+    assert manager.delivery_service is None
+    assert app.resource_bot_store is None
+    assert "admin.start" in events
 
 
 def _lifecycle_runtime(events, **overrides):

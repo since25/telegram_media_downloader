@@ -3751,3 +3751,28 @@ Changed files:
 
 Rollback:
 - Delete the plan document and revert the spec edits; no runtime behavior, database schema, or configuration was touched.
+
+## 2026-08-24 - Task: Disable the resource delivery publishing path
+
+### What was done
+
+- Stopped `BotManager` from creating or starting the Resource Bot, `ResourceDeliveryService`, resource store, and resource administration commands.
+- Removed the residual requirement that a configured `resource_bot_token` must be paired with a management Bot token.
+- Changed runtime startup and shutdown checks to depend only on `bot_token`, so a resource-only configuration cannot start the Bot lifecycle.
+- Updated lifecycle tests to lock in the disabled behavior while retaining the legacy resource modules and test coverage.
+
+### Testing
+
+- TDD red: updated lifecycle expectations and added a factory-guard regression test; targeted tests failed against the old startup path.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_bot_manager.py tests/module/test_resource_bot.py tests/module/test_resource_delivery.py -q` → `47 passed`.
+
+### Notes
+
+Changed files:
+- `module/bot.py`: disabled Resource Bot and delivery-service startup.
+- `module/download_runtime.py`: removed resource-token-only Bot lifecycle branches.
+- `tests/module/test_bot_manager.py`: added regression coverage for disabled publishing startup.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to restore the previous Resource Bot and delivery startup branches; no database schema was changed.

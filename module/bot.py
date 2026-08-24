@@ -480,8 +480,6 @@ class BotManager:
 
         if self.started:
             return
-        if app.resource_bot_token and not app.bot_token:
-            raise ValueError("resource_bot_token requires bot_token")
         self.app = app
         if operations is not None:
             self.admin_role.operations = operations
@@ -495,55 +493,7 @@ class BotManager:
                 add_download_task,
                 download_chat_task,
             )
-            if app.resource_bot_token:
-                if not app.resource_staging_chat_id:
-                    raise ValueError(
-                        "resource_staging_chat_id requires a channel ID"
-                    )
-                self.resource_store = self.store_factory(
-                    self.db_path_resolver()
-                )
-                self.resource_store.initialize()
-                app.resource_bot_store = self.resource_store
-                channel_service = getattr(
-                    app, "channel_library_service", None
-                )
-                channel_store = (
-                    getattr(channel_service, "store", None)
-                    if channel_service is not None
-                    else None
-                )
-                self.resource_role = self.resource_role_factory(
-                    app,
-                    client,
-                    self.resource_store,
-                    channel_store,
-                )
-                await self.resource_role.start()
-                resource_started = True
-                self.delivery_service = self.delivery_factory(
-                    app,
-                    client,
-                    self.resource_role.bot,
-                    self.resource_store,
-                    channel_store,
-                    temp_root=Path(app.temp_save_path)
-                    / "resource-deliveries",
-                    staging_chat_id=app.resource_staging_chat_id,
-                )
-                self.resource_role.delivery_service = self.delivery_service
-                await self.delivery_service.start()
-                self.resource_admin_commands = ResourceAdminCommands(
-                    self.resource_store
-                )
-                self.resource_admin_commands.register(
-                    self.admin_role.bot,
-                    self.admin_role.allowed_user_ids,
-                )
-                await self.admin_role.bot.set_bot_commands(
-                    build_admin_bot_commands()
-                    + build_resource_admin_bot_commands()
-                )
+            app.resource_bot_store = None
             self.started = True
         except Exception:
             if self.delivery_service is not None:
