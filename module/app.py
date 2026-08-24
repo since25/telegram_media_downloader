@@ -489,6 +489,7 @@ class Application:
         self.max_concurrent_transmissions: int = 10  # 增加默认并发传输数
         self.web_host: str = "0.0.0.0"
         self.web_port: int = 5000
+        self.mcp_enabled: bool = False
         self.max_download_task: int = 4  # 默认4个worker，避免TG限流
         self.language = Language.EN
         self.after_upload_telegram_delete: bool = True
@@ -617,6 +618,7 @@ class Application:
         )
         self.web_host = _config.get("web_host", self.web_host)
         self.web_port = _config.get("web_port", self.web_port)
+        self.mcp_enabled = bool((_config.get("mcp") or {}).get("enabled", False))
 
         # TODO: add check if expression exist syntax error
 

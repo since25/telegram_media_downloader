@@ -3820,3 +3820,28 @@ Changed files:
 
 Rollback:
 - Revert the task commit to restore the publishing tab and its continuous polling behavior.
+
+## 2026-08-24 - Task: Add MCP enablement and API key loading
+
+### What was done
+
+- Added `Application.mcp_enabled`, loaded from the non-secret `mcp.enabled` configuration block.
+- Added API Key loading from `TMD_MCP_API_KEY` with an owner-only key-file fallback beside the config file.
+- Added constant-time key verification and a secret-free `mcp` section to `config.example.yaml`.
+
+### Testing
+
+- TDD red: `./.venv311/bin/python -m pytest tests/module/test_mcp_auth.py -q` failed during collection because `module.mcp_auth` did not exist.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_mcp_auth.py tests/module/test_app.py -q` → `12 passed`.
+
+### Notes
+
+Changed files:
+- `module/mcp_auth.py`: added API Key path, loading, and comparison helpers.
+- `module/app.py`: added the MCP feature flag and config loading.
+- `config.example.yaml`: documented the MCP enablement switch without a secret.
+- `tests/module/test_mcp_auth.py`: added key precedence, permissions, missing-key, and comparison tests.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove MCP configuration loading; no existing configuration file or database is modified by this task.
