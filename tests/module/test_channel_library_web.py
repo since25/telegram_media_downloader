@@ -351,6 +351,29 @@ def test_channel_routes_return_safe_503_until_service_is_available(web_env):
     }
 
 
+def test_resource_delivery_read_reports_disabled_instead_of_failing(web_env):
+    web_env.app.resource_bot_store = None
+
+    response = web_env.client.get("/api/resource-deliveries?page=1&page_size=100")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["disabled"] is True
+    assert payload["items"] == []
+
+
+def test_resource_delivery_writes_return_disabled_error(web_env):
+    web_env.app.resource_bot_store = None
+
+    response = web_env.client.post(
+        "/api/resource-deliveries/clear-terminal",
+        headers=csrf_headers(web_env),
+    )
+
+    assert response.status_code == 410
+    assert response.get_json()["error_code"] == "resource_delivery_disabled"
+
+
 def test_incremental_scan_settings_get_and_put_contract(web_env):
     env = web_env
     current = env.client.get("/api/channel-library-settings/incremental-scan")

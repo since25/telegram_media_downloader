@@ -409,9 +409,9 @@ def _resource_store():
     store = getattr(_active_app(), "resource_bot_store", None)
     if store is None:
         raise _ChannelApiError(
-            503,
-            "service_unavailable",
-            "Resource delivery service is unavailable",
+            410,
+            "resource_delivery_disabled",
+            "Resource delivery is disabled",
         )
     return store
 
@@ -734,6 +734,17 @@ def resource_deliveries():
 
     _require_query_fields(frozenset({"page", "page_size"}))
     _require_no_body()
+    if getattr(_active_app(), "resource_bot_store", None) is None:
+        return jsonify(
+            {
+                "items": [],
+                "page": 1,
+                "page_size": 0,
+                "total": 0,
+                "summary": {},
+                "disabled": True,
+            }
+        )
     page = _query_int("page", 1, minimum=1, maximum=100000)
     page_size = _query_int("page_size", 100, minimum=1, maximum=200)
     jobs, total = _resource_store().list_delivery_jobs(

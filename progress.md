@@ -3776,3 +3776,25 @@ Changed files:
 
 Rollback:
 - Revert the task commit to restore the previous Resource Bot and delivery startup branches; no database schema was changed.
+
+## 2026-08-24 - Task: Publish the resource delivery disabled contract
+
+### What was done
+
+- Changed all resource-delivery write paths to return HTTP `410` with `resource_delivery_disabled` when the resource store is not active.
+- Changed the delivery history read endpoint to return a stable empty payload with `disabled: true`, allowing the Web console to stop polling cleanly in the next task.
+
+### Testing
+
+- TDD red: `./.venv311/bin/python -m pytest tests/module/test_channel_library_web.py -q -k resource_delivery` → 2 failures (`503` instead of the expected disabled contract).
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_channel_library_web.py -q` → `114 passed`.
+
+### Notes
+
+Changed files:
+- `module/web.py`: added the `resource_delivery_disabled` error contract and disabled read payload.
+- `tests/module/test_channel_library_web.py`: added read and write contract tests.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to restore the prior `503 service_unavailable` behavior for inactive resource delivery.
