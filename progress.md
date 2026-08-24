@@ -3798,3 +3798,25 @@ Changed files:
 
 Rollback:
 - Revert the task commit to restore the prior `503 service_unavailable` behavior for inactive resource delivery.
+
+## 2026-08-24 - Task: Hide the disabled resource delivery panel
+
+### What was done
+
+- Marked the publishing tab as the resource-delivery panel and added a disabled state to the Web client.
+- When the backend returns `disabled: true`, the client hides the panel and clears the publishing poll interval instead of showing repeated read errors.
+
+### Testing
+
+- TDD red: the new static UI contract failed because the template had no disabled handling.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_task_page_ui.py tests/module/test_channel_library_web.py -q` → `121 passed`.
+
+### Notes
+
+Changed files:
+- `module/templates/index.html`: added disabled-state rendering and polling shutdown.
+- `tests/module/test_task_page_ui.py`: added the disabled-panel contract test.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to restore the publishing tab and its continuous polling behavior.

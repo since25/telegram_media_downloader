@@ -170,7 +170,7 @@
         </div>
 
       </div>
-      <div class="tab-panel" id="tab_publishing" role="tabpanel" aria-labelledby="app_tab_publishing">
+      <div class="tab-panel" id="tab_publishing" role="tabpanel" aria-labelledby="app_tab_publishing" data-panel="resource-delivery">
         <div class="resource-delivery-summary">
           <div class="card blueprint resource-delivery-stat">
             <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
@@ -721,7 +721,7 @@
         pendingLibraryId:null,pendingPackageId:null},
       keywordMonitor:{groups:[],selectedGroupId:null,history:[],historyNextCursor:null,
         summary:null,retrying:false,draftDirty:false,draft:null},
-      resourceDelivery:{items:[],payload:null,polling:false,filter:'all'} };
+      resourceDelivery:{items:[],payload:null,polling:false,filter:'all',disabled:false} };
     let taskFilter = 'all';
 
     const ICONS = {
@@ -955,9 +955,20 @@
     }
     async function pollResourceDeliveries(){
       if (state.resourceDelivery.polling) return;
+      if (state.resourceDelivery.disabled) return;
       state.resourceDelivery.polling = true;
       try {
         const payload = await channelRequest('/api/resource-deliveries?page=1&page_size=100');
+        if (payload.disabled) {
+          state.resourceDelivery.disabled = true;
+          const panel = document.querySelector('[data-panel="resource-delivery"]');
+          if (panel) panel.hidden = true;
+          if (state.timers.publishing) {
+            clearInterval(state.timers.publishing);
+            delete state.timers.publishing;
+          }
+          return;
+        }
         state.resourceDelivery.items = payload.items || [];
         state.resourceDelivery.payload = payload;
         showResourceDeliveryNotice('');

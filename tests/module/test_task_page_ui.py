@@ -104,3 +104,10 @@ def test_resource_delivery_has_independent_publish_page():
     assert "state.timers.publishing = setInterval(pollResourceDeliveries, 1000)" in html
     assert "/api/resource-deliveries/clear-terminal" in html
     assert ".resource-delivery-table" in css
+
+
+def test_console_hides_delivery_panel_when_backend_reports_disabled():
+    html = INDEX_TEMPLATE.read_text(encoding="utf-8")
+
+    assert "payload.disabled" in html
+    assert "state.resourceDelivery.disabled" in html
