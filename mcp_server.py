@@ -64,12 +64,16 @@ class DownloaderClient:
                 payload = {}
             raise ToolError(
                 str(payload.get("error_code") or "service_unavailable"),
-                str(payload.get("message") or "The control interface returned an error"),
+                str(
+                    payload.get("message") or "The control interface returned an error"
+                ),
             )
         try:
             return response.json()
         except Exception as error:
-            logger.warning("MCP control returned invalid JSON: %s", type(error).__name__)
+            logger.warning(
+                "MCP control returned invalid JSON: %s", type(error).__name__
+            )
             raise ToolError(
                 "service_unavailable",
                 "The control interface returned invalid JSON",
@@ -103,8 +107,109 @@ class DownloaderClient:
             },
         )
 
+    def pause_downloads(self):
+        return self._call("POST", "/api/mcp/downloads/pause")
+
+    def resume_downloads(self):
+        return self._call("POST", "/api/mcp/downloads/resume")
+
+    def cancel_download_task(self, task_id: str):
+        return self._call("POST", f"/api/mcp/tasks/{task_id}/cancel")
+
+    def list_keyword_monitors(self):
+        return self._call("GET", "/api/mcp/keyword-monitors")
+
+    def get_keyword_monitor(self, group_id: int):
+        return self._call("GET", f"/api/mcp/keyword-monitors/{int(group_id)}")
+
+    def create_keyword_monitor(
+        self,
+        name: str,
+        enabled=True,
+        required_keywords=None,
+        match_keywords=None,
+        blacklist_keywords=None,
+    ):
+        return self._call(
+            "POST",
+            "/api/mcp/keyword-monitors",
+            json_body={
+                "name": str(name),
+                "enabled": bool(enabled),
+                "required_keywords": list(required_keywords or []),
+                "match_keywords": list(match_keywords or []),
+                "blacklist_keywords": list(blacklist_keywords or []),
+            },
+        )
+
+    def update_keyword_monitor(self, group_id: int, **payload):
+        return self._call(
+            "PUT",
+            f"/api/mcp/keyword-monitors/{int(group_id)}",
+            json_body=dict(payload),
+        )
+
+    def delete_keyword_monitor(self, group_id: int):
+        return self._call("DELETE", f"/api/mcp/keyword-monitors/{int(group_id)}")
+
+    def get_keyword_monitor_history(self, group_id: int, **params):
+        return self._call(
+            "GET",
+            f"/api/mcp/keyword-monitors/{int(group_id)}/history",
+            params=params or None,
+        )
+
+    def retry_keyword_monitor_failures(self, group_id: int):
+        return self._call(
+            "POST",
+            f"/api/mcp/keyword-monitors/{int(group_id)}/retry-failures",
+        )
+
 
 TOOL_DEFINITIONS = [
+    {
+        "name": "cancel_download_task",
+        "description": "Cancel one download task through the downloader owner loop.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "create_keyword_monitor",
+        "description": "Create a keyword monitor and immediately match current stable packages.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "enabled": {"type": "boolean"},
+                "required_keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "match_keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+                "blacklist_keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["name", "match_keywords"],
+        },
+    },
+    {
+        "name": "delete_keyword_monitor",
+        "description": "Delete a keyword monitor without deleting its download history.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"group_id": {"type": "integer"}},
+            "required": ["group_id"],
+        },
+    },
     {
         "name": "get_download_task",
         "description": "Read one download task by its string task id.",
@@ -112,6 +217,28 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {"task_id": {"type": "string"}},
             "required": ["task_id"],
+        },
+    },
+    {
+        "name": "get_keyword_monitor",
+        "description": "Read one keyword monitor configuration and progress summary.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"group_id": {"type": "integer"}},
+            "required": ["group_id"],
+        },
+    },
+    {
+        "name": "get_keyword_monitor_history",
+        "description": "Read paginated keyword-monitor matches and download progress.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "group_id": {"type": "integer"},
+                "cursor": {"type": "string"},
+                "page_size": {"type": "integer", "minimum": 1, "maximum": 200},
+            },
+            "required": ["group_id"],
         },
     },
     {
@@ -141,6 +268,30 @@ TOOL_DEFINITIONS = [
                 "status": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200},
             },
+        },
+    },
+    {
+        "name": "list_keyword_monitors",
+        "description": "List keyword monitors with enabled counts and trigger summaries.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "pause_downloads",
+        "description": "Set the global download state to paused idempotently.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "resume_downloads",
+        "description": "Set the global download state to downloading idempotently.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "retry_keyword_monitor_failures",
+        "description": "Retry recoverable download failures for one keyword monitor.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"group_id": {"type": "integer"}},
+            "required": ["group_id"],
         },
     },
     {
@@ -182,6 +333,32 @@ TOOL_DEFINITIONS = [
             "required": ["package_ids", "idempotency_key"],
         },
     },
+    {
+        "name": "update_keyword_monitor",
+        "description": "Replace one keyword monitor and immediately match current stable packages.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "group_id": {"type": "integer"},
+                "name": {"type": "string"},
+                "enabled": {"type": "boolean"},
+                "required_keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "match_keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                },
+                "blacklist_keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["group_id", "name", "match_keywords"],
+        },
+    },
 ]
 
 
@@ -201,6 +378,12 @@ def dispatch(client: DownloaderClient, name: str, arguments: dict):
     """Route one tool call onto the control client."""
 
     arguments = dict(arguments or {})
+    if name == "cancel_download_task":
+        return client.cancel_download_task(str(arguments["task_id"]))
+    if name == "create_keyword_monitor":
+        return client.create_keyword_monitor(**arguments)
+    if name == "delete_keyword_monitor":
+        return client.delete_keyword_monitor(arguments["group_id"])
     if name == "search_resource_packages":
         return client.search_packages(**arguments)
     if name == "get_resource_package":
@@ -209,14 +392,30 @@ def dispatch(client: DownloaderClient, name: str, arguments: dict):
         return client.get_system_status()
     if name == "list_download_tasks":
         return client.list_tasks(**arguments)
+    if name == "list_keyword_monitors":
+        return client.list_keyword_monitors()
+    if name == "pause_downloads":
+        return client.pause_downloads()
+    if name == "retry_keyword_monitor_failures":
+        return client.retry_keyword_monitor_failures(arguments["group_id"])
+    if name == "resume_downloads":
+        return client.resume_downloads()
     if name == "get_download_task":
         return client.get_task(str(arguments["task_id"]))
+    if name == "get_keyword_monitor":
+        return client.get_keyword_monitor(arguments["group_id"])
+    if name == "get_keyword_monitor_history":
+        group_id = arguments.pop("group_id")
+        return client.get_keyword_monitor_history(group_id, **arguments)
     if name == "submit_download":
         return client.submit_download(
             arguments["package_ids"],
             arguments["idempotency_key"],
             redownload=bool(arguments.get("redownload", False)),
         )
+    if name == "update_keyword_monitor":
+        group_id = arguments.pop("group_id")
+        return client.update_keyword_monitor(group_id, **arguments)
     raise ToolError("not_found", f"Unknown tool {name}")
 
 
@@ -252,9 +451,7 @@ def main() -> int:
         except ToolError as error:
             payload = {"error_code": error.error_code, "message": error.message}
             return types.CallToolResult(
-                content=[
-                    types.TextContent(type="text", text=json.dumps(payload))
-                ],
+                content=[types.TextContent(type="text", text=json.dumps(payload))],
                 isError=True,
             )
         return types.CallToolResult(

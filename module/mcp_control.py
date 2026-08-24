@@ -486,15 +486,22 @@ def _save_monitor(group_id=None):
     return group
 
 
+def _monitor_view(service, group: dict) -> dict:
+    view = dict(group)
+    view["summary"] = service.store.get_keyword_monitor_summary(int(group["id"]))
+    return view
+
+
 @mcp_blueprint.route("/keyword-monitors")
 @mcp_route
 def list_keyword_monitors():
     """List every monitor group with its trigger summary."""
 
-    groups = _service().store.list_keyword_monitor_groups()
+    service = _service()
+    groups = service.store.list_keyword_monitor_groups()
     return jsonify(
         {
-            "items": groups,
+            "items": [_monitor_view(service, group) for group in groups],
             "total": len(groups),
             "enabled": sum(1 for group in groups if group["enabled"]),
             "disabled": sum(1 for group in groups if not group["enabled"]),
@@ -515,10 +522,11 @@ def create_keyword_monitor():
 def get_keyword_monitor(group_id: int):
     """Read one monitor group with its current progress summary."""
 
-    group = _service().store.get_keyword_monitor_group(group_id)
+    service = _service()
+    group = service.store.get_keyword_monitor_group(group_id)
     if group is None:
         raise KeyError(f"Monitor group {group_id} does not exist")
-    return jsonify({"group": group})
+    return jsonify({"group": _monitor_view(service, group)})
 
 
 @mcp_blueprint.route("/keyword-monitors/<int:group_id>", methods=["PUT"])

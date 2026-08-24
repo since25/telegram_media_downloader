@@ -4048,3 +4048,39 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove MCP keyword-monitor controls; existing Web keyword-monitor routes remain unchanged.
+
+## 2026-08-24 - Task: Document MCP operations and complete acceptance checks
+
+### What was done
+
+- Added `docs/mcp-control.md` with the cross-machine topology, protected Key setup, Hermes stdio configuration, tool/error contracts, resource-delivery rollback path, manual checks, and known deployment risks.
+- Added a README_CN entry for Hermes MCP and corrected the resource Bot description to reflect the disabled publishing path.
+- Extended the Hermes stdio adapter from the initial six tools to all 16 planned controls, including explicit pause/resume/cancel and complete keyword-monitor operations.
+- Added per-monitor progress summaries to MCP list/detail responses so Hermes can see total, enabled/disabled, and queued/downloading/completed/failed/cancelled state.
+- Updated the legacy resource-delivery read test to the approved `disabled: true` / HTTP 200 contract.
+
+### Testing
+
+- TDD red for the adapter extension: `./.venv311/bin/python -m pytest tests/test_mcp_server.py -q` failed on the missing control methods and tool definitions.
+- TDD green: `./.venv311/bin/python -m pytest tests/test_mcp_server.py tests/test_dependency_contract.py -q` → `10 passed`.
+- MCP stdio protocol smoke test with `mcp==2.0.0`: exchanged `initialize` and `tools/list`, verified two valid JSON-RPC stdout frames, 16 advertised tools, and zero stderr bytes.
+- TDD red/green for monitor summaries: the new list/detail summary assertion first failed with `KeyError: summary`, then `./.venv311/bin/python -m pytest tests/module/test_mcp_keyword_monitors.py -q` → `4 passed` after the minimal response fix.
+- Final full suite: `./.venv311/bin/python -m pytest tests -q` → `787 passed, 1 skipped, 7 failed`.
+- The seven remaining failures are pre-existing rclone-argument and comment/package naming-preview expectations; none touch the MCP, Web cancellation, resource-delivery, or keyword-monitor changes.
+- `./.venv311/bin/python -m black --check mcp_server.py tests/test_mcp_server.py module/mcp_control.py tests/module/test_mcp_keyword_monitors.py` passed.
+- `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `docs/mcp-control.md`: added deployment and operational guidance.
+- `README_CN.md`: linked the MCP guide and documented the disabled publishing path.
+- `mcp_server.py`: added stdio client methods, dispatch entries, and 10 control/monitor tool schemas.
+- `tests/test_mcp_server.py`: added control request and full-tool-set contract coverage.
+- `module/mcp_control.py`: added per-monitor status summaries.
+- `tests/module/test_mcp_keyword_monitors.py`: asserted list/detail status summaries.
+- `tests/module/test_web.py`: synchronized the approved disabled resource-delivery read contract.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove the MCP documentation and stdio control-tool expansion; the downloader-side routes remain independently revertible by their earlier task commits.

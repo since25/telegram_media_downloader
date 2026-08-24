@@ -48,8 +48,14 @@ def test_create_list_and_get_round_trip(env):
     fetched = env.client.get(f"/api/mcp/keyword-monitors/{group_id}", headers=auth())
 
     assert created.status_code == 201
-    assert [item["id"] for item in listed.get_json()["items"]] == [group_id]
+    listed_payload = listed.get_json()
+    assert [item["id"] for item in listed_payload["items"]] == [group_id]
+    assert listed_payload["total"] == 1
+    assert listed_payload["enabled"] == 1
+    assert listed_payload["disabled"] == 0
+    assert listed_payload["items"][0]["summary"]["total_count"] == 0
     assert fetched.get_json()["group"]["name"] == "Python"
+    assert fetched.get_json()["group"]["summary"]["processed_count"] == 0
 
 
 def test_create_requires_at_least_one_match_keyword(env):

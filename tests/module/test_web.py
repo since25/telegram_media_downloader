@@ -1523,7 +1523,7 @@ class WebTestCase(unittest.TestCase):
             self.assertEqual(cleared.get_json()["cleared"], 1)
             self.assertIsNotNone(resource_store.get_delivery_job(active["id"]))
 
-    def test_resource_delivery_api_is_unavailable_without_resource_bot(self):
+    def test_resource_delivery_api_reports_disabled_without_resource_bot(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             app = build_web_test_app(tmp_dir)
             app.resource_bot_store = None
@@ -1533,10 +1533,9 @@ class WebTestCase(unittest.TestCase):
 
             response = client.get("/api/resource-deliveries")
 
-            self.assertEqual(response.status_code, 503)
-            self.assertEqual(
-                response.get_json()["error_code"], "service_unavailable"
-            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.get_json()["disabled"], True)
+            self.assertEqual(response.get_json()["items"], [])
 
     def test_index_contains_industry_app_shell(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
