@@ -3845,3 +3845,27 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove MCP configuration loading; no existing configuration file or database is modified by this task.
+
+## 2026-08-24 - Task: Add the Bearer-authenticated MCP route skeleton
+
+### What was done
+
+- Added the `/api/mcp` Flask blueprint with a protected `GET /ping` route.
+- Added Bearer API Key authentication, constant-time comparison, per-client failure limiting, JSON error responses, and disabled-feature route registration behavior.
+- Registered the MCP blueprint from the existing Web initialization path without changing browser Session/CSRF behavior.
+
+### Testing
+
+- TDD red: `./.venv311/bin/python -m pytest tests/module/test_mcp_control.py -q` failed during collection because `module.mcp_control` did not exist.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_mcp_control.py tests/test_web_csrf_contract.py -q` → `11 passed`.
+
+### Notes
+
+Changed files:
+- `module/mcp_control.py`: added the MCP blueprint, authentication decorator, rate limiting, and ping route.
+- `module/web.py`: registered the MCP blueprint during Web initialization.
+- `tests/module/test_mcp_control.py`: added authentication, disabled-mode, and secret-disclosure regression tests.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove the MCP blueprint registration; the existing Web Session/CSRF routes remain unchanged.

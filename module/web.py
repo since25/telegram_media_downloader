@@ -57,6 +57,7 @@ from module.web_commands import (
     wait_for_web_command,
 )
 from module.web_auth import LoginAttemptLimiter, WebAuthState
+from module.mcp_control import register_mcp_blueprint
 from module.web_server import WebServer
 from utils.format import format_byte
 
@@ -250,6 +251,7 @@ def init_web(
         app.web_client = client
     _ensure_web_auth(app)
     get_flask_app().debug = bool(app.debug_web)
+    register_mcp_blueprint(get_flask_app(), app)
     server = WebServer(get_flask_app(), app.web_host, app.web_port)
     server.start()
     return server
