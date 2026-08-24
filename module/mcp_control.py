@@ -80,7 +80,19 @@ def mcp_route(function):
                 ),
                 404,
             )
-        except Exception:
+        except Exception as error:
+            from module.web import _ChannelApiError
+
+            if isinstance(error, _ChannelApiError):
+                return (
+                    jsonify(
+                        {
+                            "error_code": error.error_code,
+                            "message": error.message,
+                        }
+                    ),
+                    error.status,
+                )
             logger.exception("MCP control operation failed")
             return (
                 jsonify(
@@ -113,3 +125,93 @@ def register_mcp_blueprint(flask_app, app) -> bool:
     if "mcp" not in flask_app.blueprints:
         flask_app.register_blueprint(mcp_blueprint)
     return True
+
+
+MCP_FILTER_FIELDS = frozenset(
+    {
+        "q",
+        "date_from",
+        "date_to",
+        "download_status",
+        "message_id_min",
+        "message_id_max",
+        "media_count_min",
+        "media_count_max",
+        "size_min",
+        "size_max",
+        "include_unknown_size",
+        "library_ids",
+        "cursor",
+        "page_size",
+    }
+)
+
+
+def _service():
+    service = getattr(_current_app, "channel_library_service", None)
+    if service is None:
+        raise McpError(
+            503, "service_unavailable", "Channel library service is unavailable"
+        )
+    return service
+
+
+def _invalid(message: str) -> None:
+    raise McpError(400, "invalid_request", message)
+
+
+def _package_view(package: dict) -> dict:
+    view = dict(package)
+    view["downloadable"] = view.get("boundary_status") == "stable"
+    return view
+
+
+@mcp_blueprint.route("/packages")
+@mcp_route
+def search_packages():
+    """Return the same package set the browser sees, plus a downloadable flag."""
+
+    from module.web import _filter_from_mapping, _library_ids_from_query, _page_inputs
+
+    unknown = set(request.args) - MCP_FILTER_FIELDS
+    if unknown:
+        _invalid("Request contains unsupported query parameters")
+    cursor, page_size = _page_inputs()
+    page = _service().store.list_packages_aggregate(
+        _library_ids_from_query(),
+        _filter_from_mapping(
+            request.args, query=True, extra_fields=frozenset({"library_ids"})
+        ),
+        cursor=cursor,
+        limit=page_size,
+    )
+    return jsonify(
+        {
+            "items": [_package_view(item) for item in page.items],
+            "next_cursor": page.next_cursor,
+        }
+    )
+
+
+@mcp_blueprint.route("/packages/<int:package_id>")
+@mcp_route
+def package_detail(package_id: int):
+    """Return one package with a bounded page of its media items."""
+
+    from module.web import _page_inputs
+
+    cursor, page_size = _page_inputs()
+    store = _service().store
+    package = store.get_package(package_id)
+    if package is None:
+        raise KeyError(f"Channel package {package_id} does not exist")
+    page = store.list_package_items_aggregate(
+        package_id, cursor=cursor, limit=page_size
+    )
+    return jsonify(
+        {
+            "package": _package_view(package),
+            "items": page.items,
+            "next_cursor": page.next_cursor,
+        }
+    )

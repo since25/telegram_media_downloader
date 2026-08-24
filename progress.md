@@ -3869,3 +3869,27 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove the MCP blueprint registration; the existing Web Session/CSRF routes remain unchanged.
+
+## 2026-08-24 - Task: Expose resource package search and detail over MCP
+
+### What was done
+
+- Added authenticated MCP package search using the existing aggregate filters and keyset cursor semantics.
+- Added package detail with bounded media-item pagination.
+- Preserved the Web-visible package set, including non-superseded provisional packages, and added an explicit `downloadable` flag based on stable package boundaries.
+- Mapped existing Web validation errors into the MCP JSON error contract.
+
+### Testing
+
+- TDD red: after fixing the test fixture's existing three-value library return shape, `./.venv311/bin/python -m pytest tests/module/test_mcp_packages.py -q` failed with the expected missing-route `404` responses.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_mcp_packages.py tests/module/test_mcp_control.py -q` → `10 passed`.
+
+### Notes
+
+Changed files:
+- `module/mcp_control.py`: added package filters, search, detail, and package-view helpers.
+- `tests/module/test_mcp_packages.py`: added package query and error-contract tests.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove MCP package query routes; the existing Web package APIs remain unchanged.
