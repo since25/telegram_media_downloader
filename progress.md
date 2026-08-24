@@ -3628,3 +3628,26 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, fast-forward the production checkout back to commit `765dd75`, and restart. No database schema or configuration format changes are introduced.
+
+## 2026-08-24 - Task: Design Hermes MCP control layer
+
+### What was done
+
+- Defined a local `stdio` MCP adapter for Hermes that connects to the resident downloader through an authenticated loopback control interface.
+- Defined MCP coverage for resource-package search, download submission and control, system status, and keyword-monitor CRUD, history, summaries, and failure retry.
+- Defined explicit runtime shutdown of the `resource_delivery` / Resource Bot publishing path while preserving its code and database for rollback.
+
+### Testing
+
+- Reviewed the existing Web routes, `ChannelLibraryStore`, `ChannelLibraryService`, task store, `BotManager`, and resource delivery startup path.
+- Ran `git diff --check`; no whitespace errors were reported.
+- Performed a placeholder, scope, and consistency review of the design document. No runtime code was changed or executed.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-08-24-mcp-hermes-control-design.md`: Added the approved architecture and tool contract for Hermes MCP integration.
+- `progress.md`: Recorded the design step and validation evidence.
+
+Rollback:
+- Revert the design commit or remove the two documentation-only changes; no runtime behavior, database schema, or configuration was changed.
