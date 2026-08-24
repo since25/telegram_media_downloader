@@ -215,3 +215,94 @@ def package_detail(package_id: int):
             "next_cursor": page.next_cursor,
         }
     )
+
+
+@mcp_blueprint.route("/system")
+@mcp_route
+def system_status():
+    """Return runtime health, pause state, throughput, disk, and task counts."""
+
+    import shutil
+
+    from module.download_stat import get_download_state, get_total_download_speed
+    from module.task_state import get_task_store
+
+    health = getattr(_current_app, "runtime_health", None)
+    save_path = getattr(_current_app, "save_path", None) or "/"
+    try:
+        usage = shutil.disk_usage(save_path)
+    except OSError:
+        usage = shutil.disk_usage("/")
+    dashboard = get_task_store().dashboard(limit=0)
+    return jsonify(
+        {
+            "phase": health.phase.value if health is not None else "unknown",
+            "download_state": get_download_state().name,
+            "download_speed_bytes": get_total_download_speed(),
+            "disk_free": int(usage.free),
+            "disk_total": int(usage.total),
+            "active_task_count": dashboard["active_task_count"],
+            "completed_task_count": dashboard["completed_task_count"],
+        }
+    )
+
+
+@mcp_blueprint.route("/tasks")
+@mcp_route
+def list_tasks():
+    """Return a bounded page of recent tasks, optionally filtered by status."""
+
+    from module.task_state import get_task_store
+
+    unknown = set(request.args) - {"status", "limit"}
+    if unknown:
+        _invalid("Request contains unsupported query parameters")
+    raw_limit = request.args.get("limit", "50")
+    if not raw_limit.isascii() or not raw_limit.isdecimal():
+        _invalid("limit must be a positive integer")
+    limit = min(max(int(raw_limit), 1), 200)
+    status = request.args.get("status")
+    store = get_task_store()
+    items = store.serialize_tasks(
+        hide_file_name=bool(getattr(_current_app, "hide_file_name", False)),
+        limit=limit if status is None else None,
+    )
+    if status is not None:
+        items = [item for item in items if item.get("status") == status][:limit]
+    dashboard = store.dashboard(limit=0)
+    return jsonify(
+        {
+            "items": items,
+            "counts": {
+                "active": dashboard["active_task_count"],
+                "completed": dashboard["completed_task_count"],
+            },
+        }
+    )
+
+
+@mcp_blueprint.route("/tasks/<task_id>")
+@mcp_route
+def task_detail(task_id: str):
+    """Return one task by its string task id, plus its batch header if any."""
+
+    from module.task_state import get_task_store
+
+    task = get_task_store().get_task(task_id)
+    if task is None:
+        raise KeyError(f"Task {task_id} does not exist")
+    service = getattr(_current_app, "channel_library_service", None)
+    batch = (
+        service.store.get_download_batch_header_by_task_id(task_id)
+        if service is not None
+        else None
+    )
+    return jsonify(
+        {
+            "task": task.to_dict(
+                hide_file_name=bool(getattr(_current_app, "hide_file_name", False)),
+                include_files=False,
+            ),
+            "batch": batch,
+        }
+    )

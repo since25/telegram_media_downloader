@@ -3893,3 +3893,28 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove MCP package query routes; the existing Web package APIs remain unchanged.
+
+## 2026-08-24 - Task: Expose MCP system status and task reads
+
+### What was done
+
+- Added a bounded MCP system-status endpoint with runtime phase, download state/speed, disk capacity, and task counts.
+- Added bounded recent-task listing with optional status filtering.
+- Added task detail lookup by the persisted string task ID, including a channel download-batch header when available.
+- Kept sensitive application fields out of all status responses.
+
+### Testing
+
+- Confirmed the existing `TaskStateStore.create_task` signature before writing the fixture calls.
+- TDD red: `./.venv311/bin/python -m pytest tests/module/test_mcp_status.py -q` returned the expected missing-route failures.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_mcp_status.py -q` → `3 passed`.
+
+### Notes
+
+Changed files:
+- `module/mcp_control.py`: added system, task-list, and task-detail routes.
+- `tests/module/test_mcp_status.py`: added bounded-list, status, not-found, and secret-exclusion tests.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove MCP system/task read routes; existing Web task routes remain unchanged.
