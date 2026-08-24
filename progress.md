@@ -3651,3 +3651,103 @@ Changed files:
 
 Rollback:
 - Revert the design commit or remove the two documentation-only changes; no runtime behavior, database schema, or configuration was changed.
+
+## 2026-08-24 - Task: Review Hermes MCP control layer design
+
+### What was done
+
+- Reviewed the Hermes MCP control-layer design against the current runtime code and recorded the review as section 10 of the design document.
+- Flagged three blocking issues that change the implementation shape: the deployment topology assumption (resident downloader runs on the remote server, not the machine that launches the MCP stdio process), the contradiction between "MCP routes inside the existing Web process" and a separate loopback control port, and the absence of a side-effect-free multi-package download entry point.
+- Corrected design claims that do not match the code: idempotency-key scope, package search visibility, pause/resume semantics, task listing filters and retention, cancel outcomes, resource-delivery shutdown impact on the Web console and management Bot commands, and API-key storage in the periodically rewritten config file.
+- Revised the acceptance criteria and proposed narrowing the first iteration to the read-only tools plus a single submit entry point.
+
+### Testing
+
+- Read-only review of `module/web.py`, `module/web_auth.py`, `module/web_commands.py`, `module/web_server.py`, `module/channel_library_service.py`, `module/channel_library_store.py`, `module/task_state.py`, `module/bot.py`, `module/app.py`, `module/config_persistence.py`, and `module/templates/index.html`.
+- Ran `git diff --check`; no whitespace errors were reported.
+- No runtime code was changed or executed; this round is documentation only.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-08-24-mcp-hermes-control-design.md`: Appended section 10 with blocking issues, per-item corrections, revised acceptance criteria, and a scope recommendation.
+- `progress.md`: Recorded the design review round.
+
+Rollback:
+- Remove section 10 from the design document and this progress entry; no runtime behavior, database schema, or configuration was touched.
+
+## 2026-08-24 - Task: Confirm Hermes MCP deployment topology
+
+### What was done
+
+- Verified the real deployment topology and replaced blocking item A1 in the design review with confirmed facts plus three ranked routes.
+- Established that Hermes (`ubuntu-wg`) and the downloader (RackNerd) share no private link, that `tgdn.wyichuan.cc` is a Cloudflare proxy rather than a host-side tunnel process, and that the console is reachable directly on the origin IP.
+- Recommended running the MCP process on the downloader host and letting Hermes launch it over SSH, which keeps the control interface loopback-only and adds no public listener.
+
+### Testing
+
+- `ssh rn`: confirmed `tg-downloader.service` is active, only `lo` and `eth0` exist (no WireGuard), and the Web process listens on `0.0.0.0:80`.
+- `grep` of the server config: `web_host: 0.0.0.0`, `web_port: 80`; no tunnel or reverse-proxy process is running on the server.
+- `dig tgdn.wyichuan.cc` returns Cloudflare addresses; `curl http://192.3.85.23/` and `curl https://tgdn.wyichuan.cc/` both return 302.
+- `ssh ubuntu-wg` then SSH to RackNerd: failed with host key verification, so that hop still needs one-time setup.
+- Read-only checks only; no server state, service, or configuration was changed.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-08-24-mcp-hermes-control-design.md`: Rewrote review item A1 with the confirmed topology, the three candidate routes, and the pre-existing origin-exposure caveat.
+- `progress.md`: Recorded the topology verification round.
+
+Rollback:
+- Restore the previous A1 wording and remove this progress entry; no runtime behavior or configuration was touched.
+
+## 2026-08-24 - Task: Settle Hermes MCP transport route
+
+### What was done
+
+- Recorded the decision to reach the downloader over the public Cloudflare entry with Bearer authentication, and closed blocking review item A1 with the reasoning behind it.
+- Rewrote the goal, runtime constraint, architecture, configuration, and acceptance sections around the cross-machine HTTPS route, including JSON 401 behaviour, Cookie/Session rejection, constant-time key comparison, failure rate limiting reusing the existing login limiter, and audit logging without key material.
+- Moved API key storage out of the periodically rewritten YAML config to an environment variable or a dedicated 0600 file.
+- Removed origin access restriction from this task's scope and recorded it, together with the development-server exposure, as a pre-existing baseline risk in a new section; the MCP security design is now required to hold without assuming either is fixed.
+
+### Testing
+
+- Verified the server runs Python 3.11.2 with no virtualenv and about 349 MB of available memory, which informed the transport comparison.
+- Ran `git diff --check` after each documentation edit; no whitespace errors were reported.
+- Documentation only; no runtime code, server state, or configuration was changed.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-08-24-mcp-hermes-control-design.md`: Rewrote sections 1, 2, 3, 7, 8 for the chosen transport, closed review item A1 with the decision, and added section 11 for out-of-scope pre-existing risks.
+- `progress.md`: Recorded the transport decision round.
+
+Rollback:
+- Revert this documentation change; no runtime behavior, database schema, or configuration was touched.
+
+## 2026-08-24 - Task: Fold MCP review corrections into spec and write the implementation plan
+
+### What was done
+
+- Merged every review correction into the design document body so sections 1 through 8 are self-consistent, and marked the review section as historical record.
+- Recorded the delivery order in the spec: disable the publishing path first, then the read-only MCP tools plus download submission, then the write and keyword-monitor tools.
+- Corrected the spec's tool contracts: search now returns the same set the browser sees with an added downloadable flag, submission uses a new selection-free entry point with derived per-library idempotency keys, task listing drops the unbacked time-range promise, cancellation documents both of its success shapes, and pause/resume become explicit idempotent settings rather than a toggle.
+- Corrected the publishing-shutdown section to cover the console panel, the error-code location, the management Bot command surface, and the residual token checks.
+- Wrote a thirteen-task implementation plan with per-task files, interfaces, failing tests, implementation code, verification commands, and commit messages.
+
+### Testing
+
+- Read the current implementations of the routes, service methods, store queries, task store, Bot manager, and test fixtures that each task touches, so the plan's code and test scaffolding match the real signatures.
+- Ran `git diff --check` after each edit; no whitespace errors were reported.
+- Verified the plan file contains all thirteen tasks with no duplicated or truncated sections.
+- Planning and documentation only; no runtime code was changed or executed.
+
+### Notes
+
+Changed files:
+- `docs/superpowers/specs/2026-08-24-mcp-hermes-control-design.md`: Folded the review corrections into the body and annotated the review section as already merged.
+- `docs/superpowers/plans/2026-08-24-mcp-hermes-control.md`: Added the thirteen-task implementation plan.
+- `progress.md`: Recorded the planning round.
+
+Rollback:
+- Delete the plan document and revert the spec edits; no runtime behavior, database schema, or configuration was touched.
