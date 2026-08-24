@@ -3941,3 +3941,26 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove the MCP-specific service entry point; existing selection-based Web download creation remains unchanged.
+
+## 2026-08-24 - Task: Submit explicit downloads over MCP
+
+### What was done
+
+- Added `POST /api/mcp/downloads` with strict payload validation for package IDs, idempotency key, and boolean redownload confirmation.
+- Mapped unstable-package, duplicate/replay, missing-key, and redownload errors to stable MCP responses.
+- Scheduled persisted batches through the existing channel service and preserved Web selection state.
+
+### Testing
+
+- TDD red: `./.venv311/bin/python -m pytest tests/module/test_mcp_submit.py -q` returned the expected missing-route `404` responses.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_mcp_control.py tests/module/test_mcp_packages.py tests/module/test_mcp_status.py tests/module/test_mcp_submit.py -q` → `18 passed`.
+
+### Notes
+
+Changed files:
+- `module/mcp_control.py`: added the explicit download submission route.
+- `tests/module/test_mcp_submit.py`: added selection-isolation, idempotency, validation, and conflict tests.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove MCP download submission; the existing Web download paths remain unchanged.

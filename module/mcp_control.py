@@ -306,3 +306,67 @@ def task_detail(task_id: str):
             "batch": batch,
         }
     )
+
+
+@mcp_blueprint.route("/downloads", methods=["POST"])
+@mcp_route
+def submit_download():
+    """Create batches for exactly the requested packages."""
+
+    from module.channel_library_store import RedownloadRequiredError
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        _invalid("A JSON object is required")
+    if set(payload) - {"package_ids", "idempotency_key", "redownload"}:
+        _invalid("Request contains unsupported fields")
+    package_ids = payload.get("package_ids")
+    if not isinstance(package_ids, list) or not package_ids:
+        _invalid("package_ids must be a non-empty array")
+    if any(type(value) is not int or value < 1 for value in package_ids):
+        _invalid("package_ids must contain positive integers")
+    idempotency_key = payload.get("idempotency_key")
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        _invalid("idempotency_key is required")
+    redownload = payload.get("redownload", False)
+    if type(redownload) is not bool:
+        _invalid("redownload must be a boolean")
+
+    service = _service()
+    try:
+        results = service.create_download_batches_for_packages(
+            package_ids, idempotency_key, redownload=redownload
+        )
+    except RedownloadRequiredError:
+        raise McpError(
+            409,
+            "redownload_required",
+            "The request requires explicit redownload confirmation",
+        )
+    except ValueError as error:
+        raise McpError(409, "state_conflict", str(error))
+
+    any_created = False
+    batches = []
+    for batch, created in results:
+        any_created = any_created or created
+        try:
+            service.schedule_download_batch_threadsafe(int(batch["id"]))
+        except RuntimeError:
+            raise McpError(
+                503,
+                "service_unavailable",
+                "Batches were persisted and resume when the service returns",
+            )
+        batches.append(
+            {
+                "id": batch["id"],
+                "task_id": batch["task_id"],
+                "status": batch["status"],
+                "package_count": len(batch.get("packages", [])),
+                "created": created,
+            }
+        )
+    return jsonify({"batches": batches, "created": any_created}), (
+        202 if any_created else 200
+    )
