@@ -442,3 +442,172 @@ def cancel_task(task_id: str):
             503, "service_unavailable", "The downloader service is unavailable"
         )
     return jsonify(payload)
+
+
+def _monitor_payload():
+    from module.web import _keyword_list
+
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        _invalid("A JSON object is required")
+    allowed = {
+        "name",
+        "enabled",
+        "required_keywords",
+        "match_keywords",
+        "blacklist_keywords",
+    }
+    if set(payload) - allowed:
+        _invalid("Request contains unsupported fields")
+    name = payload.get("name")
+    enabled = payload.get("enabled", True)
+    if not isinstance(name, str) or not name.strip():
+        _invalid("name must be a non-empty string")
+    if type(enabled) is not bool:
+        _invalid("enabled must be a boolean")
+    return {
+        "name": name,
+        "enabled": enabled,
+        "required_keywords": _keyword_list(payload, "required_keywords"),
+        "match_keywords": _keyword_list(payload, "match_keywords"),
+        "blacklist_keywords": _keyword_list(payload, "blacklist_keywords"),
+    }
+
+
+def _save_monitor(group_id=None):
+    service = _service()
+    try:
+        group = service.store.save_keyword_monitor_group(
+            group_id=group_id, **_monitor_payload()
+        )
+    except ValueError as error:
+        _invalid(str(error))
+    service.trigger_keyword_monitors()
+    return group
+
+
+@mcp_blueprint.route("/keyword-monitors")
+@mcp_route
+def list_keyword_monitors():
+    """List every monitor group with its trigger summary."""
+
+    groups = _service().store.list_keyword_monitor_groups()
+    return jsonify(
+        {
+            "items": groups,
+            "total": len(groups),
+            "enabled": sum(1 for group in groups if group["enabled"]),
+            "disabled": sum(1 for group in groups if not group["enabled"]),
+        }
+    )
+
+
+@mcp_blueprint.route("/keyword-monitors", methods=["POST"])
+@mcp_route
+def create_keyword_monitor():
+    """Create one monitor group and match current packages immediately."""
+
+    return jsonify({"group": _save_monitor()}), 201
+
+
+@mcp_blueprint.route("/keyword-monitors/<int:group_id>")
+@mcp_route
+def get_keyword_monitor(group_id: int):
+    """Read one monitor group with its current progress summary."""
+
+    group = _service().store.get_keyword_monitor_group(group_id)
+    if group is None:
+        raise KeyError(f"Monitor group {group_id} does not exist")
+    return jsonify({"group": group})
+
+
+@mcp_blueprint.route("/keyword-monitors/<int:group_id>", methods=["PUT"])
+@mcp_route
+def update_keyword_monitor(group_id: int):
+    """Replace one monitor group and match current packages immediately."""
+
+    if _service().store.get_keyword_monitor_group(group_id) is None:
+        raise KeyError(f"Monitor group {group_id} does not exist")
+    return jsonify({"group": _save_monitor(group_id)})
+
+
+@mcp_blueprint.route("/keyword-monitors/<int:group_id>", methods=["DELETE"])
+@mcp_route
+def delete_keyword_monitor(group_id: int):
+    """Delete one monitor group without touching its download history."""
+
+    if not _service().store.delete_keyword_monitor_group(group_id):
+        raise KeyError(f"Monitor group {group_id} does not exist")
+    return jsonify({"deleted": True, "group_id": group_id})
+
+
+@mcp_blueprint.route("/keyword-monitors/<int:group_id>/history")
+@mcp_route
+def keyword_monitor_history(group_id: int):
+    """Return one page of matched packages with their task progress."""
+
+    from module.web import _page_inputs
+
+    cursor, page_size = _page_inputs()
+    service = _service()
+    try:
+        page = service.store.list_keyword_monitor_history(
+            group_id, cursor=cursor, limit=page_size
+        )
+    except (TypeError, ValueError) as error:
+        raise McpError(400, "invalid_request", "Invalid history pagination") from error
+    items = []
+    for value in page.items:
+        item = dict(value)
+        task = service.task_store.get_task(item["task_id"])
+        if task is not None:
+            snapshot = task.to_dict()
+            item["progress"] = {
+                key: snapshot[key]
+                for key in (
+                    "status",
+                    "total_count",
+                    "success_count",
+                    "failed_count",
+                    "skipped_count",
+                    "upload_success_count",
+                    "updated_at",
+                )
+            }
+        else:
+            item["progress"] = None
+        items.append(item)
+    return jsonify(
+        {
+            "items": items,
+            "next_cursor": page.next_cursor,
+            "summary": service.store.get_keyword_monitor_summary(group_id),
+        }
+    )
+
+
+@mcp_blueprint.route(
+    "/keyword-monitors/<int:group_id>/retry-failures", methods=["POST"]
+)
+@mcp_route
+def retry_keyword_monitor_failures(group_id: int):
+    """Requeue recoverable failures through the owner loop."""
+
+    from module.web_commands import WebCommandTimeout, wait_for_web_command
+
+    service = _service()
+    try:
+        result = wait_for_web_command(
+            service.retry_keyword_monitor_failures_threadsafe(group_id), timeout=5
+        )
+    except WebCommandTimeout as error:
+        raise McpError(
+            503, "service_unavailable", "Retry scheduling timed out"
+        ) from error
+    except RuntimeError as error:
+        raise McpError(
+            503, "service_unavailable", "Channel service is unavailable"
+        ) from error
+    if result["scheduled_count"] <= 0:
+        raise McpError(409, "state_conflict", "No recoverable failures are available")
+    return jsonify({"ok": True, **result}), 202

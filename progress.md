@@ -4021,3 +4021,30 @@ Changed files:
 
 Rollback:
 - Revert the task commit to remove MCP task controls; the Web cancellation endpoint remains available with its existing authentication and CSRF behavior.
+
+## 2026-08-24 - Task: Manage keyword monitors over MCP
+
+### What was done
+
+- Added MCP keyword-monitor list, detail, create, update, delete, history, and recoverable-failure retry endpoints.
+- Reused the Web keyword validation and normalization rules, including the required match-keyword rule.
+- Preserved immediate monitor triggering after create and update, and routed bulk retry through the channel service owner loop.
+- Exposed monitor totals and enabled/disabled counts, plus history progress and durable summaries.
+
+### Testing
+
+- TDD red: `./.venv311/bin/python -m pytest tests/module/test_mcp_keyword_monitors.py -q` returned the expected missing-route failures.
+- TDD green: `./.venv311/bin/python -m pytest tests/module/test_mcp_keyword_monitors.py -q` → `4 passed`.
+- MCP and Web regression: `./.venv311/bin/python -m pytest tests/module/test_mcp_keyword_monitors.py tests/module/test_channel_library_web.py tests/module/test_mcp_control.py tests/module/test_mcp_packages.py tests/module/test_mcp_status.py tests/module/test_mcp_submit.py tests/module/test_mcp_controls.py tests/test_web_cancel_task.py -q` → `145 passed`.
+- `./.venv311/bin/python -m black --check module/mcp_control.py tests/module/test_mcp_keyword_monitors.py` passed.
+- `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/mcp_control.py`: added keyword-monitor management, history, and retry routes.
+- `tests/module/test_mcp_keyword_monitors.py`: added CRUD and retry conflict coverage with a running owner loop.
+- `progress.md`: recorded this task and verification.
+
+Rollback:
+- Revert the task commit to remove MCP keyword-monitor controls; existing Web keyword-monitor routes remain unchanged.
