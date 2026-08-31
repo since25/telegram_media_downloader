@@ -188,6 +188,13 @@ create a refresh job so old posts can receive late comments. Missed or skipped t
 New tails are persisted into the same FIFO scan scheduler as manual work, so the cron
 watcher never starts a parallel Telegram scanner.
 
+The same tab also exposes a manual "scan every channel now" command that runs one sweep
+immediately with identical eligibility rules. It stays available while the schedule is
+disabled, does not update `last_triggered_at`, and does not move the next scheduled tick.
+Because the sweep performs one latest-message check per library, the HTTP request waits
+at most 30 seconds and then returns `202` with `pending` while the accepted sweep keeps
+running on the owner loop.
+
 Scan states shown by the page are:
 
 - `queued`, `running`, and `waiting_rate_limit`: waiting, scanning, or honoring a persisted Telegram deadline
@@ -323,6 +330,8 @@ Channel and scan routes:
 - `DELETE /api/channel-libraries/<library_id>`: `{"confirm_library_id": <id>, "library_version": "<version>"}`; atomically rejects version changes, active scans, and queued/downloading child attempts even if a parent batch summary is terminal.
 - `POST /api/channel-libraries/<library_id>/scans`: `{"mode": "incremental"}`, `{"mode": "repair", "failure_ids": [<id>]}`, or `{"mode": "retry", "failed_job_id": <id>}`; returns `202`.
 - `POST /api/channel-scans/<job_id>/pause`, `/resume`, or `/stop`: persists control at the next safe scan boundary.
+- `GET`/`PUT /api/channel-library-settings/incremental-scan`: read or replace the singleton `{"enabled", "cron", "timezone"}` schedule; the response adds `last_triggered_at` and the computed `next_run_at`.
+- `POST /api/channel-library-settings/incremental-scan/run`: run one manual sweep across every eligible library; accepts no fields and returns `{"queued": <count>, "blocked": <bool>, "pending": false}`, or `202 {"queued": null, "blocked": false, "pending": true}` when the sweep outlives the 30-second HTTP wait. `blocked` reports that a recoverable full scan held the sweep back.
 
 Aggregate package, selection, and download routes:
 

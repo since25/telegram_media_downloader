@@ -885,6 +885,37 @@ def update_incremental_scan_settings():
     return jsonify(settings)
 
 
+@_flask_app.route(
+    "/api/channel-library-settings/incremental-scan/run", methods=["POST"]
+)
+@login_required
+@_channel_api
+@_require_csrf
+def run_incremental_scan_now():
+    """人工触发一次全频道增量清扫，与自动计划的开关和时间点无关。"""
+
+    _require_empty_command_input()
+    try:
+        future = _channel_service().submit_incremental_sweep_threadsafe()
+        result = wait_for_web_command(future, timeout=30)
+    except WebCommandTimeout:
+        # 频道多时清扫会超过 HTTP 等待上限，但服务循环仍在继续执行。
+        return jsonify({"queued": None, "blocked": False, "pending": True}), 202
+    except RuntimeError:
+        raise _ChannelApiError(
+            503,
+            "service_unavailable",
+            "Channel library service is unavailable",
+        )
+    return jsonify(
+        {
+            "queued": len(result["queued"]),
+            "blocked": bool(result["blocked"]),
+            "pending": False,
+        }
+    )
+
+
 @_flask_app.route("/api/channel-libraries", methods=["GET"])
 @login_required
 @_channel_api

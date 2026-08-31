@@ -1580,3 +1580,42 @@ def test_explicit_package_batches_reject_unstable_packages(tmp_path):
     with pytest.raises(ValueError):
         service.create_download_batches_for_packages([package_id], "mcp-key-3")
     app.loop.close()
+
+
+@async_test
+async def test_manual_incremental_sweep_reports_queued_channels(tmp_path):
+    service, first, _sleep = make_service(tmp_path)
+    finish_full_scan(service, first, snapshot_max=40)
+    second, _ = service.store.create_or_get_library(
+        -1002, "channel", "two", "Two", "https://t.me/two/1"
+    )
+    finish_full_scan(service, second, snapshot_max=40)
+    service.client.latest_message_id = 45
+    service.owner_loop = asyncio.get_running_loop()
+    settings_before = service.store.get_incremental_scan_settings()
+
+    result = await service.run_incremental_sweep_now()
+
+    assert result["blocked"] is False
+    assert [job["library_id"] for job in result["queued"]] == [
+        first["id"],
+        second["id"],
+    ]
+    after = service.store.get_incremental_scan_settings()
+    assert after["last_triggered_at"] == settings_before["last_triggered_at"]
+
+
+@async_test
+async def test_manual_incremental_sweep_reports_blocked_full_scan(tmp_path):
+    service, first, _sleep = make_service(tmp_path)
+    finish_full_scan(service, first, snapshot_max=40)
+    second, _ = service.store.create_or_get_library(
+        -1002, "channel", "two", "Two", "https://t.me/two/1"
+    )
+    service.store.create_scan_job(second["id"], "full", 1, 50)
+    service.client.latest_message_id = 45
+    service.owner_loop = asyncio.get_running_loop()
+
+    result = await service.run_incremental_sweep_now()
+
+    assert result == {"queued": [], "blocked": True}

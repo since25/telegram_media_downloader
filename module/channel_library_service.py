@@ -1736,6 +1736,14 @@ class ChannelLibraryService:
                 queued.append(job)
         return queued
 
+    async def run_incremental_sweep_now(self) -> dict:
+        """人工触发一次与 cron 相同的全频道增量清扫，不改动计划本身。"""
+
+        self._require_owner_loop()
+        if self.store.has_recoverable_full_scan():
+            return {"queued": [], "blocked": True}
+        return {"queued": await self.queue_scheduled_incrementals(), "blocked": False}
+
     def queue_repair(
         self, library_id: int, failure_ids: Optional[Sequence[int]] = None
     ) -> dict:
@@ -1780,6 +1788,13 @@ class ChannelLibraryService:
         """Schedule an incremental snapshot on the service owner loop."""
 
         return self._submit_owner_command(lambda: self.queue_incremental(library_id))
+
+    def submit_incremental_sweep_threadsafe(
+        self,
+    ) -> concurrent.futures.Future[dict]:
+        """在 Flask 线程发起一次全频道增量清扫，实际执行仍在服务循环。"""
+
+        return self._submit_owner_command(self.run_incremental_sweep_now)
 
     def submit_incremental_scan_settings_threadsafe(
         self, enabled: bool, expression: str, timezone: str
