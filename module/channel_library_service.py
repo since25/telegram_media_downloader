@@ -187,12 +187,12 @@ class ChannelLibraryService:
         if getattr(cloud, "upload_telegram_chat_id", None):
             return total_bytes
         max_item = int(getattr(descriptor, "max_item_size", 0) or 0)
+        workers = max(1, int(getattr(self.app, "max_download_task", 1) or 1))
         if max_item <= 0:
             # Individual sizes unknown: never reserve the whole package. Fall
             # back to a bounded window so oversized packages can still stream
             # file by file instead of being rejected outright.
-            return min(total_bytes, max(1, workers) * GIB)
-        workers = max(1, int(getattr(self.app, "max_download_task", 1) or 1))
+            return min(total_bytes, workers * GIB)
         return max(int(max_item), min(total_bytes, workers * int(max_item)))
 
     async def start(self) -> None:

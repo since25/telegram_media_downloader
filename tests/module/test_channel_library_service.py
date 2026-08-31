@@ -13,6 +13,7 @@ import pytest
 from pyrogram import errors
 
 from module.channel_library_service import ChannelLibraryService
+from module.download_admission import GIB
 from module.channel_library_store import (
     ChannelLibraryConfig,
     ChannelLibraryStore,
@@ -1619,3 +1620,54 @@ async def test_manual_incremental_sweep_reports_blocked_full_scan(tmp_path):
     result = await service.run_incremental_sweep_now()
 
     assert result == {"queued": [], "blocked": True}
+
+
+@async_test
+async def test_package_reservation_uses_worker_window_when_item_sizes_unknown(tmp_path):
+    service, _library, _sleep = make_service(tmp_path)
+    service.app.cloud_drive_config = SimpleNamespace(
+        enable_upload_file=True,
+        after_upload_file_delete=True,
+        before_upload_file_zip=False,
+        upload_telegram_chat_id=None,
+    )
+    service.app.max_download_task = 4
+    descriptor = SimpleNamespace(max_item_size=0)
+
+    reserved = service._package_reservation_bytes(descriptor, 100 * GIB)
+
+    assert reserved == 4 * GIB
+
+
+@async_test
+async def test_package_reservation_caps_unknown_item_window_at_package_size(tmp_path):
+    service, _library, _sleep = make_service(tmp_path)
+    service.app.cloud_drive_config = SimpleNamespace(
+        enable_upload_file=True,
+        after_upload_file_delete=True,
+        before_upload_file_zip=False,
+        upload_telegram_chat_id=None,
+    )
+    service.app.max_download_task = 4
+    descriptor = SimpleNamespace(max_item_size=0)
+
+    reserved = service._package_reservation_bytes(descriptor, GIB // 2)
+
+    assert reserved == GIB // 2
+
+
+@async_test
+async def test_package_reservation_keeps_known_item_window(tmp_path):
+    service, _library, _sleep = make_service(tmp_path)
+    service.app.cloud_drive_config = SimpleNamespace(
+        enable_upload_file=True,
+        after_upload_file_delete=True,
+        before_upload_file_zip=False,
+        upload_telegram_chat_id=None,
+    )
+    service.app.max_download_task = 2
+    descriptor = SimpleNamespace(max_item_size=3 * GIB)
+
+    assert service._package_reservation_bytes(descriptor, 100 * GIB) == 6 * GIB
+    assert service._package_reservation_bytes(descriptor, 4 * GIB) == 4 * GIB
+    assert service._package_reservation_bytes(descriptor, GIB) == 3 * GIB
