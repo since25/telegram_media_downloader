@@ -195,3 +195,73 @@ RECOMMENDED 守卫拒绝。仓库自带两条针对该路径的回归测试
 对抗核验阶段 3 个视角**全部提出了反对证据**，推翻了「A/B/D 完全不可达」这一措辞，
 促成了第五节的订正。这是本轮审计最有价值的产出：若按原判断连枚举一起删，
 会悄悄削弱针对陈旧/伪造回调的防线，并打掉两条现役回归测试。
+
+## 九、清理废弃分支时挖出的两个真实缺陷（2026-08-31）
+
+准备删除 `arch-review-remediation` 前做的存量核查，发现该分支上的
+`tests/module/test_pyrogram_extension.py`（88 行，对应原评审 R5-2）
+拿到今天的主线上跑是 **5 failed / 1 passed**。核查确认**不是过期测试，是主线从未修复的真实缺陷**。
+
+### 为什么一直没被发现
+
+`tests/test_media_downloader.py:358-359` 在类级把真的 `get_extension` 整体 patch 掉，
+换成 `tests/test_common.py:181` 的手工平行实现，而那份替身把 `guessed_extension`
+硬编码成 `""` —— 恰好绕开了出错的那条分支。整个套件从未执行过真实的
+mime 猜测路径。
+
+### 缺陷 1：扩展名双点
+
+`_guess_extension` 直接返回 `mimetypes.guess_extension()` 的结果，而后者**带前导点**（`".mp4"`）。
+`get_extension` 的各兜底分支（`"mp4"` / `"ogg"` / `"zip"`）都不带点，末尾统一补一个点，
+于是 mime 能被识别时补成双点：
+
+| 输入 | 修复前 | 修复后 |
+|---|---|---|
+| 语音 `audio/ogg` | `..ogg` | `.ogg` |
+| 视频 `video/mp4` | `..mp4` | `.mp4` |
+| 文档 `application/pdf` | `..pdf` | `.pdf` |
+
+后缀经 `module/download_entry.py` 的 `gen_file_name = app.get_file_name(...) + file_name_suffix`
+原样进入最终文件名。
+
+**实际影响范围**：仅在媒体**自身不带文件名**时触发（`module/download_entry.py:510`）。
+查线上任务库 1567 条真实下载记录，双点文件名 **0 条** —— 该用户的媒体都自带文件名，
+照片走硬编码 `jpg` 分支。即该缺陷真实存在但尚未在生产暴露，会在语音消息、
+无文件名的视频、无扩展名的文档上首次触发。
+
+### 缺陷 2：过滤器的 `file_extension` 字段带点（已在生产暴露）
+
+`module/pyrogram_extension.py:1303` 以 `dot=False` 调用，语义是"要不带点的扩展名"，
+用于填充 `meta_data.file_extension`；而该字段是**下载过滤器的可用变量**
+（`utils/meta_data.py:96,116`）。
+
+修复前该调用返回 `'.mp4'`（mime 可识别时）或 `'mp4'`（走兜底时）—— 取值不一致。
+后果是用户写 `file_extension == "mp4"` 这类过滤条件，对正常 mp4 视频**永远匹配不上**，
+反而对 mime 识别不出来的视频能匹配上。
+
+### 缺陷 3：mime 为 None 时崩溃
+
+`mimetypes.guess_extension(None)` 抛 `AttributeError: 'NoneType' object has no attribute 'lower'`。
+`module/download_entry.py` 用 `getattr(media_obj, "mime_type", "")` 取值，属性存在但为 `None` 时即命中。
+
+### 修复
+
+只改 `module/pyrogram_extension.py` 的 `_guess_extension` 一处（该函数全仓库仅一个调用者）：
+剥掉前导点并对空 mime 返回 `None`，使"扩展名"在整条路径上始终保持不带点的形式，
+补点只发生在 `get_extension` 末尾一处。三个缺陷一并解决。
+
+回归测试：`tests/module/test_pyrogram_extension.py`（自废弃分支收回，6 个用例）。
+验证：全量 4 failed / 795 passed，无新增失败（4 个为第八节所述的已知过期断言）。
+
+### 废弃分支处置
+
+`arch-review-remediation` 上另有两个文件，经核查无保留价值，随分支一并废弃：
+
+- `tests/module/test_bot_config.py`（102 行）—— 覆盖的 P0-4 两个缺陷已于本日修复，
+  并已有等价回归测试 `tests/module/test_bot_commands.py`，内容重复。
+- `tests/module/test_bot_workflows.py`（3262 行）—— 原评审 R5-3 的测试文件拆分，
+  属于组织结构调整而非新增覆盖；这些用例在主线上仍位于 `tests/module/test_comment_workflow.py`
+  并正常通过，内容未丢失。
+
+`docs/architecture-review-2026-07-07.md` 与 `tests/module/test_pyrogram_extension.py`
+已取回主线，该分支至此可安全删除。

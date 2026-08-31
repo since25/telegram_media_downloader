@@ -63,9 +63,21 @@ def _guess_mime_type(filename: str) -> Optional[str]:
     return _mimetypes.guess_type(filename)[0]
 
 
-def _guess_extension(mime_type: str) -> Optional[str]:
-    """Guess extension"""
-    return _mimetypes.guess_extension(mime_type)
+def _guess_extension(mime_type: Optional[str]) -> Optional[str]:
+    """Guess extension, without the leading dot.
+
+    mimetypes.guess_extension 返回的是带前导点的形式（".mp4"），而 get_extension
+    里各个兜底分支（"mp4"/"ogg"/"zip"...）都不带点，末尾再统一补一个点。此前直接
+    返回带点结果，导致 mime 能被识别时补成双点（"..mp4"），而 dot=False 的调用方
+    又拿到了带点的值。这里统一剥掉前导点，保证整条路径上"扩展名"始终不带点。
+    mime 缺失时返回 None，交由调用方走按类型的兜底，避免 guess_extension 抛错。
+    """
+    if not mime_type:
+        return None
+    guessed = _mimetypes.guess_extension(mime_type)
+    if not guessed:
+        return None
+    return guessed.removeprefix(".")
 
 
 def get_media_obj(

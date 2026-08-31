@@ -4262,3 +4262,39 @@ Changed files:
 Rollback:
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard b88c10f && systemctl restart tg-downloader.service'`
 - 本次部署无行为变更，回滚无实际影响。
+
+## 2026-08-31 - Task: 修复扩展名双点与过滤器字段缺陷，清理废弃分支
+
+### What was done
+
+- 在准备删除那个搁置了两个月的旧分支前，先做了一遍存量核查，从里面挖出一个测试文件。把它拿到今天的代码上跑，**发现了三个从来没被修过的真实缺陷**（不是过期测试）：
+  1. **文件扩展名多了一个点**。语音会存成 `xxx..ogg`、视频 `xxx..mp4`、文档 `xxx..pdf`。这个问题只在媒体本身不带文件名时才触发；查了线上任务库 1567 条真实下载记录，目前一条都没中招（你的媒体都自带文件名，照片走的是另一条分支）。但语音消息、没有文件名的视频这类一旦出现就会中招。
+  2. **下载过滤器的"文件扩展名"条件是坏的，这个现在就在影响你**。你写 `file_extension == "mp4"` 这样的过滤条件，对正常的 mp4 视频永远匹配不上（内部值带了个点变成 `.mp4`），反而对识别不出格式的视频能匹配上，行为完全反直觉。
+  3. 遇到没有格式信息的媒体会直接崩溃。
+- 三个缺陷根源是同一处，只改一个函数就全部解决。
+- 查清了为什么这问题能潜伏这么久：测试套件把真正的扩展名函数整体替换成了一份手写替身，而那份替身恰好绕开了出错的分支，等于这条路径从来没被测过。现在收回了直接测真函数的回归测试。
+- 清理了废弃分支 `arch-review-remediation`。删除前把两份有价值的东西取回主线：原始架构评审文档（主线上没有副本），以及上述回归测试。另外两个测试文件经核查确认内容重复或已在主线，随分支废弃。
+
+### Testing
+
+- 完整 TDD：先收回测试确认 5 failed / 1 passed，失败原因分别是双点断言和 None 崩溃；修复后 6 passed。
+- 修复后实测真实产物：语音 `.ogg`、视频 `.mp4`、文档 `.pdf`、mkv `.mkv`；过滤器字段分别为 `ogg`/`mp4`/`pdf`/`mkv`（不带点）；mime 为 None 时返回 `.mp4` 不再崩溃。
+- 全量测试：4 failed / 795 passed / 1 skipped。**无新增失败**——那 4 个是文档第八节记录的已知过期断言。
+- 影响面核查：`_guess_extension` 全仓库仅一个调用者，改动其契约无外溢风险。
+- 生产实证：线上任务库 1567 条记录中双点文件名 0 条，扩展名分布为 `.jpg` 821 / `.mp4` 680 / `.mov` 66，据此判定缺陷 1 尚未在生产暴露。
+
+### Notes
+
+Changed files:
+- `module/pyrogram_extension.py`: `_guess_extension` 改为返回不带前导点的扩展名，并对空 mime 返回 `None`；补中文注释说明为何必须不带点。
+- `tests/module/test_pyrogram_extension.py`: 自废弃分支取回，6 个用例直接测真实的 `get_extension`。
+- `docs/architecture-review-2026-07-07.md`: 自废弃分支取回（原始评审文档，主线此前无副本）。
+- `docs/arch-review-followup-2026-08-31.md`: 新增第九节，记录三个缺陷、潜伏原因、修复与分支处置理由。
+- `progress.md`: 本条记录。
+
+已删除：
+- 分支 `arch-review-remediation`（曾为 `b57ee12`）。
+
+Rollback:
+- 代码回滚：`git revert <本次 commit>`，或 `git checkout bfb81b4 -- module/pyrogram_extension.py`。
+- 分支恢复：`git branch arch-review-remediation b57ee12`（该提交对象仍在本地 reflog 与对象库中，约 90 天内可恢复）。
