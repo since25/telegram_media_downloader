@@ -100,6 +100,8 @@ def test_rclone_upload_uses_exec_and_return_code_success(monkeypatch, tmp_path):
         "--create-empty-src-dirs",
         "--ignore-existing",
         "--progress",
+        "--transfers",
+        "1",
     )
     assert progress
 

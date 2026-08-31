@@ -173,9 +173,9 @@ RECOMMENDED 守卫拒绝。仓库自带两条针对该路径的回归测试
 
 结果：全量测试从 7 failed / 791 passed 变为 **4 failed / 789 passed**，无新增失败。
 
-### 剩余 4 个报红的确切改法
+### 剩余 4 个报红的处置（已于 2026-08-31 完成，见第十节）
 
-均为更新断言，**不要改产品代码**：
+均为更新断言，**未改产品代码**：
 
 1. `test_get_media_meta_uses_package_naming_context_for_video`
    —— `tests/test_media_downloader.py` 中期望值去掉 `Private/2026_06/` 前缀；
@@ -265,3 +265,35 @@ mime 猜测路径。
 
 `docs/architecture-review-2026-07-07.md` 与 `tests/module/test_pyrogram_extension.py`
 已取回主线，该分支至此可安全删除。
+
+## 十、过期测试断言全部对齐，套件转绿（2026-08-31）
+
+第八节列出的 4 个报红已全部处理，**未改动任何产品代码**。每条在改断言前都先复核了
+对应产品行为确实是有意设计，而非为让红转绿放宽断言。
+
+### 处置明细
+
+| 用例 | 改动 | 产品行为的意图依据 |
+|---|---|---|
+| `test_get_media_meta_uses_comment_naming_context_for_video` | `file_name` 去掉 `Discussion/2026_06/zhyseseb/`；`temp_file_name` 去掉 `zhyseseb/`（`Discussion/` 保留） | `module/download_entry.py` 中 `file_save_path = app.save_path` 分支带有明确注释说明跳过 channel/date 前缀；`build_name_for_strategy` 的 RECOMMENDED 分支返回 `{post_id}-{title}/{id} - {file}`，不含频道名 |
+| `test_get_media_meta_uses_package_naming_context_for_video` | `file_name` 去掉 `Private/2026_06/`；`temp_file_name` 不变 | 同上。临时目录仍按 `dirname` 分层，故 `temp` 路径中的 `Private/` 是正确的 |
+| `test_download_prepared_messages_preserves_planned_later_caption_for_package_naming_context` | MONTH_CAPTION 的 `expected_suffix` 去掉 `私密频道/2026_06/` | `b4ebf98` 手工删除了 `build_package_name_for_strategy` 中 `channel` 变量定义与 `f"{channel}/{month_for_comment(message)}/..."` 拼接 |
+| `test_rclone_upload_uses_exec_and_return_code_success` | 期望 argv 末尾补 `"--transfers", "1"` | `config.example.yaml:46,56` 将 `rclone_transfers` 做成带注释的用户可配置项（"caps connections per rclone process"），`module/cloud_drive.py:210-211` 据此构造参数 |
+
+该 rclone 用例原有的 `reject_shell` 断言与恶意文件名 `odd name 'quoted';$(touch nope).txt`
+**原样保留** —— 那是防 shell 注入的防线，不在本次改动范围内。
+
+### 当前基线
+
+```
+799 passed, 1 skipped, 0 failed
+```
+
+唯一的 skip 是 `test_windows_filename_too_long` 的正当平台闸门（`skipIf` 非 Windows）。
+
+**至此主线测试套件全绿。** 后续任何报红都是新引入的回归，不再需要区分「本来就红的」与「刚改坏的」。
+
+### 仍待处置
+
+- `tests/test_media_downloader.py` 中被整段注释掉的 `test_upload_telegram_chat`
+  （连同 6 个 `@mock.patch` 装饰器），不参与收集。需单独判断是恢复还是删除。
