@@ -4298,3 +4298,25 @@ Changed files:
 Rollback:
 - 代码回滚：`git revert <本次 commit>`，或 `git checkout bfb81b4 -- module/pyrogram_extension.py`。
 - 分支恢复：`git branch arch-review-remediation b57ee12`（该提交对象仍在本地 reflog 与对象库中，约 90 天内可恢复）。
+
+## 2026-08-31 - Task: 部署扩展名与过滤器字段修复
+
+### What was done
+
+- 把扩展名双点与过滤器字段的修复部署到线上，服务重启正常，网站入口可访问。
+- 这次修复对你有实际影响的是过滤器：以后写「文件扩展名等于 mp4」这类下载条件能正常匹配了，之前是永远匹配不上的。
+
+### Testing
+
+- 部署提交：`bfb81b4` → `72e625a`（fast-forward）。部署前确认服务器近 20 分钟无下载活动，重启未打断任务。
+- 服务状态：`active`；公网入口 `curl https://tgdn.wyichuan.cc/` → `HTTP 302` 跳转 `/login?next=%2F`。
+- 线上实测修复后真实行为：语音后缀 `.ogg` / 过滤器字段 `ogg`；视频 `.mp4` / `mp4`；文档 `.pdf` / `pdf`；mime 为 None 时返回 `.mp4` 不再崩溃。全部符合预期。
+
+### Notes
+
+Changed files:
+- `/root/telegram_media_downloader`: fast-forward 到 `72e625a`。
+- `progress.md`: 本条记录。
+
+Rollback:
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard bfb81b4 && systemctl restart tg-downloader.service'`
