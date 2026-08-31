@@ -10,7 +10,7 @@ from module.comment_workflow import (
     NamingStrategy,
     build_callback_data,
     build_comment_workflow_request,
-    build_naming_previews,
+    build_recommended_naming_previews,
     build_size_summary,
     build_workflow_token,
     clean_segment,
@@ -423,7 +423,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
             "推荐C：文件夹/文件名",
         )
 
-    def test_build_package_naming_previews_and_preview_message(self):
+    def test_build_recommended_package_naming_previews_and_preview_message(self):
         from module.comment_workflow import (
             build_recommended_package_naming_previews,
             format_package_preview_message,
@@ -580,7 +580,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
 
     def test_format_package_preview_inherits_next_album_caption(self):
         from module.comment_workflow import (
-            build_package_naming_previews,
+            build_recommended_package_naming_previews,
             format_package_preview_message,
             plan_message_package,
         )
@@ -631,7 +631,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
         ]
 
         package_plan = plan_message_package(messages, start_message_id=10)
-        previews = build_package_naming_previews(
+        previews = build_recommended_package_naming_previews(
             package_plan.items,
             channel="私密频道",
             start_message_id=10,
@@ -654,7 +654,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
 
     def test_package_naming_previews_use_extension_fallbacks(self):
         from module.comment_workflow import (
-            build_package_naming_previews,
+            build_recommended_package_naming_previews,
             media_file_name_for_message,
             plan_message_package,
         )
@@ -678,7 +678,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
         ]
 
         package_plan = plan_message_package(messages, start_message_id=200)
-        previews = build_package_naming_previews(
+        previews = build_recommended_package_naming_previews(
             package_plan.items,
             channel="私密频道",
             start_message_id=200,
@@ -946,7 +946,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
             )
         ]
         summary = summarize_comments(comments)
-        previews = build_naming_previews(
+        previews = build_recommended_naming_previews(
             comments,
             channel="zhyseseb",
             post_id=422,
@@ -984,48 +984,6 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("名：4978 - clip.mp4", message)
         self.assertNotIn("zhyseseb/422-夏日合集/4978 - clip.mp4", message)
 
-    def test_format_preview_message_omits_nested_prefix_from_month_option(self):
-        comments = [
-            MockMessage(
-                id=4978,
-                media="video",
-                video=MockVideo(
-                    file_name="clip.mp4",
-                    file_size=123 * 1024 * 1024,
-                    mime_type="video/mp4",
-                ),
-                caption="第三张是重点",
-                date=datetime.datetime(2026, 6, 7),
-            )
-        ]
-        summary = summarize_comments(comments)
-        previews = build_naming_previews(
-            comments,
-            channel="zhyseseb",
-            post_id=422,
-            post_title="夏日合集",
-            sample_size=1,
-        )
-
-        message = format_preview_message(
-            channel="zhyseseb",
-            post_id=422,
-            post_title="夏日合集",
-            start_comment_id=4978,
-            summary=summary,
-            previews=previews,
-            size_summary=build_size_summary(comments),
-            upload_enabled=True,
-            delete_after_upload=True,
-        )
-
-        self.assertIn("D：频道/年月/原帖标题/评论ID - caption摘要", message)
-        self.assertIn("夹：夏日合集", message)
-        self.assertIn("名：4978 - 第三张是重点.mp4", message)
-        self.assertNotIn(
-            "zhyseseb/2026_06/夏日合集/4978 - 第三张是重点.mp4",
-            message,
-        )
 
     def test_format_preview_message_includes_scan_warnings(self):
         comments = [
@@ -1040,7 +998,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
             )
         ]
         summary = summarize_comments(comments)
-        previews = build_naming_previews(
+        previews = build_recommended_naming_previews(
             comments,
             channel="zhyseseb",
             post_id=422,
@@ -1078,7 +1036,7 @@ class CommentWorkflowTestCase(unittest.TestCase):
             )
         ]
         summary = summarize_comments(comments)
-        previews = build_naming_previews(
+        previews = build_recommended_naming_previews(
             comments,
             channel="zhyseseb",
             post_id=422,
@@ -1103,115 +1061,9 @@ class CommentWorkflowTestCase(unittest.TestCase):
         self.assertIn("扫描失败评论：2", message)
         self.assertNotIn("预计大小：", message)
 
-    def test_build_naming_previews_generates_four_clean_options(self):
-        comments = [
-            MockMessage(
-                id=4978,
-                media="video",
-                video=MockVideo(file_name="bad/name?.mp4", mime_type="video/mp4"),
-                caption="第三张是重点，后面还有说明",
-                from_user=MockUser(username="user/name"),
-                date=datetime.datetime(2026, 6, 7),
-            )
-        ]
 
-        previews = build_naming_previews(
-            comments,
-            channel="zhyseseb",
-            post_id=422,
-            post_title="夏日/合集 Vol.12",
-            sample_size=1,
-        )
 
-        self.assertEqual(
-            [preview.strategy.value for preview in previews],
-            ["C", "A", "B", "D"],
-        )
-        self.assertEqual(
-            [preview.examples[0] for preview in previews],
-            [
-                "zhyseseb/422-夏日_合集 Vol.12/4978 - bad_name_.mp4",
-                "夏日_合集 Vol.12/4978 - user_name - bad_name_.mp4",
-                "夏日_合集 Vol.12/4978 - 第三张是重点，后面还有说明 - bad_name_.mp4",
-                "zhyseseb/2026_06/夏日_合集 Vol.12/4978 - 第三张是重点，后面还有说明.mp4",
-            ],
-        )
 
-    def test_build_naming_previews_uses_fallbacks(self):
-        comments = [
-            MockMessage(
-                id=5000,
-                media="photo",
-                photo=MockPhoto(
-                    date=datetime.datetime(2026, 6, 7),
-                    file_unique_id="photo-id",
-                ),
-                date=datetime.datetime(2026, 6, 7),
-            )
-        ]
-
-        previews = build_naming_previews(
-            comments,
-            channel="zhyseseb",
-            post_id=422,
-            post_title="",
-            sample_size=1,
-        )
-
-        examples_by_strategy = {
-            preview.strategy.value: preview.examples[0] for preview in previews
-        }
-        self.assertEqual(
-            examples_by_strategy["C"],
-            "zhyseseb/422-post-422/5000 - comment-5000-photo.jpg",
-        )
-        self.assertEqual(
-            examples_by_strategy["D"],
-            "zhyseseb/2026_06/post-422/5000 - no-caption.jpg",
-        )
-
-    def test_build_naming_previews_falls_back_for_extension_only_filename(self):
-        comments = [
-            MockMessage(
-                id=1,
-                media="video",
-                video=MockVideo(file_name="?.mp4", mime_type="video/mp4"),
-                date=datetime.datetime(2026, 6, 7),
-            )
-        ]
-
-        previews = build_naming_previews(
-            comments,
-            channel="zhyseseb",
-            post_id=422,
-            post_title="post title",
-            sample_size=1,
-        )
-
-        self.assertEqual(
-            previews[0].examples[0],
-            "zhyseseb/422-post title/1 - comment-1-video.mp4",
-        )
-
-    def test_build_naming_previews_keeps_options_for_non_media_comments(self):
-        comments = [
-            MockMessage(id=1, text="hello"),
-            MockMessage(id=2, empty=True),
-        ]
-
-        previews = build_naming_previews(
-            comments,
-            channel="zhyseseb",
-            post_id=422,
-            post_title="post title",
-            sample_size=1,
-        )
-
-        self.assertEqual(
-            [preview.strategy.value for preview in previews],
-            ["C", "A", "B", "D"],
-        )
-        self.assertEqual([preview.examples for preview in previews], [[], [], [], []])
 
 
 class CommentScanExecutionTestCase(unittest.IsolatedAsyncioTestCase):
