@@ -4351,3 +4351,36 @@ Changed files:
 Rollback:
 - `git revert <本次 commit>`，或 `git checkout b797834 -- tests/test_media_downloader.py tests/module/test_cloud_drive.py`。
 - 本轮只改测试断言，产品代码零变更，回滚不影响任何线上行为。
+
+## 2026-08-31 - Task: 网页端加「立即扫描全部频道」按钮
+
+### What was done
+
+- 频道页顶部的「自动增量扫描」计划栏，现在多了一个 **「立即扫描全部频道」** 按钮。点一下就立刻跑一遍和 cron 到点时一模一样的清扫：给每个已完成全量扫描、当前没有在跑任务的频道各排一个增量扫描，没有新消息的频道自动跳过。
+- 这个按钮**不受自动计划开关限制**——计划停用时照样能点。手动触发也**不会改动计划本身**：不刷新「上次触发」，不影响「下次执行」的时间点。
+- 结果直接用中文写在计划栏下方：排了几个频道、没有频道需要扫、还是因为有全量扫描没结束所以本次没排。频道多、后台还没跑完时，会提示「已触发，仍在后台逐个检查」，而不是报错。
+- 连点两次不会排出重复任务——数据库层原本就拒绝给同一频道排第二个活动任务。
+- 原有的 cron 定时逻辑、单频道增量按钮、扫描执行流程全部未改动。
+
+### Testing
+
+- 新增后端契约测试 7 条（服务层 2 条 + HTTP 接口 5 条：正常计数、被全量扫描挡住、超时返回 202 不取消后台任务、拒绝多余字段/查询参数、服务不可用不泄露内部错误）。
+- 全量测试套件：`.venv/bin/python -m pytest -q` → **806 passed, 1 skipped, 0 failed**。
+- 端到端后端验证脚本（临时数据库 + 假 Telegram 客户端，走完整 HTTP→服务→数据库链路）四个场景全部符合预期：三个频道中两个已完成全量的各排到一个增量任务、从未扫过的频道不动；紧接着再点排 0 个不重复；有全量扫描进行中时排 0 个并报明原因；计划停用状态下全程可用且「上次触发」保持为空。
+- 前端用 scratchpad 浏览器 harness + mock 数据验证 5 种回显文案（排到 N 个 / 没有需要扫的 / 被全量扫描挡住 / 后台仍在跑 / 触发失败）均正确，按钮点完恢复可用；桌面和手机宽度下按钮布局都正常。
+- 静态检查：mypy 通过；pylint 只剩一条改动前就存在的历史告警（`channel_library_service.py:194` used-before-assignment），本轮未触碰。
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`: 新增 `run_incremental_sweep_now()`（复用现有清扫逻辑，额外回报是否被全量扫描挡住）和它的线程安全入口。
+- `module/web.py`: 新增 `POST /api/channel-library-settings/incremental-scan/run` 接口，最多等 30 秒，超时返回 202 且不取消后台任务。
+- `module/templates/index.html`: 计划栏加按钮、结果文案和点击逻辑。
+- `module/static/css/index.css`: 保存/立即扫描两个按钮的并排与手机端堆叠样式。
+- `docs/web-control-console.md`: 补充手动清扫的行为约定和两条接口说明。
+- `tests/module/test_channel_library_service.py`、`tests/module/test_channel_library_web.py`: 新增上述测试并把新路由纳入登录/CSRF/DOM 契约清单。
+- `progress.md`: 本条记录。
+
+Rollback:
+- `git revert <本次 commit>`；或回到本次改动前的 `52e340e`。
+- 本轮只新增入口，未改动定时调度与扫描执行逻辑，回滚后自动计划和单频道增量按钮行为不受影响。

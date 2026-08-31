@@ -230,6 +230,7 @@ def test_all_channel_routes_require_existing_login(web_env):
         ("GET", "/api/csrf-token"),
         ("GET", "/api/channel-library-settings/incremental-scan"),
         ("PUT", "/api/channel-library-settings/incremental-scan"),
+        ("POST", "/api/channel-library-settings/incremental-scan/run"),
         ("GET", "/api/channel-libraries"),
         ("POST", "/api/channel-libraries"),
         ("GET", "/api/channel-libraries/1"),
@@ -257,6 +258,7 @@ def test_mutating_routes_require_session_bound_csrf(web_env):
     env = web_env
     routes = [
         ("PUT", "/api/channel-library-settings/incremental-scan"),
+        ("POST", "/api/channel-library-settings/incremental-scan/run"),
         ("POST", "/api/channel-libraries"),
         ("DELETE", "/api/channel-libraries/1"),
         ("POST", "/api/channel-libraries/1/scans"),
@@ -409,6 +411,97 @@ def test_incremental_scan_settings_get_and_put_contract(web_env):
     assert response.status_code == 200
     assert response.get_json() == saved
     assert calls == [(True, "*/15 * * * *", "UTC")]
+
+
+def test_manual_incremental_sweep_reports_queued_count(web_env):
+    env = web_env
+    calls = []
+
+    def submit():
+        calls.append(True)
+        return ImmediateFuture(
+            value={"queued": [{"library_id": 1}, {"library_id": 2}], "blocked": False}
+        )
+
+    env.service.submit_incremental_sweep_threadsafe = submit
+    response = env.client.post(
+        "/api/channel-library-settings/incremental-scan/run",
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"queued": 2, "blocked": False, "pending": False}
+    assert calls == [True]
+
+
+def test_manual_incremental_sweep_reports_blocked_full_scan(web_env):
+    env = web_env
+    env.service.submit_incremental_sweep_threadsafe = lambda: ImmediateFuture(
+        value={"queued": [], "blocked": True}
+    )
+
+    response = env.client.post(
+        "/api/channel-library-settings/incremental-scan/run",
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {"queued": 0, "blocked": True, "pending": False}
+
+
+def test_manual_incremental_sweep_keeps_running_after_http_wait(web_env):
+    env = web_env
+    pending = ImmediateFuture(error=concurrent.futures.TimeoutError())
+    env.service.submit_incremental_sweep_threadsafe = lambda: pending
+
+    response = env.client.post(
+        "/api/channel-library-settings/incremental-scan/run",
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 202
+    assert response.get_json() == {"queued": None, "blocked": False, "pending": True}
+    assert pending.timeouts == [30]
+    assert pending.cancelled is False
+
+
+def test_manual_incremental_sweep_rejects_extra_input(web_env):
+    env = web_env
+    headers = csrf_headers(env)
+    env.service.submit_incremental_sweep_threadsafe = lambda: ImmediateFuture(
+        value={"queued": [], "blocked": False}
+    )
+
+    with_fields = env.client.post(
+        "/api/channel-library-settings/incremental-scan/run",
+        json={"library_id": 1},
+        headers=headers,
+    )
+    with_query = env.client.post(
+        "/api/channel-library-settings/incremental-scan/run?force=1",
+        headers=headers,
+    )
+
+    assert with_fields.status_code == 400
+    assert with_fields.get_json()["error_code"] == "invalid_request"
+    assert with_query.status_code == 400
+    assert with_query.get_json()["error_code"] == "invalid_request"
+
+
+def test_manual_incremental_sweep_reports_unavailable_service(web_env):
+    env = web_env
+    env.service.submit_incremental_sweep_threadsafe = lambda: (_ for _ in ()).throw(
+        RuntimeError("loop is gone")
+    )
+
+    response = env.client.post(
+        "/api/channel-library-settings/incremental-scan/run",
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 503
+    assert response.get_json()["error_code"] == "service_unavailable"
+    assert "loop is gone" not in response.get_data(as_text=True)
 
 
 @pytest.mark.parametrize(
@@ -1987,6 +2080,7 @@ def test_channel_library_tab_has_one_complete_spa_dom_contract():
         "channel_incremental_scan_cron",
         "channel_incremental_scan_timezone",
         "channel_incremental_scan_save",
+        "channel_incremental_scan_run",
         "channel_incremental_scan_status",
         "channel_library_workspace",
         "channel_library_status",

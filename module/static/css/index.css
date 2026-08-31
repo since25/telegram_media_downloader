@@ -528,6 +528,7 @@ textarea.input { min-height: 90px; resize: vertical; }
   min-height: 36px; padding: 0; border: 0; color: inherit;
   background: transparent; font: inherit;
 }
+.channel-cron-actions { display: flex; gap: 8px; }
 .channel-cron-status {
   min-height: 20px; padding-top: 6px; color: var(--color-neutral-600); font-size: 11px;
 }
@@ -890,6 +891,7 @@ textarea.input { min-height: 90px; resize: vertical; }
   .channel-cron-fields { grid-template-columns: 1fr; }
   .channel-cron-toggle { justify-content: flex-start; }
   .channel-cron-fields .btn { width: 100%; }
+  .channel-cron-actions { flex-direction: column; }
   .channel-library-add { padding: 12px; }
   .channel-library-header, .channel-library-selection { align-items: stretch; flex-direction: column; }
   .channel-library-controls, .channel-library-selection-actions { justify-content: flex-start; }

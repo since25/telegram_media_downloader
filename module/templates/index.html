@@ -317,7 +317,7 @@
         <form class="channel-cron-band" id="channel_incremental_scan_form">
           <div class="channel-cron-heading">
             <strong>自动增量扫描</strong>
-            <span>全部频道共用一套计划</span>
+            <span>全部频道共用一套计划，也可随时手动扫一遍</span>
           </div>
           <div class="channel-cron-body">
             <div class="channel-cron-fields">
@@ -332,7 +332,10 @@
                 <label for="channel_incremental_scan_timezone">时区</label>
                 <input class="input nums" id="channel_incremental_scan_timezone" type="text" placeholder="Asia/Shanghai" autocomplete="off" spellcheck="false">
               </div>
-              <button type="submit" class="btn btn-primary" id="channel_incremental_scan_save">保存</button>
+              <div class="channel-cron-actions">
+                <button type="submit" class="btn btn-primary" id="channel_incremental_scan_save">保存</button>
+                <button type="button" class="btn btn-secondary" id="channel_incremental_scan_run">立即扫描全部频道</button>
+              </div>
             </div>
             <div class="channel-cron-status nums" id="channel_incremental_scan_status" aria-live="polite">正在读取设置</div>
           </div>
@@ -1374,6 +1377,37 @@
       const settings = await channelRequest('/api/channel-library-settings/incremental-scan');
       renderIncrementalScanSettings(settings);
     }
+    async function runIncrementalScanNow(){
+      const run = $('#channel_incremental_scan_run');
+      const status = $('#channel_incremental_scan_status');
+      run.disabled = true;
+      status.dataset.tone = 'muted';
+      status.textContent = '正在触发全频道增量扫描';
+      try {
+        const result = await channelApiWrite(
+          'POST',
+          '/api/channel-library-settings/incremental-scan/run'
+        );
+        status.dataset.tone = 'active';
+        if (result.pending){
+          status.textContent = '已触发 · 频道较多，仍在后台逐个检查，稍后查看列表';
+        } else if (result.blocked){
+          status.dataset.tone = 'muted';
+          status.textContent = '本次未排任何频道 · 有全量扫描尚未结束';
+        } else if (!result.queued){
+          status.dataset.tone = 'muted';
+          status.textContent = '本次没有频道需要增量扫描';
+        } else {
+          status.textContent = `本次已排 ${result.queued} 个频道的增量扫描`;
+        }
+        await pollChannelLibraries();
+      } catch (error){
+        status.dataset.tone = 'error';
+        status.textContent = `触发失败 · ${error.message}`;
+      } finally {
+        run.disabled = false;
+      }
+    }
     async function saveIncrementalScanSettings(){
       const save = $('#channel_incremental_scan_save');
       const status = $('#channel_incremental_scan_status');
@@ -1678,6 +1712,9 @@
     $('#channel_incremental_scan_enabled').addEventListener('click', () => {
       const enabled = $('#channel_incremental_scan_enabled').getAttribute('aria-checked') !== 'true';
       setIncrementalScanToggle(enabled);
+    });
+    $('#channel_incremental_scan_run').addEventListener('click', async () => {
+      await runIncrementalScanNow();
     });
     $('#channel_incremental_scan_form').addEventListener('submit', async e => {
       e.preventDefault();
