@@ -4238,3 +4238,27 @@ Changed files:
 Rollback:
 - `git revert <本次 commit>`，或 `git checkout b88c10f -- module/comment_workflow.py tests/module/test_comment_workflow.py`。
 - 本轮只删代码不改行为，产品逻辑零变更，回滚无副作用。
+
+## 2026-08-31 - Task: 部署死代码清理，并补上 bot 配置修复的端到端验证
+
+### What was done
+
+- 把死代码清理部署到线上，服务重启正常，网站入口可访问。本次改动不含任何行为变更，纯删除无人调用的代码。
+- **补上了之前缺的端到端验证**：这次重启的关停流程跑的已经是修复后的代码，线上实际产物证明修复生效——不再生成垃圾文件 `d`，配置正确写进了 `bot.yaml`。之前那条「未做端到端实测」的缺口就此关闭。
+
+### Testing
+
+- 部署提交：`b88c10f` → `76b9e28`（fast-forward）。部署前确认服务器近 20 分钟无下载活动。
+- 服务状态：`active`；公网入口 `curl https://tgdn.wyichuan.cc/` → `HTTP 302` 跳转 `/login?next=%2F`。
+- 端到端验证 P0-4（bot 配置持久化）：重启后线上 `ls d` → 不存在；`ls -la bot.yaml` → 存在，时间戳为本次关停时刻，内容为 `download_filter: []`。即配置已按修复后的路径正确落盘。
+
+### Notes
+
+Changed files:
+- `/root/telegram_media_downloader`: fast-forward 到 `76b9e28`。
+- `/root/telegram_media_downloader/bot.yaml`: 由修复后的代码在关停时自动生成（预期行为）。
+- `progress.md`: 本条记录。
+
+Rollback:
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard b88c10f && systemctl restart tg-downloader.service'`
+- 本次部署无行为变更，回滚无实际影响。
