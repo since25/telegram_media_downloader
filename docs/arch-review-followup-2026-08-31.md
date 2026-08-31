@@ -86,12 +86,34 @@
 - 标"已修复"的条目核对的是代码结构是否正确，**没有为每条构造复现场景验证**。若需更硬的结论，需补对应回归测试。
 - 本轮实际修复的 2 条走了完整 TDD：先写复现测试并确认为正确原因失败，再修复。
 
-## 七、遗留：主线上的既有测试失败
+## 七、遗留：主线上的 7 个测试失败 —— 全部是过期测试，非代码退化
 
-核对期间发现 `master` 上有 7 个既有测试失败，与本次整改无关，也不是本轮改动引入的（已在干净 master 上复现同样 7 个）：
+核对期间发现 `master` 上有 7 个测试失败，与本次整改无关，也不是本轮改动引入的（已在干净 master 上复现同样 7 个）。**已查明根因：产品代码行为是正确的、是有意改的，是测试断言没跟上。**
 
-- `tests/module/test_cloud_drive.py::test_rclone_upload_uses_exec_and_return_code_success`
-- `tests/module/test_comment_workflow.py` 中 3 个 `build_naming_previews` 相关用例
-- `tests/test_media_downloader.py` 中 3 个命名上下文相关用例
+### 第 1 组（6 个）：资源包路径去前缀
 
-需单独排查。
+根因提交 `b4ebf98`「feat: save package downloads directly under save root/\<package\>」（2026-08-16，已在 master）。该提交有意做了两件事：
+
+1. `module/comment_workflow.py` 的 `build_package_name_for_strategy`：MONTH_CAPTION 策略不再拼 `channel/month/` 前缀。
+2. `module/download_entry.py` 的 `_get_media_meta`：存在 package context 时 `file_save_path = app.save_path`，跳过 `get_file_save_path` 生成的 `chat_title/media_datetime` 前缀。代码内有注释说明意图。
+
+即资源包下载直接落在 `<保存根目录>/<资源包名>/<文件>`。
+
+二分法定量验证：父提交 `8e827e3` 上 `pytest tests/module/test_comment_workflow.py tests/test_media_downloader.py -q` → 144 passed；`b4ebf98` 上 → 2 failed, 142 passed。后续提交新增同类命名测试，累积成现在的 6 个。
+
+受影响用例（前 3 个期望里多了频道名前缀 `zhyseseb/`，后 3 个多了 `Private/2026_06/`）：
+
+- `tests/module/test_comment_workflow.py::CommentWorkflowTestCase::test_build_naming_previews_falls_back_for_extension_only_filename`
+- `tests/module/test_comment_workflow.py::CommentWorkflowTestCase::test_build_naming_previews_generates_four_clean_options`
+- `tests/module/test_comment_workflow.py::CommentWorkflowTestCase::test_build_naming_previews_uses_fallbacks`
+- `tests/test_media_downloader.py::MediaDownloaderTestCase::test_download_prepared_messages_preserves_planned_later_caption_for_package_naming_context`
+- `tests/test_media_downloader.py::MediaDownloaderTestCase::test_get_media_meta_uses_comment_naming_context_for_video`
+- `tests/test_media_downloader.py::MediaDownloaderTestCase::test_get_media_meta_uses_package_naming_context_for_video`
+
+处理前需注意：本文第五节记录了「命名策略 A/B/D 在生产不可达、`build_naming_previews` 零非测试调用者」。若决定连同死代码一起删除，前 3 个用例直接删即可，不必更新断言。
+
+### 第 2 组（1 个）：rclone 参数
+
+`tests/module/test_cloud_drive.py::test_rclone_upload_uses_exec_and_return_code_success`
+
+产品代码已支持 `rclone_transfers` 配置（`module/cloud_drive.py:31,40`），实际 argv 多了 `--transfers <n>`，测试期望的 argv 元组没跟上。更新期望值即可。

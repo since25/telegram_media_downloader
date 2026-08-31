@@ -4174,3 +4174,32 @@ Changed files:
 Rollback:
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard f36b828 && systemctl restart tg-downloader.service'`
 - 本轮仅 3 行源码改动，不涉及数据格式、接口和部署配置，回滚无副作用。
+
+## 2026-08-31 - Task: 清理线上垃圾文件并查明 7 个失败测试的根因
+
+### What was done
+
+- 删除了线上服务器遗留的垃圾文件 `d`（内容为空过滤器），删除前已确认内容无价值、全库无任何读取方，修复后也不会再生成。
+- 查清了主线上 7 个失败测试的根因：**全部是过期测试，产品代码没有任何问题**。
+  - 其中 6 个是「资源包下载直接存到 根目录/资源包名/文件」这个改动造成的。这是 2026-08-16 有意做的功能调整，目的就是去掉频道名和日期那两层前缀目录，但当时没有同步更新测试里写死的期望路径。
+  - 剩下 1 个是 rclone 上传加了并发参数后，测试里的期望命令行没跟上。
+- 订正了核对清单文档里「需单独排查」的说法，补上完整证据和处理建议。
+
+### Testing
+
+- 二分法定量验证：在 `b4ebf98` 的父提交 `8e827e3` 上跑 `tests/module/test_comment_workflow.py` 与 `tests/test_media_downloader.py` → 144 passed, 0 failed；在 `b4ebf98` 上跑同样两个文件 → 2 failed, 142 passed。证明失败起点就是这次有意的功能调整。
+- 逐条比对失败断言：前 3 个用例期望里多出频道名前缀 `zhyseseb/`，后 3 个多出 `Private/2026_06/`，均为该改动有意去掉的层级。
+- rclone 用例：实际 argv 比期望多出 `--transfers <n>`，对应 `module/cloud_drive.py` 已支持的 `rclone_transfers` 配置。
+- 线上确认：`d` 文件已不存在。
+- 本轮未改动任何产品代码，故未重跑全量测试。
+
+### Notes
+
+Changed files:
+- `/root/telegram_media_downloader/d`: 已删除（线上垃圾文件）。
+- `docs/arch-review-followup-2026-08-31.md`: 第七节改写，从「需单独排查」改为完整根因说明与处理建议。
+- `progress.md`: 本条记录。
+
+Rollback:
+- 文档改动可用 `git revert <本次 commit>` 撤销。
+- `d` 文件无需恢复：内容为 `download_filter: []`，旧代码从不读取它，新代码改用 `bot.yaml`。
