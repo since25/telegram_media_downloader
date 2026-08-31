@@ -696,13 +696,13 @@ class MediaDownloaderTestCase(unittest.TestCase):
         self.assertEqual(
             file_name,
             platform_generic_path(
-                f"{MOCK_DIR}/Discussion/2026_06/zhyseseb/422-夏日_合集 Vol.12/4978 - bad_name_.mp4"
+                f"{MOCK_DIR}/422-夏日_合集 Vol.12/4978 - bad_name_.mp4"
             ),
         )
         self.assertEqual(
             temp_file_name,
             platform_generic_path(
-                f"{MOCK_DIR}/temp/Discussion/zhyseseb/422-夏日_合集 Vol.12/4978 - bad_name_.mp4"
+                f"{MOCK_DIR}/temp/Discussion/422-夏日_合集 Vol.12/4978 - bad_name_.mp4"
             ),
         )
 
@@ -754,7 +754,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
         self.assertEqual(
             file_name,
             platform_generic_path(
-                f"{MOCK_DIR}/Private/2026_06/126700-课程_第01章/126711 - bad_name_.mp4"
+                f"{MOCK_DIR}/126700-课程_第01章/126711 - bad_name_.mp4"
             ),
         )
         self.assertEqual(
@@ -1050,7 +1050,7 @@ class MediaDownloaderTestCase(unittest.TestCase):
             ),
             (
                 NamingStrategy.MONTH_CAPTION,
-                "私密频道/2026_06/课程 第01章 01_40/102 - 课程 第01章 02_40.mp4",
+                "课程 第01章 01_40/102 - 课程 第01章 02_40.mp4",
             ),
         ):
             with self.subTest(strategy=strategy):

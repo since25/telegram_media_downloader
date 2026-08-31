@@ -4320,3 +4320,34 @@ Changed files:
 
 Rollback:
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard bfb81b4 && systemctl restart tg-downloader.service'`
+
+## 2026-08-31 - Task: 对齐最后 4 个过期测试断言，测试套件全绿
+
+### What was done
+
+- 把最后 4 个一直报红的过期测试改好了。**没有动任何产品代码**——这 4 个红是测试里写死的旧期望值没跟上有意的功能调整，代码本身是对的。
+- 每改一条之前，都先自己去代码里复核了「当前行为确实是有意设计的」，而不是为了让红变绿就放宽断言。三条资源包/评论包的路径断言，依据是代码里明确写了意图的注释和当初手工删除前缀的提交；rclone 那条的依据是配置样例里带注释的用户可配置项。
+- **至此整个测试套件全绿：799 通过，1 个正当跳过（Windows 专属用例），0 失败。** 以后再出现报红就一定是新引入的问题，不用再费劲区分「本来就红的」和「刚改坏的」。
+
+### Testing
+
+- `tests/test_media_downloader.py` → 38 passed。
+- `tests/module/test_cloud_drive.py` → 6 passed。
+- 全量：`.venv/bin/python -m pytest tests/ -q` → **799 passed, 1 skipped, 0 failed**。
+- 专项复核：rclone 用例原有的防 shell 注入断言（`reject_shell` 与恶意文件名 `odd name 'quoted';$(touch nope).txt`）原样保留，未被削弱。
+- 改断言过程中，临时目录那条断言由测试自己暴露出还残留一处旧的频道名前缀，一并对齐；未凭猜测预改。
+
+### Notes
+
+Changed files:
+- `tests/test_media_downloader.py`: 3 处路径期望值去掉已被移除的前缀目录（评论包的 `Discussion/2026_06/zhyseseb/` 与临时目录的 `zhyseseb/`、资源包的 `Private/2026_06/`、MONTH_CAPTION 的 `私密频道/2026_06/`）。
+- `tests/module/test_cloud_drive.py`: 期望 argv 末尾补 `"--transfers", "1"`。
+- `docs/arch-review-followup-2026-08-31.md`: 新增第十节，逐条记录改动与产品行为的意图依据，并确立全绿基线。
+- `progress.md`: 本条记录。
+
+仍待处置：
+- `tests/test_media_downloader.py` 中被整段注释掉的 `test_upload_telegram_chat`，不参与收集，需单独判断恢复还是删除。
+
+Rollback:
+- `git revert <本次 commit>`，或 `git checkout b797834 -- tests/test_media_downloader.py tests/module/test_cloud_drive.py`。
+- 本轮只改测试断言，产品代码零变更，回滚不影响任何线上行为。
