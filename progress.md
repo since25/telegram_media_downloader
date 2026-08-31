@@ -4384,3 +4384,25 @@ Changed files:
 Rollback:
 - `git revert <本次 commit>`；或回到本次改动前的 `52e340e`。
 - 本轮只新增入口，未改动定时调度与扫描执行逻辑，回滚后自动计划和单频道增量按钮行为不受影响。
+
+## 2026-08-31 - Task: 部署「立即扫描全部频道」到线上
+
+### What was done
+
+- 把上一条的功能合并进 master、推送并部署到 RackNerd 服务器，服务已重启。现在登录网页版频道页就能看到并使用「立即扫描全部频道」按钮。
+
+### Testing
+
+- 服务状态：`systemctl is-active tg-downloader.service` → `active`。
+- 首页 `https://tgdn.wyichuan.cc/` → HTTP 302（未登录跳登录页，符合预期）。
+- 新接口未登录访问 → HTTP 302（同样被登录保护挡住，未裸露）。
+- 重启后两分钟内的服务日志无 error / traceback。
+- 未做「点按钮真的排出任务」的线上实测：那需要在真实频道上产生扫描任务，本轮以本地全链路验证脚本 + 全绿测试套件为准。
+
+### Notes
+
+Changed files:
+- 无代码改动，仅部署。`progress.md`: 本条记录。
+
+Rollback:
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 52e340e && systemctl restart tg-downloader.service'`（52e340e 为本功能上线前的版本）。
