@@ -4144,3 +4144,33 @@ Rollback:
 - 回滚本轮代码：`git revert <本次 commit>`，或 `git checkout f36b828 -- module/bot.py module/download_entry.py`。
 - 本轮只改了 3 行源码，不涉及数据格式、接口和部署配置，回滚无副作用。
 - 已删除的 9 个历史分支无需回滚：其每一个提交都已在 `f36b828` 中（删除时用的 `git branch -d`，git 会拒绝删除未合并的分支）。
+
+## 2026-08-31 - Task: 部署 bot 配置与评论失败修复到 RackNerd
+
+### What was done
+
+- 把本轮两条修复部署到了线上服务器，服务已重启并正常运行，网站入口可正常访问。
+- 部署前确认服务器近 30 分钟没有正在进行的下载，重启没有打断任何任务。
+- 部署过程中观察到旧代码在关停瞬间又写了一次垃圾文件 `d`（内容为空过滤器 `download_filter: []`），正好实证了这个 bug：过滤器设置从来没有真正存住过。新代码起来后会改写 `bot.yaml`，`d` 文件不会再产生。
+
+### Testing
+
+- 部署提交：`f36b828` → `308a7b5`（fast-forward）。
+- 服务状态：`systemctl is-active tg-downloader.service` → `active`。
+- 公网入口：`curl https://tgdn.wyichuan.cc/` → `HTTP 302` 跳转 `/login?next=%2F`。
+- 启动日志无 error/traceback（排除掉扫描器打到 web 端口的 400 噪音）。
+- 线上代码复核：`module/bot.py:255` 写 `self.config_path`、`module/bot.py:766` 写 `_bot.download_filter`，`download_comments` 内层吞异常的 except 已消失。
+- 未做端到端实测：验证 bot 配置往返需要在 Telegram 里实际发 `/add_filter` 并重启服务，本轮以单元测试 + 线上代码复核为准。
+
+### Notes
+
+Changed files:
+- `/root/telegram_media_downloader`: fast-forward 到 `308a7b5`。
+- `progress.md`: 本条记录。
+
+遗留（未处理，等确认）：
+- `/root/telegram_media_downloader/d`：旧代码留下的垃圾文件，内容为空过滤器，全库无任何读取方。可安全删除，本轮未删。
+
+Rollback:
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard f36b828 && systemctl restart tg-downloader.service'`
+- 本轮仅 3 行源码改动，不涉及数据格式、接口和部署配置，回滚无副作用。
