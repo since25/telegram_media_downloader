@@ -1723,21 +1723,16 @@ async def download_comments(
             f"download_comments: 任务节点信息 - task_id={node.task_id}, is_running={node.is_running}, is_stop_transmission={node.is_stop_transmission}"
         )
 
-        try:
-            async with get_telegram_activity_gate().download_permit():
-                scan_result = await scan_comment_range(
-                    client,
-                    chat_id,
-                    base_message_id,
-                    start_comment_id,
-                    end_comment_id,
-                )
-            comments = scan_result.comments
-            failed_comment_ids = scan_result.failed_comment_ids
-        except ValueError:
-            return
-        except Exception:
-            return
+        async with get_telegram_activity_gate().download_permit():
+            scan_result = await scan_comment_range(
+                client,
+                chat_id,
+                base_message_id,
+                start_comment_id,
+                end_comment_id,
+            )
+        comments = scan_result.comments
+        failed_comment_ids = scan_result.failed_comment_ids
 
         logger.info(f"共找到 {len(comments)} 条符合条件的评论")
         await download_prepared_comments(

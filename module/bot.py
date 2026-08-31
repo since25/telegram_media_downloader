@@ -252,7 +252,7 @@ class DownloadBot:
         """Update config from str."""
         self.config["download_filter"] = self.download_filter
 
-        with open("d", "w", encoding="utf-8") as yaml_file:
+        with open(self.config_path, "w", encoding="utf-8") as yaml_file:
             self._yaml.dump(self.config, yaml_file)
 
     async def start(
@@ -763,7 +763,7 @@ async def add_filter(client: pyrogram.Client, message: pyrogram.types.Message):
     filter_str = replace_date_time(args[1])
     res, err = _bot.filter.check_filter(filter_str)
     if res:
-        _bot.app.down = args[1]
+        _bot.download_filter = args[1]
         await client.send_message(
             message.from_user.id, f"{_t('Add download filter')} : {args[1]}"
         )

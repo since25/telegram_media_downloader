@@ -4112,3 +4112,35 @@ Changed files:
 
 Rollback:
 - Stop `tg-downloader.service`, restore the recorded pre-deploy commit from `/root/telegram_media_downloader/backups/mcp-deploy-20260824-090022/pre-deploy-commit.txt`, restore the backed-up configuration, and start the service. Disable MCP with `mcp.enabled: false` if only the new control layer needs to be withdrawn.
+
+## 2026-08-31 - Task: 修复 bot 配置持久化失效与评论下载失败静默消失
+
+### What was done
+
+- 修好了「通过 bot 设置的下载过滤器每次重启就丢失」的问题。此前 bot 把配置写进一个叫 `d` 的垃圾文件，启动时却从 `bot.yaml` 读取，于是设置永远存不住，还会在运行目录里堆垃圾文件；`/add_filter` 命令更是把过滤器写进一个根本没人读的属性，用户却收到「设置成功」的回复。现在过滤器能正常存盘并在重启后自动生效。
+- 修好了「评论下载失败时任务凭空消失」的问题。此前遇到坏链接、没有权限等扫描失败，程序会一声不响地返回，任务节点永远留在活跃列表里，用户的回复消息一直停在「进行中」直到重启整个服务。现在失败会正常上报状态并释放任务。
+- 清理了仓库分支：本地 master 同步到线上，删掉 9 个已完全并入主线的历史分支和 4 个遗留工作目录，仓库只剩 master 与待评估的 `arch-review-remediation`。
+- 出具了 2026-07-07 架构评审 27 条整改的主线现状核对清单（`docs/arch-review-followup-2026-08-31.md`）：10 条主线已独立修复，3 条修了一半，本轮修掉 2 条，剩 5 条待排期。
+
+### Testing
+
+- 新增 4 个回归测试，全部走完整 TDD：先确认测试为正确原因失败，再修复至通过。
+  - `.venv/bin/python -m pytest tests/module/test_bot_commands.py tests/module/test_download_comments_errors.py -q` → 9 passed。
+- 全量测试：`.venv/bin/python -m pytest tests/ -q` → 791 passed, 1 skipped, 7 failed。
+- 那 7 个失败为主线既有问题，与本轮无关：已在 stash 掉本轮改动后的干净 master 上复现出完全相同的 7 个，清单记录在 `docs/arch-review-followup-2026-08-31.md` 第七节，待单独排查。
+- 未做运行时实测：本地不启动下载服务（需要真实 Telegram 客户端）。
+
+### Notes
+
+Changed files:
+- `module/bot.py`: 配置写回 `self.config_path` 而不是字面量文件 `d`；`/add_filter` 写入 `_bot.download_filter` 而不是黑洞属性 `_bot.app.down`。
+- `module/download_entry.py`: 删除 `download_comments` 内层吞掉扫描失败的两个 except，让失败落到已有的清理分支。
+- `tests/module/test_bot_commands.py`: 新增 2 个测试，覆盖配置存盘路径与 `/add_filter` 的重启往返。
+- `tests/module/test_download_comments_errors.py`: 新增文件，覆盖扫描失败必须上报状态并释放 TaskNode。
+- `docs/arch-review-followup-2026-08-31.md`: 新增，架构评审 27 条整改的主线现状核对清单。
+- `progress.md`: 本条记录。
+
+Rollback:
+- 回滚本轮代码：`git revert <本次 commit>`，或 `git checkout f36b828 -- module/bot.py module/download_entry.py`。
+- 本轮只改了 3 行源码，不涉及数据格式、接口和部署配置，回滚无副作用。
+- 已删除的 9 个历史分支无需回滚：其每一个提交都已在 `f36b828` 中（删除时用的 `git branch -d`，git 会拒绝删除未合并的分支）。
