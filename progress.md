@@ -4434,3 +4434,23 @@ Changed files:
 Rollback:
 - `git revert <本次 commit>`；或 `git checkout 055852a -- module/channel_library_service.py`（回到修复前的版本）。
 - 只改了一行位置和一处冗余写法，未触碰磁盘预留的判定条件与阈值。
+
+## 2026-08-31 - Task: 部署磁盘预留崩溃修复到线上
+
+### What was done
+
+- 把上一条的修复合并进 master、推送并部署到 RackNerd 服务器，服务已重启。
+
+### Testing
+
+- `systemctl is-active tg-downloader.service` → `active`。
+- 首页 `https://tgdn.wyichuan.cc/` → HTTP 302（未登录跳登录页，符合预期）。
+- 重启后两分钟内服务日志无 error / traceback。
+
+### Notes
+
+Changed files:
+- 无代码改动，仅部署。`progress.md`: 本条记录。
+
+Rollback:
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 055852a && systemctl restart tg-downloader.service'`（055852a 为本修复上线前的版本）。
