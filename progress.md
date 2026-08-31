@@ -4203,3 +4203,38 @@ Changed files:
 Rollback:
 - 文档改动可用 `git revert <本次 commit>` 撤销。
 - `d` 文件无需恢复：内容为 `download_filter: []`，旧代码从不读取它，新代码改用 `bot.yaml`。
+
+## 2026-08-31 - Task: 清理死代码预览构建器，并用多代理审计过期测试
+
+### What was done
+
+- 删掉了两段生产环境根本用不到的代码：评论和资源包的「四选项命名预览」构建器。这套东西早在 2026-06-09 就从界面上撤掉了（现在只保留推荐方案 C），但底层代码和一堆测试一直留着。删掉后代码少了 78 行，测试少了 5 个用例。
+- 用 14 个子代理做了一轮过期测试全面审计，每个失败用例都在各自独立的工作区里用二分法定位到底是哪次改动让它开始报红。结论：**当前 7 个报红全部是过期测试，产品代码一个真实缺陷都没有**；另外还查出 1 个被整段注释掉、根本不参与运行的隐藏失效测试。合计 8 个。
+- 审计推翻了上一轮的一个判断，这是本轮最有价值的产出：原以为「命名策略 A/B/D」整套都是死代码可以一起删，实际上**枚举成员本身仍在生产运行时被真实使用**——用户 Telegram 聊天记录里那些旧版本发出的按钮永久有效，点一下就会走到这段代码，随后被守卫拒绝。如果按原判断删掉，会悄悄削弱针对陈旧/伪造按钮的防线，还会打掉两条现役回归测试。因此只删了确实零调用的预览构建器，枚举和守卫原样保留。
+- 订正了核对清单文档里那条错误判断，并把完整审计结果写进文档第八节，包括剩余 4 个报红各自的确切改法。
+
+### Testing
+
+- 删除前记录基线：`tests/module/test_comment_workflow.py` → 3 failed, 103 passed。
+- 删除后该文件：**101 passed, 0 failed**。
+- 全量测试：从 7 failed / 791 passed 变为 **4 failed / 789 passed**，无任何新增失败。
+- 专门复核审计特别警告的两条防线测试（伪造非推荐策略的回调必须被拒绝）：`-k forged` → 2 passed，未受影响。
+- 全仓库检索确认无残留引用：`grep build_naming_previews|build_package_naming_previews` 仅命中 `build_recommended_*` 版本。
+- 施工过程中第一次删除脚本的边界判断出错（把类里最后一个方法之后的内容一起切掉），已当场回滚测试文件并改用带尺寸校验的行级切分重做；产品代码那 78 行删除不受影响。
+
+### Notes
+
+Changed files:
+- `module/comment_workflow.py`: 删除 `build_naming_previews`、`build_package_naming_previews` 两个零生产调用者的函数（共 78 行）。
+- `tests/module/test_comment_workflow.py`: 删除 5 个用例（3 个原本就报红 + 2 个仅服务于被删函数），其余夹具调用切到生产在用的 `build_recommended_*` 版本；5126 行 → 4978 行。
+- `docs/arch-review-followup-2026-08-31.md`: 第五节订正「A/B/D 在生产不可达」的错误判断；第七节同步订正；新增第八节记录完整审计结果与剩余 4 个报红的改法。
+- `progress.md`: 本条记录。
+
+未处理（有意保留）：
+- `NamingStrategy` 的 AUTHOR/CAPTION/MONTH_CAPTION 三个成员，以及 `module/bot.py` 两处 RECOMMENDED 守卫——审计证明仍在生产路径上，不可删。
+- `module/comment_workflow.py` 的 `month_for_comment`：既有死代码，与本轮无关，仅在文档中标注。
+- 剩余 4 个报红的断言更新：改法已写进文档第八节，等确认后单独一轮做。
+
+Rollback:
+- `git revert <本次 commit>`，或 `git checkout b88c10f -- module/comment_workflow.py tests/module/test_comment_workflow.py`。
+- 本轮只删代码不改行为，产品逻辑零变更，回滚无副作用。

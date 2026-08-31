@@ -75,8 +75,23 @@
 ### 5. 卫生项（原 P2-17b、P2-19、P2-15 剩余部分）
 
 - `module/web.py:73` 的 `SESSION_COOKIE_SAMESITE` 仍是 `"Lax"`，未改 `"Strict"`。
-- `module/comment_workflow.py:46-49` 的命名策略 A/B/D 在生产不可达（两个回调 handler 都只接受 RECOMMENDED），`build_naming_previews` / `build_package_naming_previews` 零非测试调用者。
 - `module/static/aes/crypto-js-master/` 和 `utils/crypto.py` 的死代码。
+- `module/comment_workflow.py` 的 `month_for_comment`：全仓库零调用者（含测试），自 `b4ebf98` 起成为死代码。独立一笔，与下述预览构建器无关。
+
+原 P2-19 中的「预览构建器」部分已于 2026-08-31 清理，见第八节。**但该条目对命名策略枚举的判断是错的，已订正**：
+
+> ~~`module/comment_workflow.py:46-49` 的命名策略 A/B/D 在生产不可达。~~
+
+**订正**：A/B/D 三个枚举成员**在生产运行时仍会被真实构造**，不是死代码。`parse_callback_data`
+（`module/comment_workflow.py:594`）与 `parse_package_callback_data`（`:615`）用
+`NamingStrategy(parts[2])` 把 Telegram 回调里的**外部字符串**直接转成枚举。
+`c7ed458`（2026-06-09）之前的版本给用户发过「采用A / 采用B / 采用D」内联按钮，
+而 Telegram 的内联键盘随消息永久留在聊天记录里 —— 老用户往上翻点旧按钮，
+`NamingStrategy("A")` 今天仍会执行，随后被 `module/bot.py:2783` / `:2647` 的
+RECOMMENDED 守卫拒绝。仓库自带两条针对该路径的回归测试
+（`test_confirm_callback_rejects_forged_non_recommended_strategy` 及其 package 版本）。
+
+因此这三个枚举成员**不应删除**，两个 RECOMMENDED 守卫也不应删除。
 
 ## 六、核对方法与局限
 
@@ -110,10 +125,73 @@
 - `tests/test_media_downloader.py::MediaDownloaderTestCase::test_get_media_meta_uses_comment_naming_context_for_video`
 - `tests/test_media_downloader.py::MediaDownloaderTestCase::test_get_media_meta_uses_package_naming_context_for_video`
 
-处理前需注意：本文第五节记录了「命名策略 A/B/D 在生产不可达、`build_naming_previews` 零非测试调用者」。若决定连同死代码一起删除，前 3 个用例直接删即可，不必更新断言。
+**后续进展**：前 3 个用例已随 `build_naming_previews` / `build_package_naming_previews` 一并删除（见第八节）。
+注意此处原先的判断「命名策略 A/B/D 在生产不可达」**是错的**，已在第五节订正 —— 零调用者的只是两个
+预览构建器，枚举成员本身仍在生产运行时被外部回调数据构造，不可删除。
 
 ### 第 2 组（1 个）：rclone 参数
 
 `tests/module/test_cloud_drive.py::test_rclone_upload_uses_exec_and_return_code_success`
 
 产品代码已支持 `rclone_transfers` 配置（`module/cloud_drive.py:31,40`），实际 argv 多了 `--transfers <n>`，测试期望的 argv 元组没跟上。更新期望值即可。
+
+## 八、过期测试全面审计（2026-08-31，多代理核查）
+
+用 14 个子代理做了一轮侦察 + 对抗核验，每个失败用例在**独立 git 工作区**里用二分法定位起点提交。
+
+### 审计口径与结论
+
+套件规模：collected 799，passed 791，failed 7，skipped 1。
+
+**7 个报红全部是过期测试，真实缺陷 0 个，存疑 0 个。**
+
+| 起点提交 | 数量 | 性质 |
+|---|---|---|
+| `b4ebf98` + `54dbc4a`（资源包/评论包改存到 save-root/\<package\>） | 6 | 有意的布局调整，测试写死的期望路径没跟上 |
+| `a93fce5`（rclone 并发与 transfers 限制） | 1 | 有意新增 `--transfers` 参数，测试期望的 argv 没跟上 |
+
+判定「有意为之」的依据不是「改测试更省事」，而是每条都能拿到独立证据：提交标题声明目标结构、
+代码内解释性注释、`config.example.yaml` 中新增的用户可配置项。
+
+### 隐藏的失效测试
+
+除报红外，另有 **1 个被整段注释掉、根本不参与收集**的测试：
+
+- `tests/test_media_downloader.py:2223-2268` 的 `test_upload_telegram_chat`，
+  连同其 6 个 `@mock.patch` 装饰器一起被注释。
+
+另有 4 处 `skipIf` / `skipUnless` 属于**正当的平台闸门**（Windows 文件名长度、POSIX 文件权限），
+不是过期测试；本次 macOS 运行中只有 1 个真正跳过。全仓库 **零 xfail 标记**。
+
+**合计：7 个报红 + 1 个被注释掉 = 8 个失效测试。**
+
+### 本轮已清理
+
+删除生产零调用者的两个预览构建器 `build_naming_previews` / `build_package_naming_previews`
+（`module/comment_workflow.py`，共 78 行），以及测试侧 5 个用例（3 个报红 + 2 个仅服务于被删函数）。
+其余夹具调用切到生产在用的 `build_recommended_*` 版本。
+
+结果：全量测试从 7 failed / 791 passed 变为 **4 failed / 789 passed**，无新增失败。
+
+### 剩余 4 个报红的确切改法
+
+均为更新断言，**不要改产品代码**：
+
+1. `test_get_media_meta_uses_package_naming_context_for_video`
+   —— `tests/test_media_downloader.py` 中期望值去掉 `Private/2026_06/` 前缀；
+   同用例的 `temp_file_name` 断言保持不变（临时目录仍按 dirname 分层）。
+2. `test_get_media_meta_uses_comment_naming_context_for_video`
+   —— 期望值去掉 `Discussion/2026_06/zhyseseb/` 前缀。
+3. `test_download_prepared_messages_preserves_planned_later_caption_for_package_naming_context`
+   —— MONTH_CAPTION 的 `expected_suffix` 去掉 `私密频道/2026_06/`；
+   CAPTION 项与 `caption_for_naming` 断言不动。
+4. `test_rclone_upload_uses_exec_and_return_code_success`
+   —— `tests/module/test_cloud_drive.py` 期望 argv 末尾补 `"--transfers", "1"`
+   （对应 `CloudDriveConfig` 默认 `rclone_transfers=1`）。
+   注意保留该用例原有的 `reject_shell` 断言，那是防 shell 注入的防线。
+
+### 方法论备注
+
+对抗核验阶段 3 个视角**全部提出了反对证据**，推翻了「A/B/D 完全不可达」这一措辞，
+促成了第五节的订正。这是本轮审计最有价值的产出：若按原判断连枚举一起删，
+会悄悄削弱针对陈旧/伪造回调的防线，并打掉两条现役回归测试。
