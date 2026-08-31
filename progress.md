@@ -4406,3 +4406,31 @@ Changed files:
 
 Rollback:
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 52e340e && systemctl restart tg-downloader.service'`（52e340e 为本功能上线前的版本）。
+
+## 2026-08-31 - Task: 修复磁盘预留计算里的历史崩溃隐患
+
+### What was done
+
+- 修掉了上一轮顺带发现的历史告警，它其实是一个**真实的崩溃**，不是代码风格问题：频道包开始下载前会先算一遍「要给这个包预留多少磁盘」，当整个包里所有文件的大小都拿不到时，这段计算会直接抛异常。
+- 触发条件：开启了云盘上传 + 上传后删除本地文件、没开压缩、没开 Telegram 转发，并且该包所有媒体都没有文件大小信息。线上配置正好满足前面几项，只是目前 41 万条媒体记录里没有一条缺大小，所以还没真的撞上。
+- 修复方式是把计算 worker 数量的那行挪到分支前面——原来它写在分支后面，分支里却先用了它。
+- 这个函数此前**零测试覆盖**，所以缺陷一直没被发现；本次补上了测试。
+
+### Testing
+
+- 先写测试复现：未修复时确实抛 `UnboundLocalError`（不是猜测，是实际跑出来的报错）。
+- 新增 3 条测试：大小未知时按 worker 窗口回退、回退值不超过整包体积、已知大小时原有行为不变（第三条在修复前就通过，证明本次没有改动正常路径）。
+- 全量测试套件：`.venv/bin/python -m pytest -q` → **809 passed, 1 skipped, 0 failed**。
+- `pylint module/channel_library_service.py module/web.py --errors-only` → 退出码 0，仓库现在零 pylint 错误。
+- 线上数据核查（只读查询）：媒体总数 416354，其中大小未知 0 条 —— 说明该缺陷尚未在生产环境实际触发过。
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`: `_package_reservation_bytes` 中 worker 数量的赋值上移到分支之前，并去掉分支里多余的 `max(1, ...)`。
+- `tests/module/test_channel_library_service.py`: 新增 3 条磁盘预留计算的测试。
+- `progress.md`: 本条记录。
+
+Rollback:
+- `git revert <本次 commit>`；或 `git checkout 055852a -- module/channel_library_service.py`（回到修复前的版本）。
+- 只改了一行位置和一处冗余写法，未触碰磁盘预留的判定条件与阈值。
