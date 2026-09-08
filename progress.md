@@ -4543,3 +4543,33 @@ Changed files:
 
 Rollback:
 - `git revert <本次 commit>` 后重新部署（只回退这一轮补丁，上一轮的性能修复保留）。
+
+## 2026-09-08 - Task: 两轮修复上线部署与线上验证
+
+### What was done
+
+- 把上面两条修复合并推送并部署到 RackNerd 服务器，服务已重启（23:37:06 EDT）。
+- 线上实测确认三个问题都不再出现，且下载速度回到预期水平。
+
+### Testing
+
+线上服务健康：
+- `systemctl is-active tg-downloader.service` → `active`。
+- 首页 `https://tgdn.wyichuan.cc/` → HTTP 302（未登录跳登录页，符合预期）。
+
+重启后累计统计（按行号切片，避开多行 traceback 干扰计数）：
+- 状态机报错 `invalid_task_transition`：**0 次**（修复前 4 分钟内 58 次）。
+- 空文件失败 `size mismatch: 0 !=`：**0 次**（9 月 7 日故障期是 100% 失败）。
+- 入队：**222 条在同一分钟内全部完成**（修复前是每分钟 3–7 条，且期间下载全停）。
+- 下载吞吐：57 MB/分 → 93 MB/分 → 277 MB/分，4 分钟共 427.8 MB，
+  峰值约 **4.6 MB/s**，高于用户描述的「跑得好的时候 2–3M」。
+- 进度心跳恒定 5 秒一次，说明事件循环没有再被占死。
+- 进程 CPU 从修复前的 75–83% 降到 **23–28%**（1 核服务器）。
+
+### Notes
+
+Changed files:
+- 无代码改动，仅部署。`progress.md`: 本条记录。
+
+Rollback:
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard be83eaa && systemctl restart tg-downloader.service'`（be83eaa 为本次两轮修复上线前的版本）。
