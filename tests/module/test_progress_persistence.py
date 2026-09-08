@@ -6,6 +6,9 @@ class _Store:
     def __init__(self):
         self.calls = []
 
+    def get_task(self, _task_id):
+        return None
+
     def transition_file(
         self,
         task_id,
@@ -212,3 +215,33 @@ def test_forced_progress_waits_for_existing_file_write():
         10,
         100,
     ]
+
+
+def test_progress_writes_do_not_reopen_a_terminal_task():
+    """进度落盘不能把已完成（有错误）的任务重新拉回下载态。"""
+
+    from module.progress_persistence import ProgressPersistence
+    from module.task_state import FileStatus, TaskStateStore, TaskStatus
+
+    store = TaskStateStore()
+    store.create_task("resumed-progress", status=TaskStatus.COMPLETED_WITH_ERRORS)
+    persistence = ProgressPersistence(min_interval_seconds=0, min_byte_delta=0)
+
+    asyncio.run(
+        persistence.persist_download(
+            store,
+            "resumed-progress",
+            404,
+            filename="/data/tg/demo.mp4",
+            total_size=1000,
+            downloaded_size=500,
+            download_speed=100,
+            total_count=1,
+            force=True,
+        )
+    )
+
+    task = store.get_task("resumed-progress")
+    assert task.status == TaskStatus.COMPLETED_WITH_ERRORS
+    assert task.files["404"].status == FileStatus.DOWNLOADING
+    assert task.files["404"].downloaded_size == 500

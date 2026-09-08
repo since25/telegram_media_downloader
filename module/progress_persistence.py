@@ -6,7 +6,20 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from module.task_state import FileStatus, TaskStatus
+from module.task_state import FileStatus, TaskStatus, terminal_safe_task_updates
+
+
+def _transition_without_reopening(
+    store, task_id, message_id, task_updates: dict, file_updates: dict
+) -> None:
+    """在工作线程里落盘一次进度，且不会把终态任务重新拉回运行态。"""
+
+    store.transition_file(
+        task_id,
+        message_id,
+        task_updates=terminal_safe_task_updates(store, task_id, task_updates),
+        file_updates=file_updates,
+    )
 
 
 @dataclass(frozen=True)
@@ -72,14 +85,15 @@ class ProgressPersistence:
 
         try:
             await asyncio.to_thread(
-                store.transition_file,
+                _transition_without_reopening,
+                store,
                 task_id,
                 message_id,
-                task_updates={
+                {
                     "status": TaskStatus.DOWNLOADING,
                     "total_count": int(total_count),
                 },
-                file_updates={
+                {
                     "status": FileStatus.DOWNLOADING,
                     "filename": filename,
                     "save_path": filename,

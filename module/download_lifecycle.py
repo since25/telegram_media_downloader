@@ -399,7 +399,9 @@ async def run_file_lifecycle(
                     runtime.task_store,
                     node.task_id,
                     message_id,
-                    task_updates={"status": TaskStatus.DOWNLOADING},
+                    task_updates=await _phase_task_updates(
+                        runtime.task_store, node.task_id, TaskStatus.DOWNLOADING
+                    ),
                     file_updates={
                         "status": FileStatus.FAILED,
                         "filename": file_name or "",

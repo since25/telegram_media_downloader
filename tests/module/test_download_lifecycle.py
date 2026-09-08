@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import dataclasses
 from types import SimpleNamespace
 
 from module.app import DownloadStatus, TaskNode
@@ -185,3 +186,40 @@ def test_download_phase_does_not_reopen_a_terminal_task():
     # 任务保持终态，但这个文件的下载结果被完整记录下来了
     assert task.status == TaskStatus.COMPLETED_WITH_ERRORS
     assert task.files["202"].status == FileStatus.DOWNLOADED
+
+
+def test_failed_download_on_a_terminal_task_is_still_recorded():
+    """异常路径也不能被状态机挡住，否则失败结果根本记不下来。"""
+
+    from module.task_state import TaskStateStore, TaskStatus
+
+    store = TaskStateStore()
+    store.create_task("resumed-2", status=TaskStatus.COMPLETED_WITH_ERRORS)
+    node = TaskNode(chat_id=-1003, task_id="resumed-2", bot=None)
+    node.is_running = True
+    node.total_task = 1
+    node.total_download_task = 1
+    message = SimpleNamespace(id=303, media=object(), text=None)
+
+    runtime = _runtime_with_store(store, DownloadStatus.SuccessDownload)
+
+    async def exploding_download(*_args, **_kwargs):
+        raise RuntimeError("telegram unavailable")
+
+    runtime = dataclasses.replace(runtime, download_media=exploding_download)
+
+    asyncio.run(
+        run_file_lifecycle(
+            client=object(),
+            message=message,
+            node=node,
+            telegram_permit=None,
+            naming_snapshot=None,
+            runtime=runtime,
+        )
+    )
+
+    task = store.get_task("resumed-2")
+    assert task.status == TaskStatus.COMPLETED_WITH_ERRORS
+    assert task.files["303"].status == FileStatus.FAILED
+    assert node.failed_download_task == 1

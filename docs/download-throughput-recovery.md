@@ -32,7 +32,8 @@ Pyrogram 的 `Client.get_file` 对内部异常是 `except Exception: log.excepti
 | `module/task_state.py` | `TaskSnapshot.clone()` 取代 `copy.deepcopy`，去掉快照复制的通用递归开销 |
 | `module/task_state.py` | 新增 `terminal_safe_task_updates()`：终态任务不会被文件级进度重新拉回运行态 |
 | `module/download_queue.py` | 入队改用 `sync_files=False` + 终态保护 |
-| `module/download_lifecycle.py` | 下载阶段的两处状态转换补上终态保护（此前只有上传阶段有） |
+| `module/download_lifecycle.py` | 下载阶段的三处状态转换补上终态保护（此前只有上传阶段有） |
+| `module/progress_persistence.py` | 进度落盘补上终态保护 |
 | `module/download_transfer.py` | 新增 `EmptyDownloadError` 与媒体会话自愈 |
 
 ### 媒体会话自愈的触发条件
@@ -53,6 +54,7 @@ Pyrogram 的 `Client.get_file` 对内部异常是 `except Exception: log.excepti
 python3 -m pytest tests/module/test_task_state.py \
                   tests/module/test_download_queue_enqueue.py \
                   tests/module/test_download_lifecycle.py \
+                  tests/module/test_progress_persistence.py \
                   tests/module/test_media_session_recovery.py -q
 ```
 
@@ -61,8 +63,13 @@ python3 -m pytest tests/module/test_task_state.py \
 - `test_enqueue_cost_does_not_grow_with_task_size` — 一次入队只做 1 次文件级写入，
   与任务里已有多少文件无关。这是防止故障 1 复发的硬契约。
 - `test_download_phase_does_not_reopen_a_terminal_task` /
-  `test_enqueue_into_terminal_task_does_not_raise` — 复现并挡住
+  `test_failed_download_on_a_terminal_task_is_still_recorded` /
+  `test_enqueue_into_terminal_task_does_not_raise` /
+  `test_progress_writes_do_not_reopen_a_terminal_task` — 复现并挡住
   `invalid_task_transition: 'completed_with_errors' -> 'downloading'`。
+  这四条覆盖四条独立的写入路径：入队、下载阶段、异常记录、进度落盘。
+  任何新增的 `transition_file` 调用都必须走 `terminal_safe_task_updates`，
+  用 `grep -rn 'task_updates={"status"' module/` 可以查是否有漏网的硬写法。
 - `test_repeated_empty_downloads_rebuild_media_sessions` — 端到端验证连续空文件
   会真的把媒体会话清掉。
 

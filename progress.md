@@ -4510,3 +4510,36 @@ Changed files:
 Rollback:
 - `git revert <本次 commit>` 后重新部署；或
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard be83eaa && systemctl restart tg-downloader.service'`（be83eaa 为本次修复上线前的版本）。
+
+## 2026-09-08 - Task: 补齐终态任务保护的遗漏路径
+
+### What was done
+
+- 上一轮修复部署到线上后，观察到 `invalid_task_transition` 报错仍在出现（4 分钟内 58 次），
+  说明「恢复的任务不再丢文件」只修了一半。用 grep 把所有写任务状态的地方全部列出来，
+  发现还有两条路径漏掉了：
+  - **下载异常的记录路径**：下载出错后，程序想把「这个文件失败了」记下来，
+    结果记录动作本身又被状态机拦住，于是失败结果压根没写进去。这是线上那 58 次报错的来源。
+  - **下载进度的落盘路径**：每下载一段就要写一次进度，这里同样会被拦。
+- 两处都改成和其他路径一致的终态保护写法。现在全仓库已无硬写任务状态的地方。
+
+### Testing
+
+- 全量测试套件：`.venv/bin/python -m pytest tests/ -q` → **831 passed, 1 skipped, 0 failed**。
+- 新增 2 条回归测试，分别覆盖异常记录路径和进度落盘路径；两条都验证过：
+  改回旧写法后会原样抛出线上那条 `invalid_task_transition: 'completed_with_errors' -> 'downloading'`。
+- `grep -rn 'task_updates={"status"' module/` → 无匹配，确认没有漏网的路径。
+- `mypy` + `pylint --errors-only`（涉及的 5 个模块）→ 均通过。
+
+### Notes
+
+Changed files:
+- `module/download_lifecycle.py`: 异常记录路径补上终态保护。
+- `module/progress_persistence.py`: 新增 `_transition_without_reopening`，进度落盘走终态保护。
+- `tests/module/test_download_lifecycle.py`: 新增异常路径回归测试。
+- `tests/module/test_progress_persistence.py`: 新增进度落盘回归测试，并给测试替身补上 `get_task`。
+- `docs/download-throughput-recovery.md`: 补充第四条写入路径与自查命令。
+- `progress.md`: 本条记录。
+
+Rollback:
+- `git revert <本次 commit>` 后重新部署（只回退这一轮补丁，上一轮的性能修复保留）。
