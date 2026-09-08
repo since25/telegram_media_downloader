@@ -3,7 +3,11 @@ import contextvars
 from types import SimpleNamespace
 
 from module.app import DownloadStatus, TaskNode
-from module.download_lifecycle import FileLifecycleRuntime, run_file_lifecycle
+from module.download_lifecycle import (
+    FileLifecycleRuntime,
+    run_download_phase,
+    run_file_lifecycle,
+)
 from module.task_state import FileStatus
 
 
@@ -14,6 +18,9 @@ class _Store:
 
     def update_task(self, task_id, **updates):
         self.tasks.setdefault(str(task_id), {}).update(updates)
+
+    def get_task(self, task_id):
+        return None
 
     def upsert_file(self, task_id, message_id, **updates):
         self.files.setdefault((str(task_id), str(message_id)), {}).update(updates)
@@ -102,3 +109,79 @@ def test_reporting_failure_does_not_change_successful_download_result():
     assert node.failed_download_task == 0
     assert node.download_status[101] is DownloadStatus.SuccessDownload
     assert store.files[("task-1", "101")]["status"] == FileStatus.DOWNLOADED
+
+
+def _runtime_with_store(store, download_status):
+    """构造一个只跑下载阶段的最小 runtime。"""
+
+    naming_context = contextvars.ContextVar("naming_context", default=None)
+
+    async def download_media(*_args, **_kwargs):
+        return download_status, "/data/tg/demo.mp4"
+
+    async def ignore_async(*_args, **_kwargs):
+        return None
+
+    return FileLifecycleRuntime(
+        app=SimpleNamespace(
+            media_types=[],
+            file_formats={},
+            enable_download_txt=False,
+            cloud_drive_config=SimpleNamespace(enable_upload_file=False),
+            hide_file_name=False,
+        ),
+        logger=_Logger(),
+        download_media=download_media,
+        save_msg_to_file=ignore_async,
+        upload_telegram_chat=ignore_async,
+        update_cloud_upload_stat=lambda *_args, **_kwargs: None,
+        report_bot_download_status=ignore_async,
+        task_store=store,
+        snapshot_node=lambda *_args, **_kwargs: None,
+        naming_snapshot_context=naming_context,
+        queue_entry_times={},
+        task_start_times={},
+        performance_stats={
+            "total_download_time": 0,
+            "download_task_count": 0,
+            "successful_downloads": 0,
+            "failed_downloads": 0,
+            "skipped_downloads": 0,
+            "avg_download_time": 0,
+            "avg_queue_time": 0,
+            "total_queue_time": 0,
+        },
+        remove_download_result=lambda *_args: None,
+    )
+
+
+def test_download_phase_does_not_reopen_a_terminal_task():
+    """恢复出来的终态任务继续下载时，不能抛状态机异常把文件丢掉。"""
+
+    from module.task_state import TaskStateStore, TaskStatus
+
+    store = TaskStateStore()
+    store.create_task("resumed-1", status=TaskStatus.COMPLETED_WITH_ERRORS)
+    node = TaskNode(chat_id=-1002, task_id="resumed-1", bot=object())
+    node.is_running = True
+    node.total_task = 1
+    node.total_download_task = 1
+    message = SimpleNamespace(id=202, media=object(), text=None)
+
+    download_status, file_name = asyncio.run(
+        run_download_phase(
+            client=object(),
+            message=message,
+            node=node,
+            naming_snapshot=None,
+            runtime=_runtime_with_store(store, DownloadStatus.SuccessDownload),
+        )
+    )
+
+    assert download_status is DownloadStatus.SuccessDownload
+    assert file_name == "/data/tg/demo.mp4"
+
+    task = store.get_task("resumed-1")
+    # 任务保持终态，但这个文件的下载结果被完整记录下来了
+    assert task.status == TaskStatus.COMPLETED_WITH_ERRORS
+    assert task.files["202"].status == FileStatus.DOWNLOADED

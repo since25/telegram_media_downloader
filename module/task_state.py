@@ -173,6 +173,11 @@ class FileSnapshot:
     uploaded_size: int = 0
     upload_speed: int = 0
 
+    def clone(self) -> "FileSnapshot":
+        """浅拷贝即可：所有字段都是不可变标量。"""
+
+        return copy.copy(self)
+
     @property
     def download_progress(self) -> float:
         if self.total_size <= 0:
@@ -219,6 +224,11 @@ class WorkflowSnapshot:
     summary: str = ""
     error: str = ""
 
+    def clone(self) -> "WorkflowSnapshot":
+        """浅拷贝即可：所有字段都是不可变标量。"""
+
+        return copy.copy(self)
+
     def to_dict(self) -> dict:
         return {
             "workflow_type": self.workflow_type,
@@ -253,6 +263,23 @@ class TaskSnapshot:
     error: str = ""
     needs_confirmation: bool = False
     files: dict[str, FileSnapshot] = field(default_factory=dict)
+
+    def clone(self) -> "TaskSnapshot":
+        """按字段克隆整个任务快照。
+
+        等价于 deepcopy，但避开了它的通用递归开销：大任务动辄上千个文件，
+        deepcopy 会成为下载主循环里的性能瓶颈。
+        """
+
+        cloned = copy.copy(self)
+        cloned.files = {key: item.clone() for key, item in self.files.items()}
+        cloned.workflow = self.workflow.clone() if self.workflow else None
+        if self.current_file is not None:
+            # current_file 与 files 里的条目是同一个对象，克隆后要保持这层别名关系
+            cloned.current_file = cloned.files.get(
+                str(self.current_file.message_id)
+            ) or self.current_file.clone()
+        return cloned
 
     def refresh_counts_from_files(self) -> None:
         if self.files:
@@ -450,7 +477,7 @@ class TaskStateStore:
                     status=status,
                 )
             else:
-                task = copy.deepcopy(existing)
+                task = existing.clone()
                 self._validate_updates(task, {"status": status})
             self._apply_updates(
                 task,
@@ -462,7 +489,7 @@ class TaskStateStore:
                 **updates,
             )
             self._store_task(task_key, task)
-            return copy.deepcopy(task)
+            return task.clone()
 
     def ensure_task(
         self,
@@ -500,7 +527,7 @@ class TaskStateStore:
                     for field_name, expected_value in expected_identity.items()
                 ):
                     raise TaskIdentityConflictError(task_key)
-                return copy.deepcopy(existing)
+                return existing.clone()
             return self.create_task(
                 task_key,
                 source=source,
@@ -518,10 +545,10 @@ class TaskStateStore:
             if not existing:
                 return None
             self._validate_updates(existing, updates)
-            task = copy.deepcopy(existing)
+            task = existing.clone()
             self._apply_updates(task, **updates)
             self._store_task(task_key, task)
-            return copy.deepcopy(task)
+            return task.clone()
 
     def retry_task(self, task_id: Any, **updates) -> Optional[TaskSnapshot]:
         """Explicitly reactivate a retryable terminal task."""
@@ -537,7 +564,7 @@ class TaskStateStore:
                     existing.status,
                     TaskStatus.QUEUED,
                 )
-            task = copy.deepcopy(existing)
+            task = existing.clone()
             self._apply_updates(
                 task,
                 status=TaskStatus.QUEUED,
@@ -546,7 +573,7 @@ class TaskStateStore:
                 **updates,
             )
             self._store_task(task_key, task)
-            return copy.deepcopy(task)
+            return task.clone()
 
     def reconcile_task(
         self,
@@ -563,10 +590,10 @@ class TaskStateStore:
             if existing is None:
                 return None
             self._validate_status(task_key, status)
-            task = copy.deepcopy(existing)
+            task = existing.clone()
             self._apply_updates(task, status=status, **updates)
             self._store_task(task_key, task)
-            return copy.deepcopy(task)
+            return task.clone()
 
     def update_workflow(
         self,
@@ -580,14 +607,14 @@ class TaskStateStore:
             existing = self._active.get(task_key) or self._completed.get(task_key)
             if existing is None:
                 return None
-            task = copy.deepcopy(existing)
-            workflow = copy.deepcopy(task.workflow or WorkflowSnapshot())
+            task = existing.clone()
+            workflow = (task.workflow or WorkflowSnapshot()).clone()
             for key, value in updates.items():
                 if value is not None and hasattr(workflow, key):
                     setattr(workflow, key, value)
             self._apply_updates(task, workflow=workflow)
             self._store_task(task_key, task)
-            return copy.deepcopy(task)
+            return task.clone()
 
     def transition_file(
         self,
@@ -604,7 +631,7 @@ class TaskStateStore:
         with self._lock:
             existing = self._active.get(task_key) or self._completed.get(task_key)
             task = (
-                copy.deepcopy(existing)
+                existing.clone()
                 if existing is not None
                 else TaskSnapshot(task_id=task_key)
             )
@@ -649,7 +676,7 @@ class TaskStateStore:
             if self.storage_path and evicted_keys:
                 with self._connect() as connection:
                     self._delete_task_storage(connection, evicted_keys)
-            returned_task = copy.deepcopy(task)
+            returned_task = task.clone()
             return returned_task, returned_task.files[message_key]
 
     def upsert_file(self, task_id: Any, message_id: Any, **updates) -> FileSnapshot:
@@ -666,7 +693,7 @@ class TaskStateStore:
             existing = self._active.get(task_key) or self._completed.get(task_key)
             if not existing:
                 return None
-            task = copy.deepcopy(existing)
+            task = existing.clone()
             task.refresh_counts_from_files()
             if task.status in TERMINAL_TASK_STATUSES:
                 target_status = task.status
@@ -678,13 +705,13 @@ class TaskStateStore:
             task.status = target_status
             task.updated_at = _now()
             self._move_completed(task_key, task)
-            return copy.deepcopy(task)
+            return task.clone()
 
     def get_task(self, task_id: Any) -> Optional[TaskSnapshot]:
         task_key = str(task_id)
         with self._lock:
             task = self._active.get(task_key) or self._completed.get(task_key)
-            return copy.deepcopy(task) if task is not None else None
+            return task.clone() if task is not None else None
 
     def remove_task(self, task_id: Any) -> bool:
         task_key = str(task_id)
@@ -720,9 +747,11 @@ class TaskStateStore:
 
     def tasks(self) -> list[TaskSnapshot]:
         with self._lock:
-            return copy.deepcopy(
-                list(self._active.values()) + list(self._completed.values())
-            )
+            return [
+                task.clone()
+                for task in list(self._active.values())
+                + list(self._completed.values())
+            ]
 
     def serialize_tasks(
         self,
@@ -1252,12 +1281,36 @@ def _status_from_node(node) -> str:
     return TaskStatus.QUEUED
 
 
+def terminal_safe_task_updates(store, task_id: Any, updates: dict) -> dict:
+    """剔除会把终态任务重新拉回运行态的 status 字段，其余更新原样保留。
+
+    已完成/已取消/已失败的任务不该被后续的文件级进度重新打开：状态机会抛
+    TaskTransitionError，而这个异常会一路冒泡把该文件的下载整个丢掉。
+    """
+
+    safe_updates = dict(updates or {})
+    if "status" not in safe_updates:
+        return safe_updates
+    task = store.get_task(task_id)
+    if task is not None and task.status in TERMINAL_TASK_STATUSES:
+        safe_updates.pop("status", None)
+    return safe_updates
+
+
 def snapshot_node(
     node,
     source: Optional[str] = None,
     task_type: Optional[str] = None,
     title: Optional[str] = None,
+    sync_files: bool = True,
 ) -> TaskSnapshot:
+    """把 TaskNode 的整体状态写入任务存储。
+
+    sync_files=False 时只写任务本身，不再逐个回写该任务下的所有文件状态。
+    入队路径必须用这个模式：每个文件的状态都由它自己的生命周期转换负责持久化，
+    在入队时全量回写会让单次入队的开销随任务规模线性增长，整体退化成平方级。
+    """
+
     task_id = getattr(node, "task_id", None) or f"{getattr(node, 'chat_id', 'unknown')}"
     existing = get_task_store().get_task(task_id)
     preserved_identity = (
@@ -1315,7 +1368,9 @@ def snapshot_node(
         skipped_count=int(getattr(node, "skip_download_task", 0) or 0),
         upload_success_count=int(getattr(node, "upload_success_count", 0) or 0),
     )
-    for message_id, status in (getattr(node, "download_status", {}) or {}).items():
+    for message_id, status in (
+        (getattr(node, "download_status", {}) or {}).items() if sync_files else ()
+    ):
         existing_file = task.files.get(str(message_id))
         mapped_status = _file_status_from_download_status(status)
         if (

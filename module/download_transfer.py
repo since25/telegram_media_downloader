@@ -25,6 +25,73 @@ _MESSAGE_NOT_FOUND_ERRORS = tuple(
     if isinstance(error_type, type) and issubclass(error_type, Exception)
 )
 
+# Pyrogram 的 get_file 会吞掉媒体会话里抛出的任何异常，然后返回一个空文件。
+# 媒体会话一旦假死（例如 Session.restart() 自己失败），它会一直被缓存复用，
+# 之后每个文件都下成 0 字节，进程不重启就永远好不了。这里靠连续空文件计数
+# 把缓存的媒体会话丢掉，让 pyrogram 下次下载时重新建立连接。
+EMPTY_DOWNLOAD_RESET_THRESHOLD = 6
+MEDIA_SESSION_RESET_COOLDOWN = 60.0
+MEDIA_SESSION_STOP_TIMEOUT = 10.0
+_empty_download_streak = 0
+_last_media_session_reset = 0.0
+_media_session_reset_lock = asyncio.Lock()
+
+
+class EmptyDownloadError(ValueError):
+    """Pyrogram 静默返回了空文件，通常意味着媒体会话已经假死。"""
+
+
+def note_download_success() -> None:
+    """一次成功下载就足以证明媒体会话是好的，清零连续空文件计数。"""
+
+    global _empty_download_streak
+
+    _empty_download_streak = 0
+
+
+async def reset_media_sessions(client, logger) -> int:
+    """丢弃并停止缓存的媒体会话，让下一次下载重新建立连接。"""
+
+    sessions = getattr(client, "media_sessions", None)
+    if not isinstance(sessions, dict) or not sessions:
+        return 0
+    # 不去抢 pyrogram 的 media_sessions_lock：会话已经卡死时，抢锁会把自己也挂住。
+    # 直接清空字典即可，get_session 之后会按需重建。
+    stale_sessions = list(sessions.items())
+    sessions.clear()
+    for dc_id, session in stale_sessions:
+        try:
+            await asyncio.wait_for(session.stop(), timeout=MEDIA_SESSION_STOP_TIMEOUT)
+        except Exception as error:
+            logger.warning(
+                f"重建媒体会话: 停止 DC{dc_id} 的旧会话失败 "
+                f"({type(error).__name__}: {error})"
+            )
+    return len(stale_sessions)
+
+
+async def note_empty_download(client, logger) -> bool:
+    """累计空文件次数，达到阈值就重建媒体会话；返回是否真的重建了。"""
+
+    global _empty_download_streak, _last_media_session_reset
+
+    async with _media_session_reset_lock:
+        _empty_download_streak += 1
+        if _empty_download_streak < EMPTY_DOWNLOAD_RESET_THRESHOLD:
+            return False
+        now = time.monotonic()
+        if now - _last_media_session_reset < MEDIA_SESSION_RESET_COOLDOWN:
+            return False
+        _last_media_session_reset = now
+        _empty_download_streak = 0
+        logger.warning(
+            f"连续 {EMPTY_DOWNLOAD_RESET_THRESHOLD} 次下载返回空文件，"
+            "判定媒体会话假死，正在重建..."
+        )
+        closed = await reset_media_sessions(client, logger)
+    logger.warning(f"媒体会话已重建: 关闭了 {closed} 个旧会话，后续下载将重新连接")
+    return True
+
 
 def check_download_finish(
     media_size: int, download_path: str, ui_file_name: str, logger, translate
@@ -45,6 +112,8 @@ def check_download_finish(
         os.remove(download_path)
     except Exception:
         pass
+    if download_size == 0 and media_size > 0:
+        raise EmptyDownloadError(f"size mismatch: {download_size} != {media_size}")
     raise ValueError(f"size mismatch: {download_size} != {media_size}")
 
 
@@ -334,8 +403,9 @@ async def transfer_media(
                     )
                     await asyncio.sleep(0.5)
                     runtime.move_to_download_path(temp_download_path, file_name)
+                    note_download_success()
                     return DownloadStatus.SuccessDownload, file_name
-                raise ValueError("download_media returned empty path")
+                raise EmptyDownloadError("download_media returned empty path")
 
             except asyncio.CancelledError:
                 if not runtime.progress_tracker.consume_stalled(progress_key):
@@ -387,6 +457,8 @@ async def transfer_media(
                     f"Message[{message_id}]: {error}, retrying... "
                     f"({retry + 1}/{max_retries})"
                 )
+                if isinstance(error, EmptyDownloadError):
+                    await note_empty_download(client, runtime.logger)
                 await asyncio.sleep(1)
 
             except Exception as error:

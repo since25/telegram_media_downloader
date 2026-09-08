@@ -5,7 +5,13 @@ import time
 from typing import Any, Awaitable, Callable
 
 from module.app import DownloadStatus
-from module.task_state import FileStatus, TaskStatus, get_task_store, snapshot_node
+from module.task_state import (
+    FileStatus,
+    TaskStatus,
+    get_task_store,
+    snapshot_node,
+    terminal_safe_task_updates,
+)
 from module.transfer_progress import transfer_key
 
 
@@ -48,17 +54,24 @@ async def enqueue_download(
 
         node.download_status[msg_id] = DownloadStatus.Downloading
         if getattr(node, "task_id", None):
-            snapshot_node(node)
-            get_task_store().transition_file(
+            # 只写任务本身；这一条文件的状态由紧接着的 transition_file 负责，
+            # 其余文件各自的生命周期转换已经写过了，不能在这里全量回写。
+            snapshot_node(node, sync_files=False)
+            store = get_task_store()
+            store.transition_file(
                 node.task_id,
                 msg_id,
-                task_updates={
-                    "status": TaskStatus.QUEUED,
-                    "total_count": max(
-                        node.total_download_task + 1,
-                        len(node.download_status),
-                    ),
-                },
+                task_updates=terminal_safe_task_updates(
+                    store,
+                    node.task_id,
+                    {
+                        "status": TaskStatus.QUEUED,
+                        "total_count": max(
+                            node.total_download_task + 1,
+                            len(node.download_status),
+                        ),
+                    },
+                ),
                 file_updates={"status": FileStatus.QUEUED},
             )
 

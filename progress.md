@@ -4454,3 +4454,59 @@ Changed files:
 
 Rollback:
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 055852a && systemctl restart tg-downloader.service'`（055852a 为本修复上线前的版本）。
+
+## 2026-09-08 - Task: 修复下载速度断崖式下跌与媒体会话假死
+
+### What was done
+
+- 定位并修复了导致「重启后跑得快、跑一会儿就狂跌、第二天还得手动重启」的三个缺陷，
+  三者互相引爆：性能缺陷会把连接拖死，连接死了又没人救。
+- **入队不再拖垮整个进程**：以前每往下载队列里加一个文件，程序都要把这个任务下
+  所有已知文件的状态重新写一遍数据库，任务越大越慢。线上实测：队列到 190 个文件时，
+  加一条要 19 秒，一次 200 条的入队阶段整整 48 分钟一个文件都没下。现在一次入队
+  只写当前这一个文件，与任务里已有多少文件无关。
+- **下载卡死后能自己恢复**：Telegram 客户端库在媒体连接出问题时会静默返回一个空文件，
+  而这个坏掉的连接会被一直缓存复用，于是每个文件都下成 0 字节，不重启进程就永远好不了
+  （9 月 7 日就这样死了 9.5 小时，375 个文件全废）。现在连续 6 次下载返回空文件就自动
+  重建媒体连接，不需要人工重启；任意一次成功下载都会把计数清零，健康时不会误触发。
+- **恢复的任务不再丢文件**：从上次中断恢复出来的任务如果已经是「已完成（有错误）」状态，
+  继续下载时会抛状态机异常，把这些文件整个丢掉（线上已发生 29 次）。现在这类任务保持
+  原状态不变，但文件的下载结果会被正常记录下来。
+- 新增运维文档 `docs/download-throughput-recovery.md`，写清楚了自愈的触发条件、
+  可调参数，以及下次再出问题时该看哪几条命令。
+
+### Testing
+
+- 全量测试套件：`.venv/bin/python -m pytest tests/ -q` → **829 passed, 1 skipped, 0 failed**。
+- 新增 11 条测试（`test_download_queue_enqueue.py` 3 条 + `test_media_session_recovery.py` 8 条），
+  另在 `test_task_state.py` 增 8 条、`test_download_lifecycle.py` 增 1 条。
+- 逐条验证测试确实能挡住旧缺陷（把修复临时改回旧写法后重跑）：
+  - 入队开销：旧代码下 5 个文件的任务入队要写 7 次，500 个文件的要写 501 次 → 断言失败。
+  - 终态任务：旧代码原样抛出线上那条 `invalid_task_transition: 'completed_with_errors' -> 'downloading'`。
+  - 媒体会话自愈：去掉调用后，连续空文件不再触发重建 → 断言失败。
+- 性能实测（本机，300 条入队，带 SQLite 落盘）：
+  - 修复前 **82.55 秒**，速率从 67 条/秒一路掉到 1.5 条/秒（典型平方级曲线）。
+  - 修复后 **0.35 秒**，速率基本持平 → **约 236 倍**。600 条入队 1.21 秒。
+- `mypy` + `pylint --errors-only`（本次涉及的 4 个模块）→ 均通过，零告警。
+- 线上证据：`py-spy dump` 抓到 3 个下载线程全部堵在 `snapshot_node → transition_file`，
+  一个在 `copy.deepcopy` 上占满 GIL；journald 里 11:39:23 有一条
+  `RuntimeError('read() called while another coroutine is already waiting for incoming data')`，
+  时间点正好是入队阶段结束、下载开始全部返回 0 字节的那一刻。
+
+### Notes
+
+Changed files:
+- `module/task_state.py`: 新增 `snapshot_node(sync_files=...)` 开关、`TaskSnapshot/FileSnapshot/WorkflowSnapshot.clone()`（取代 deepcopy）、`terminal_safe_task_updates()` 终态保护。
+- `module/download_queue.py`: 入队改为只写当前文件，并加上终态任务保护。
+- `module/download_lifecycle.py`: 下载阶段的两处状态转换补上终态保护，`_phase_task_updates` 改为复用公共实现。
+- `module/download_transfer.py`: 新增 `EmptyDownloadError` 与媒体会话自愈（阈值/冷却/停止超时三个常量可调）。
+- `tests/module/test_download_queue_enqueue.py`: 新增，入队开销与终态保护的回归测试。
+- `tests/module/test_media_session_recovery.py`: 新增，空文件识别与媒体会话自愈的回归测试。
+- `tests/module/test_task_state.py`: 新增 clone 语义、终态保护、文件同步开关的测试。
+- `tests/module/test_download_lifecycle.py`: 新增终态任务下载不丢文件的测试，并给测试替身补上 `get_task`。
+- `docs/download-throughput-recovery.md`: 新增运维文档。
+- `progress.md`: 本条记录。
+
+Rollback:
+- `git revert <本次 commit>` 后重新部署；或
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard be83eaa && systemctl restart tg-downloader.service'`（be83eaa 为本次修复上线前的版本）。

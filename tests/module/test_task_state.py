@@ -994,5 +994,157 @@ class TaskStateStoreTestCase(unittest.TestCase):
         self.assertEqual(len(payload["tasks"]), 2)
 
 
+class SnapshotCloneTestCase(unittest.TestCase):
+    """clone() 替代 deepcopy 后，隔离性和别名关系都不能变。"""
+
+    def _build_task(self):
+        from module.task_state import (
+            FileSnapshot,
+            FileStatus,
+            TaskSnapshot,
+            WorkflowSnapshot,
+        )
+
+        task = TaskSnapshot(task_id="clone-1", title="Clone")
+        task.workflow = WorkflowSnapshot(workflow_type="scan", scan_count=3)
+        for message_id in ("1", "2"):
+            task.files[message_id] = FileSnapshot(
+                message_id=message_id,
+                status=FileStatus.QUEUED,
+                filename=f"{message_id}.mp4",
+            )
+        task.current_file = task.files["2"]
+        return task
+
+    def test_clone_isolates_nested_state(self):
+        from module.task_state import FileStatus
+
+        task = self._build_task()
+        cloned = task.clone()
+
+        cloned.files["1"].status = FileStatus.FAILED
+        cloned.workflow.scan_count = 99
+        cloned.files["3"] = cloned.files["1"].clone()
+
+        self.assertEqual(task.files["1"].status, FileStatus.QUEUED)
+        self.assertEqual(task.workflow.scan_count, 3)
+        self.assertNotIn("3", task.files)
+
+    def test_clone_preserves_current_file_alias(self):
+        from module.task_state import FileStatus
+
+        task = self._build_task()
+        cloned = task.clone()
+
+        self.assertIs(cloned.current_file, cloned.files["2"])
+        cloned.current_file.status = FileStatus.DOWNLOADED
+        self.assertEqual(cloned.files["2"].status, FileStatus.DOWNLOADED)
+        self.assertEqual(task.files["2"].status, FileStatus.QUEUED)
+
+    def test_clone_matches_deepcopy_contents(self):
+        import copy
+
+        task = self._build_task()
+
+        self.assertEqual(copy.deepcopy(task), task.clone())
+
+
+class TerminalTaskUpdateTestCase(unittest.TestCase):
+    """终态任务不能被后续的文件级进度重新拉回运行态。"""
+
+    def test_status_is_dropped_for_terminal_task(self):
+        from module.task_state import (
+            TaskStateStore,
+            TaskStatus,
+            terminal_safe_task_updates,
+        )
+
+        store = TaskStateStore()
+        store.create_task("done-1", status=TaskStatus.COMPLETED_WITH_ERRORS)
+
+        updates = terminal_safe_task_updates(
+            store,
+            "done-1",
+            {"status": TaskStatus.DOWNLOADING, "total_count": 7},
+        )
+
+        self.assertNotIn("status", updates)
+        self.assertEqual(updates["total_count"], 7)
+
+    def test_status_is_kept_for_running_task(self):
+        from module.task_state import (
+            TaskStateStore,
+            TaskStatus,
+            terminal_safe_task_updates,
+        )
+
+        store = TaskStateStore()
+        store.create_task("live-1", status=TaskStatus.QUEUED)
+
+        updates = terminal_safe_task_updates(
+            store, "live-1", {"status": TaskStatus.DOWNLOADING}
+        )
+
+        self.assertEqual(updates["status"], TaskStatus.DOWNLOADING)
+
+    def test_unknown_task_keeps_status(self):
+        from module.task_state import (
+            TaskStateStore,
+            TaskStatus,
+            terminal_safe_task_updates,
+        )
+
+        updates = terminal_safe_task_updates(
+            TaskStateStore(), "missing", {"status": TaskStatus.DOWNLOADING}
+        )
+
+        self.assertEqual(updates["status"], TaskStatus.DOWNLOADING)
+
+
+class SnapshotNodeFileSyncTestCase(unittest.TestCase):
+    """入队路径不能再全量回写任务下的所有文件状态。"""
+
+    def _node_with_files(self, count: int):
+        node = TaskNode(chat_id=-1005, task_id="sync-1")
+        node.download_status = {
+            index: DownloadStatus.SuccessDownload for index in range(count)
+        }
+        return node
+
+    def test_sync_files_false_skips_per_file_writes(self):
+        from module.task_state import (
+            TaskStateStore,
+            reset_task_store_for_tests,
+            snapshot_node,
+        )
+
+        previous_store = reset_task_store_for_tests(TaskStateStore())
+        try:
+            node = self._node_with_files(5)
+
+            task = snapshot_node(node, sync_files=False)
+
+            self.assertEqual(task.files, {})
+        finally:
+            reset_task_store_for_tests(previous_store)
+
+    def test_sync_files_true_still_writes_every_file(self):
+        from module.task_state import (
+            TaskStateStore,
+            reset_task_store_for_tests,
+            snapshot_node,
+        )
+
+        previous_store = reset_task_store_for_tests(TaskStateStore())
+        try:
+            node = self._node_with_files(5)
+
+            task = snapshot_node(node)
+
+            self.assertEqual(len(task.files), 5)
+        finally:
+            reset_task_store_for_tests(previous_store)
+
+
 if __name__ == "__main__":
     unittest.main()

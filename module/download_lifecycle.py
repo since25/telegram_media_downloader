@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from module.app import DownloadStatus
 from module.progress_persistence import download_progress_persistence
-from module.task_state import FileStatus, TaskStatus
+from module.task_state import FileStatus, TaskStatus, terminal_safe_task_updates
 from module.transfer_progress import transfer_key
 
 
@@ -55,15 +55,9 @@ async def _transition_file(
 async def _phase_task_updates(store, task_id, status: str) -> dict:
     """Avoid reopening a legacy terminal task while persisting file progress."""
 
-    task = await asyncio.to_thread(store.get_task, task_id)
-    if task is not None and task.status in {
-        TaskStatus.COMPLETED,
-        TaskStatus.COMPLETED_WITH_ERRORS,
-        TaskStatus.CANCELLED,
-        TaskStatus.FAILED,
-    }:
-        return {}
-    return {"status": status}
+    return await asyncio.to_thread(
+        terminal_safe_task_updates, store, task_id, {"status": status}
+    )
 
 
 async def run_download_phase(
@@ -81,7 +75,9 @@ async def run_download_phase(
             runtime.task_store,
             node.task_id,
             message_id,
-            task_updates={"status": TaskStatus.DOWNLOADING},
+            task_updates=await _phase_task_updates(
+                runtime.task_store, node.task_id, TaskStatus.DOWNLOADING
+            ),
             file_updates={"status": FileStatus.DOWNLOADING},
         )
 
@@ -117,7 +113,9 @@ async def run_download_phase(
             runtime.task_store,
             node.task_id,
             message_id,
-            task_updates={"status": TaskStatus.DOWNLOADING},
+            task_updates=await _phase_task_updates(
+                runtime.task_store, node.task_id, TaskStatus.DOWNLOADING
+            ),
             file_updates={
                 "status": file_status,
                 "filename": file_name or "",
