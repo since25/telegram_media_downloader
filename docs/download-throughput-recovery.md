@@ -100,3 +100,107 @@ py-spy dump --pid $(pgrep -f media_downloader.py)
 ```
 
 如果多个 `asyncio_*` 线程都停在 `task_state.py` 里，说明状态存储又成了瓶颈。
+
+
+---
+
+# 磁盘配额闸门的三个死锁（2026-09-09）
+
+上面那轮修复上线后，线上又出现两次「整个进程静默、日志一行不写」的停滞：
+
+| 时段（服务器时间） | 时长 | 结束方式 |
+| --- | --- | --- |
+| 09-08 12:38 → 18:38 | 正好 6 小时 | 批次超时兜底，自行恢复 |
+| 09-08 19:09 → 09-09 00:54 | 5 小时 45 分 | 人工重启 |
+
+停滞期间磁盘还有 10 GB 空闲，跟真实磁盘占用无关。`web_tasks.sqlite3` 里
+有 6 个任务停在 `error='waiting_for_disk_space'`，说明它们卡在
+`DiskSpaceAdmission.acquire()` 里没出来。
+
+## 三个缺陷
+
+### 1. 严格 FIFO 会自锁
+
+`acquire()` 原本要求 `self._waiting[0] == key` 才放行。队首一旦放不下，
+后面所有包（哪怕只要 100 MB）都得跟着等。而磁盘空间只有靠下载完成才会释放
+—— 没有人能下载，空间就永远不会出现。这是个自己解不开的死循环。
+
+现在改成：**自己放得下，且（是队首 或 队首此刻放不下）** 就放行。
+队首仍然享有优先权，只有在它确实排不上时才允许小包先走。
+并发等待者数量由批次调度信号量限制（默认 4 个），队首不会被长期饿死。
+
+### 2. 无限等待，没有逃生口
+
+`on_package_started` 里有个事前检查，本意就是拦住「永远放不下」的包
+（代码注释写着 "would otherwise hold a download slot forever"），
+但它比的是**单文件窗口**，而 `acquire()` 实际申请的是**整包窗口**
+（`worker 数 × 最大单文件`）。两个数不是一回事，所以检查放行的包
+仍然可能永远排不上队。
+
+现在 `acquire()` 自己兜底：请求量持续超过「所有预留都释放后的空间上限」
+达到 `DEFAULT_CAPACITY_TIMEOUT_SEC`（默认 600 秒）就抛
+`DiskCapacityExceededError`。给宽限期是因为空间可能被外部清理释放，
+不能一发现放不下就判死。调用方接住这个异常，只让该包失败，队列继续走。
+
+### 3. 等待者杀不掉（最致命的一个）
+
+原实现用 `asyncio.wait_for(self._condition.wait(), timeout=...)` 做轮询。
+这个组合是坏的：
+
+- `wait_for` 会把 `Condition.wait()` 包进另一个 Task，而 `asyncio.Lock`
+  不记录持有者，锁的归属会错乱；
+- `Condition.wait()` 在 `finally` 里循环重抢锁并**吞掉** `CancelledError`；
+- `wait_for` 超时到期时，会把外部传进来的取消**转成 `TimeoutError`**，
+  调用方一旦吞掉这个超时，取消就永远丢了。
+
+结果就是等待者既拿不到空间也杀不掉，批次 6 小时超时发出的取消根本不起作用，
+只能重启进程。关停时留下的
+`RuntimeError: cannot notify on un-acquired lock` 就是锁状态已经错乱的证据。
+
+现在改成 `asyncio.Lock` + 裸 future：等待期间**不持任何锁**，
+超时由 `loop.call_later` 直接兑现 future，**不使用 `asyncio.wait_for`**。
+
+> 硬约束：这个模块里不要再引入 `asyncio.wait_for(cond.wait())`，
+> 也不要在等待时持锁。两条都踩过，代价是线上两次 6 小时静默。
+
+### 附带修好的预留泄漏
+
+`acquire()` 的异常清理分支原本不退还 `_reserved_bytes`。一旦异常发生在
+登记预留之后，这笔额度就永久占着直到进程重启，让后续每个包都更难排上队。
+现在的不变量是：**acquire 要么返回一个 DiskReservation，要么什么都不留下。**
+
+## 怎么验证
+
+```bash
+python3 -m pytest tests/module/test_download_admission.py -q
+```
+
+九条用例，每条都验证过「改回旧写法就会失败」：
+
+- `test_a_blocked_head_does_not_stall_smaller_packages` — 缺陷 1
+- `test_head_still_wins_when_it_fits` — 插队不能破坏先来后到
+- `test_request_beyond_disk_capacity_fails_after_grace_period` — 缺陷 2
+- `test_capacity_grace_period_resets_when_space_appears` — 宽限期内空间回来就正常放行
+- `test_a_waiting_acquire_can_actually_be_cancelled` — 缺陷 3
+- `test_cancelled_acquire_leaves_no_reservation_behind` /
+  `test_failure_after_registration_releases_the_reservation` — 预留泄漏
+
+用例里凡是可能卡住的等待者都注入了可控时钟，失败时走容量超时干净退出，
+不会把测试进程挂死。
+
+## 排障入口
+
+**又出现「日志一行不写」的静默时**，先看是不是卡在配额闸门：
+
+```bash
+./.venv/bin/python - <<'EOF'
+import sqlite3
+db = sqlite3.connect("web_tasks.sqlite3")
+for r in db.execute("select task_id,status,error from tasks where error!='' order by updated_at desc limit 10"):
+    print(r)
+EOF
+```
+
+出现 `waiting_for_disk_space` 就是卡在 `acquire()`。再用
+`py-spy dump --pid $(pgrep -f media_downloader.py)` 确认调用栈里有
+`download_admission`。正常情况下这个等待最多 600 秒就会自行了断。

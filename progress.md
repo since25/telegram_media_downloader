@@ -4573,3 +4573,62 @@ Changed files:
 
 Rollback:
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard be83eaa && systemctl restart tg-downloader.service'`（be83eaa 为本次两轮修复上线前的版本）。
+
+## 2026-09-09 - Task: 修复磁盘配额闸门导致的整机静默停滞
+
+### What was done
+
+- 排查 9/8 那次「卡死」，发现跟上一轮修的问题无关（上一轮的修复仍然有效：
+  重启后 338 个文件全部成功，0 个空文件、0 次状态机报错）。
+- 真实原因是**下载前的磁盘配额闸门把自己锁死了**，昨天实际发生了两次：
+  12:38→18:38（正好 6 小时，靠批次超时自行恢复）和 19:09→00:54（人工重启）。
+  停滞期间磁盘还有 10 GB 空闲，跟真实磁盘占用无关。
+- 修好三个缺陷：
+  1. **排队会自锁**：原本严格先来后到，队首放不下就把后面所有包一起堵死；
+     而磁盘空间只有靠下载完成才会释放——没人能下载，空间就永远不会出现。
+     现在队首排不上时，允许后面放得下的小包先走，队首仍保留优先权。
+  2. **无限等待没有逃生口**：事前检查比的是「单文件窗口」，实际申请的是
+     「整包窗口」，两个数不一致，导致检查放行的包仍可能永远排不上队。
+     现在闸门自己兜底，持续放不下超过 10 分钟就让该包失败，队列继续走。
+  3. **等待者杀不掉**（最致命）：原来用 `wait_for(Condition.wait())` 轮询，
+     这个组合会把取消吞掉——批次 6 小时超时发出的取消根本不起作用，
+     只能靠重启进程。改成不持锁的裸 future + 定时器，取消能正常生效。
+- 附带修好一个预留泄漏：异常发生在登记预留之后时，那笔额度会永久占着
+  直到进程重启，让后续每个包都更难排上队。
+- 更新运维文档 `docs/download-throughput-recovery.md`，写清三个缺陷的成因、
+  可调参数、以及下次再静默时该查哪张表。
+
+### Testing
+
+- 全量测试套件：`.venv/bin/python -m pytest tests/ -q` → **838 passed, 1 skipped, 0 failed**。
+- `test_download_admission.py` 从 2 条扩到 9 条，逐条验证「改回旧写法就会失败」：
+  - 恢复严格 FIFO → `test_a_blocked_head_does_not_stall_smaller_packages` 失败。
+  - 去掉容量逃生口 → `test_request_beyond_disk_capacity_fails_after_grace_period` 失败。
+  - 恢复 `asyncio.wait_for` 等待 → 阻塞用例直接挂起（取消被吞掉，正是线上症状）。
+  - 去掉预留退还 → `test_failure_after_registration_releases_the_reservation` 失败。
+- 用例里凡是可能卡住的等待者都注入了可控时钟，失败时走容量超时干净退出，
+  不会把测试进程挂死。
+- `mypy`（Makefile 全部 18 个受检模块）→ 零告警；
+  `pylint --errors-only`（全部 23 个受检模块）→ 退出码 0。
+  `channel_library_service.py` 的 19 条 mypy 提示为改动前既有，且该文件不在
+  Makefile 的类型检查清单内，本次未新增。
+- 线上证据：`web_tasks.sqlite3` 里 6 个任务停在 `error='waiting_for_disk_space'`；
+  关停时的 traceback 显示等待者卡在 `download_admission.py:96` 的
+  `Condition.wait()`，并抛出 `RuntimeError: cannot notify on un-acquired lock`
+  ——锁状态已经错乱的直接证据。
+
+### Notes
+
+Changed files:
+- `module/download_admission.py`: 等待机制从 `Condition` + `wait_for` 改为
+  `Lock` + 定时器兑现的裸 future；新增容量逃生口与 `DiskCapacityExceededError`；
+  放行条件改为「队首优先、队首排不上时允许小包先走」；异常清理退还预留。
+- `module/channel_library_service.py`: 接住新的容量异常，只让该包失败并放行队列；
+  把「因容量失败一个包」的重复代码提取成 `fail_package_for_disk_capacity`。
+- `tests/module/test_download_admission.py`: 新增 7 条回归测试。
+- `docs/download-throughput-recovery.md`: 新增第二章，记录三个缺陷与排障入口。
+- `progress.md`: 本条记录。
+
+Rollback:
+- `git revert <本次 commit>` 后重新部署；或
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 69390d7 && systemctl restart tg-downloader.service'`（69390d7 为本次修复上线前的版本）。

@@ -20,7 +20,12 @@ from croniter import croniter
 from pyrogram import errors
 
 from module.channel_library_store import ChannelLibraryConfig, ChannelLibraryStore
-from module.download_admission import DiskReservation, DiskSpaceAdmission, GIB
+from module.download_admission import (
+    DiskCapacityExceededError,
+    DiskReservation,
+    DiskSpaceAdmission,
+    GIB,
+)
 from module.channel_library_workflow import (
     ChannelPackageIndexer,
     extract_media_row,
@@ -1308,6 +1313,23 @@ class ChannelLibraryService:
             attempt_errors[descriptor.attempt_id] = fetch_error
             return package
 
+        def fail_package_for_disk_capacity(descriptor: Any, _package: Any) -> None:
+            """让这个包失败并放行队列，而不是让它无限期占住下载位。"""
+
+            descriptor.skip_download = True
+            _package.skip_download = True
+            self.store.finish_download_batch_package(
+                batch_id,
+                attempt_packages[descriptor.attempt_id],
+                "failed",
+                last_error=PACKAGE_EXCEEDS_DISK_CAPACITY,
+            )
+            self.task_store.update_task(
+                batch["task_id"],
+                status=TaskStatus.QUEUED,
+                error="",
+            )
+
         async def on_package_started(attempt_id: Any, _package: Any) -> None:
             descriptor = next(
                 item for item in descriptors if item.attempt_id == attempt_id
@@ -1351,19 +1373,7 @@ class ChannelLibraryService:
                         settled_free_bytes / GIB,
                         PACKAGE_EXCEEDS_DISK_CAPACITY,
                     )
-                    descriptor.skip_download = True
-                    _package.skip_download = True
-                    self.store.finish_download_batch_package(
-                        batch_id,
-                        attempt_packages[attempt_id],
-                        "failed",
-                        last_error=PACKAGE_EXCEEDS_DISK_CAPACITY,
-                    )
-                    self.task_store.update_task(
-                        batch["task_id"],
-                        status=TaskStatus.QUEUED,
-                        error="",
-                    )
+                    fail_package_for_disk_capacity(descriptor, _package)
                     return
             except Exception:  # pragma: no cover - defensive fallback
                 LOGGER.exception(
@@ -1376,9 +1386,23 @@ class ChannelLibraryService:
                 status=TaskStatus.QUEUED,
                 error="waiting_for_disk_space",
             )
-            reservation = await self.disk_admission.acquire(
-                str(attempt_id), reservation_bytes
-            )
+            try:
+                reservation = await self.disk_admission.acquire(
+                    str(attempt_id), reservation_bytes
+                )
+            except DiskCapacityExceededError:
+                # 事前检查用的是单文件窗口，实际预留的是整包窗口，两者不一致时
+                # 事前检查会放行一个永远排不上队的包。这里兜住，只让这个包失败。
+                LOGGER.warning(
+                    "Package %s (%s) reservation %.1f GiB never fit the disk; "
+                    "failing with %s to keep the queue moving",
+                    descriptor.package_id,
+                    descriptor.title,
+                    reservation_bytes / GIB,
+                    PACKAGE_EXCEEDS_DISK_CAPACITY,
+                )
+                fail_package_for_disk_capacity(descriptor, _package)
+                return
             reservations[str(attempt_id)] = reservation
             self.store.mark_download_batch_package_started(
                 batch_id, attempt_packages[attempt_id]
