@@ -4632,3 +4632,35 @@ Changed files:
 Rollback:
 - `git revert <本次 commit>` 后重新部署；或
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 69390d7 && systemctl restart tg-downloader.service'`（69390d7 为本次修复上线前的版本）。
+
+## 2026-09-09 - Task: 磁盘配额闸门修复的上线部署
+
+### What was done
+
+- 把上一条的四项修复合并推送并部署到 RackNerd 服务器，服务已重启（05:33 EDT）。
+
+### Testing
+
+服务健康：
+- `systemctl is-active tg-downloader.service` → `active`。
+- 首页 `https://tgdn.wyichuan.cc/` → HTTP 302（未登录跳登录页，符合预期）。
+
+重启后约 15 分钟观察：
+- 成功下载 677 个文件，稳定在每分钟 11–29 个。
+- 空文件失败 0 次、状态机报错 0 次、容量判定失败 0 次。
+- 批次正常流转：近 12 分钟内 4 个批次完成、4 个在下载；待下载队列从 1314 降到 1259。
+- 配额闸门没有新增卡住的任务；库里仅存的 6 条 `waiting_for_disk_space`
+  时间戳都在本次部署之前（9/8 18:38 与 9/9 00:54），属于历史遗留。
+- 进程 CPU 29%，内存 17%。
+
+说明：这个故障在线上是隔几小时才发作一次，十几分钟的观察**不足以证明它已经消失**，
+只能证明修复没有引入新问题。真正的验证窗口是接下来几小时——
+重点看是否再出现「日志长时间一行不写」以及新的 `waiting_for_disk_space` 停留。
+
+### Notes
+
+Changed files:
+- 无代码改动，仅部署。`progress.md`: 本条记录。
+
+Rollback:
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 69390d7 && systemctl restart tg-downloader.service'`（69390d7 为本次修复上线前的版本）。
