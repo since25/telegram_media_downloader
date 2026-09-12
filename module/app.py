@@ -606,8 +606,14 @@ class Application:
                     upload_drive_config["max_upload_concurrency"]
                 )
 
+        # 单次刷新的超时。线上观测到 Telegram 连接闪断可持续十几分钟，
+        # 120 秒太短，一抖动整包就被判死，所以放宽到 300 秒。
         self.channel_library_refetch_timeout_sec = float(
-            _config.get("channel_library_refetch_timeout_sec", 120.0)
+            _config.get("channel_library_refetch_timeout_sec", 300.0)
+        )
+        # 刷新失败后的重试次数（含首次），配合超时一起覆盖一次完整的连接中断。
+        self.channel_library_refetch_attempts = max(
+            int(_config.get("channel_library_refetch_attempts", 3)), 1
         )
         self.channel_library_batch_timeout_sec = float(
             _config.get("channel_library_batch_timeout_sec", 21600.0)

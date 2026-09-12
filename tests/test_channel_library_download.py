@@ -1596,10 +1596,12 @@ def test_run_download_batch_contains_refetch_error_to_affected_package(tmp_path)
     class FailingFirstClient:
         def __init__(self):
             self.calls = 0
+            # 由测试改成「刷新重试次数」，让第一个包耗尽重试后仍然失败。
+            self.fail_calls = 1
 
         async def get_messages(self, _chat_id, message_ids):
             self.calls += 1
-            if self.calls == 1:
+            if self.calls <= self.fail_calls:
                 raise OSError(secret)
             return [
                 SimpleNamespace(
@@ -1617,9 +1619,14 @@ def test_run_download_batch_contains_refetch_error_to_affected_package(tmp_path)
                 for message_id in message_ids
             ]
 
-    service, library, loop = make_download_service(
-        tmp_path, client=FailingFirstClient()
-    )
+    client = FailingFirstClient()
+    service, library, loop = make_download_service(tmp_path, client=client)
+    client.fail_calls = service.refetch_attempts
+
+    async def _no_backoff(_delay):
+        return None
+
+    service.sleep = _no_backoff
     try:
         batch = service.create_download_batch(library["id"], "refetch-error")
 
