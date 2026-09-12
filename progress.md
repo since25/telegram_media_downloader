@@ -4721,3 +4721,48 @@ Changed files:
 Rollback:
 - `git revert <本次 commit>` 后重新部署；或
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 5c90504 && systemctl restart tg-downloader.service'`（5c90504 为本次修复上线前的版本）。
+
+## 2026-09-12 - Task: 上线连接闪断修复，并把 37 个报废的下载包重新排入队列
+
+### What was done
+
+- 把上一条的两项修复合并推送并部署到 RackNerd，服务已重启（04:50 EDT）。
+- 把最近失败的 37 个下载包（约 88 GB）重新加入下载队列。这些包在资料库里
+  都记为「从未成功下载过」，所以是干净的重下，不会重复下载已有内容。
+- 为了不打乱现有排队顺序，采用**新建批次**而不是「重试旧批次」：旧批次的创建
+  时间都是 9/7，直接重试会插到队伍最前面，把已经排了几天的 300 个包挤到后面；
+  新建的批次创建时间是 9/12，自然排在队尾。现在队列共 337 个包。
+- 新批次需要服务重启才会被调度器接管，因此额外重启了一次（05:13 EDT）。
+
+### Testing
+
+服务健康（两次重启均已确认）：
+- `systemctl is-active tg-downloader.service` → `active`，`NRestarts=0`。
+- 首页 `https://tgdn.wyichuan.cc/` → HTTP 302（未登录跳登录页，符合预期）。
+- 两次重启后下载都在 20 秒内恢复；重启窗口内**没有任何包被判失败或取消**
+  （查 `channel_download_batch_packages` 该时段的全部改动，只有 4 个包从
+  `queued` 变 `downloading`）。
+
+重新排队的结果：
+- 37 个新批次全部 `dispatch_status=dispatched`、`status=queued`。
+- 待下载包数 300 → 337，与新增数量一致。
+- 新批次创建时间 09-12 05:10:58，晚于现有排队批次的最晚创建时间
+  09-11 13:24:44，确认排在队尾。
+
+未验证项：连接闪断的自动重试逻辑尚未经历真实的网络中断，只有单元测试覆盖。
+真实生效时日志里会出现 `Auto-retrying channel download batch`。
+
+### Notes
+
+Changed files:
+- 无代码改动。`progress.md`: 本条记录。
+
+生产数据变更：
+- `channel_library.sqlite3` 新增 37 个下载批次，幂等键前缀
+  `manual-redownload-2026-09-12`。
+- 操作前的完整备份：服务器上 `channel_library.sqlite3.bak-2026-09-12`。
+
+Rollback:
+- 撤销代码修复：`ssh rn 'cd /root/telegram_media_downloader && git reset --hard 5c90504 && systemctl restart tg-downloader.service'`（5c90504 为本次修复上线前的版本）。
+- 撤销重新排队：删除幂等键以 `manual-redownload-2026-09-12` 开头的批次及其包记录后重启服务；或直接恢复备份
+  `ssh rn 'cd /root/telegram_media_downloader && systemctl stop tg-downloader.service && cp channel_library.sqlite3.bak-2026-09-12 channel_library.sqlite3 && systemctl start tg-downloader.service'`。
