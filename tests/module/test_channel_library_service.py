@@ -1671,3 +1671,154 @@ async def test_package_reservation_keeps_known_item_window(tmp_path):
     assert service._package_reservation_bytes(descriptor, 100 * GIB) == 6 * GIB
     assert service._package_reservation_bytes(descriptor, 4 * GIB) == 4 * GIB
     assert service._package_reservation_bytes(descriptor, GIB) == 3 * GIB
+
+
+# --- 刷新重试与批次瞬时故障自动重试 -------------------------------------
+
+
+def _refetch_descriptor(package_id=1, source_chat_id=-1001):
+    return SimpleNamespace(package_id=package_id, source_chat_id=source_chat_id)
+
+
+class FlakyRefetchClient(FakeClient):
+    """A client whose get_messages fails a fixed number of times first."""
+
+    def __init__(self, failures, error=None, messages=()):
+        super().__init__()
+        self.failures = failures
+        self.error = error or asyncio.TimeoutError()
+        self.messages = list(messages)
+        self.calls = 0
+
+    async def get_messages(self, _chat_id, _message_ids):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.error
+        return list(self.messages)
+
+
+@async_test
+async def test_refetch_recovers_after_a_transient_timeout(tmp_path):
+    client = FlakyRefetchClient(2, messages=[SimpleNamespace(id=10)])
+    service, _library, sleep = make_service(tmp_path, client=client)
+
+    result = await service._refetch_package_messages(_refetch_descriptor(), [10])
+
+    assert [message.id for message in result] == [10]
+    assert client.calls == 3
+    # 两次失败之间各退避一次，退避时长递增。
+    assert sleep.delays == [5.0, 10.0]
+
+
+@async_test
+async def test_refetch_gives_up_without_killing_the_batch(tmp_path):
+    client = FlakyRefetchClient(99)
+    service, _library, _sleep = make_service(tmp_path, client=client)
+
+    result = await service._refetch_package_messages(_refetch_descriptor(), [10])
+
+    # 返回 None 而不是抛异常：失败被限制在这一个包，不会连累同批其他包。
+    assert result is None
+    assert client.calls == service.refetch_attempts
+
+
+@async_test
+async def test_refetch_retries_connection_errors_too(tmp_path):
+    client = FlakyRefetchClient(1, error=OSError("Connection lost"), messages=[])
+    service, _library, _sleep = make_service(tmp_path, client=client)
+
+    result = await service._refetch_package_messages(_refetch_descriptor(), [10])
+
+    assert result == []
+    assert client.calls == 2
+
+
+@async_test
+async def test_refetch_attempts_are_configurable(tmp_path):
+    client = FlakyRefetchClient(99)
+    service, _library, _sleep = make_service(tmp_path, client=client)
+    service.refetch_attempts = 1
+
+    assert await service._refetch_package_messages(_refetch_descriptor(), [10]) is None
+    assert client.calls == 1
+
+
+def _failed_batch(service, library, *, last_error="download_failed"):
+    from tests.module.test_channel_library_web import (
+        insert_package,
+        insert_package_item,
+    )
+
+    with service.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?",
+            (library["id"],),
+        )
+    package_id = insert_package(service.store, library["id"], 10)
+    insert_package_item(service.store, library["id"], package_id, 10)
+    service.store.set_package_selected_aggregate(package_id, True)
+    key = f"key-{package_id}-{last_error}"
+    batch = service.store.create_download_batch(
+        library["id"], key, f"channel-batch-{key}"
+    )
+    service.store.mark_download_batch_dispatched(int(batch["id"]))
+    service.store.finish_download_batch_package(
+        int(batch["id"]), package_id, "failed", last_error=last_error
+    )
+    return int(batch["id"]), package_id
+
+
+@async_test
+async def test_transient_batch_failure_is_retried_once(tmp_path):
+    service, library, _sleep = make_service(tmp_path)
+    service.owner_loop = asyncio.get_running_loop()
+    scheduled = []
+    service._schedule_download_batch_owned = lambda batch_id: (
+        scheduled.append(batch_id) or True
+    )
+    batch_id, package_id = _failed_batch(service, library)
+
+    assert service._auto_retry_transient_batch(batch_id) is True
+    assert scheduled == [batch_id]
+    refreshed = service.store.get_download_batch(batch_id)
+    assert refreshed["status"] == "queued"
+    assert refreshed["packages"][0]["status"] == "queued"
+
+    # 第二次不再重试，坏批次不会永远占着下载槽位。
+    service.store.finish_download_batch_package(
+        batch_id, package_id, "failed", last_error="download_failed"
+    )
+    assert service._auto_retry_transient_batch(batch_id) is False
+    assert scheduled == [batch_id]
+
+
+@async_test
+async def test_non_transient_batch_failure_is_not_retried(tmp_path):
+    service, library, _sleep = make_service(tmp_path)
+    service.owner_loop = asyncio.get_running_loop()
+    scheduled = []
+    service._schedule_download_batch_owned = lambda batch_id: (
+        scheduled.append(batch_id) or True
+    )
+    batch_id, _package_id = _failed_batch(
+        service, library, last_error="package_exceeds_disk_capacity"
+    )
+
+    assert service._auto_retry_transient_batch(batch_id) is False
+    assert scheduled == []
+    assert service.store.get_download_batch(batch_id)["status"] == "failed"
+
+
+@async_test
+async def test_shutdown_suppresses_the_auto_retry(tmp_path):
+    service, library, _sleep = make_service(tmp_path)
+    service.owner_loop = asyncio.get_running_loop()
+    scheduled = []
+    service._schedule_download_batch_owned = lambda batch_id: (
+        scheduled.append(batch_id) or True
+    )
+    batch_id, _package_id = _failed_batch(service, library)
+    service._stopping = True
+
+    assert service._auto_retry_transient_batch(batch_id) is False
+    assert scheduled == []

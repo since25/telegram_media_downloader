@@ -19,7 +19,12 @@ import pytz
 from croniter import croniter
 from pyrogram import errors
 
-from module.channel_library_store import ChannelLibraryConfig, ChannelLibraryStore
+from module.channel_library_store import (
+    RETRYABLE_DOWNLOAD_ATTEMPT_STATUSES,
+    RETRYABLE_DOWNLOAD_BATCH_STATUSES,
+    ChannelLibraryConfig,
+    ChannelLibraryStore,
+)
 from module.download_admission import (
     DiskCapacityExceededError,
     DiskReservation,
@@ -54,6 +59,12 @@ LOGGER = logging.getLogger(__name__)
 _SERVICE_OWNER_LOCK = threading.Lock()
 _SERVICE_OWNERS: dict[str, Any] = {}
 _DOWNLOAD_BATCH_RUNNER_LOCK = threading.Lock()
+# 刷新重试的退避基数（秒），第 N 次重试等待 N 倍。
+REFETCH_RETRY_BACKOFF_SEC = 5.0
+# 可以自动重试一次的失败原因：都是网络瞬时故障，不是内容本身有问题。
+TRANSIENT_DOWNLOAD_ERROR_CODES = frozenset(
+    {"telegram_refetch_failed", "download_failed"}
+)
 _DOWNLOAD_BATCH_RUNNERS: set[tuple[str, int]] = set()
 
 
@@ -147,13 +158,17 @@ class ChannelLibraryService:
         self._running_download_batch_ids: set[int] = set()
         self._download_batch_tasks: dict[int, asyncio.Task[Any]] = {}
         self._download_batch_slots: Optional[asyncio.Semaphore] = None
+        self._auto_retried_batch_ids: set[int] = set()
         self._upload_retry_tasks: dict[str, asyncio.Task[Any]] = {}
         self._retained_upload_reservations: dict[str, DiskReservation] = {}
         self._command_lock = threading.Lock()
         self._accepting_commands = False
         self._command_futures: set[concurrent.futures.Future[Any]] = set()
         self.refetch_timeout_sec = max(
-            float(getattr(app, "channel_library_refetch_timeout_sec", 120.0)), 1.0
+            float(getattr(app, "channel_library_refetch_timeout_sec", 300.0)), 1.0
+        )
+        self.refetch_attempts = max(
+            int(getattr(app, "channel_library_refetch_attempts", 3)), 1
         )
         self.batch_timeout_sec = max(
             float(getattr(app, "channel_library_batch_timeout_sec", 21600.0)), 60.0
@@ -883,6 +898,8 @@ class ChannelLibraryService:
                     completed.exception()
                 except Exception:  # pragma: no cover - defensive task callback
                     LOGGER.exception("Channel-library download task failed")
+                # 必须等这里才重试：任务已从表中摘除，新的一次才排得进去。
+                self._auto_retry_transient_batch(batch_id)
 
         task.add_done_callback(discard)
         return True
@@ -1143,6 +1160,86 @@ class ChannelLibraryService:
             header["task_id"], status=TaskStatus.CANCELLED, error="cancelled"
         )
 
+    async def _refetch_package_messages(
+        self, descriptor: Any, message_ids: list[int]
+    ) -> Optional[list[Any]]:
+        """Refetch one package's messages, retrying across a connection blip.
+
+        Returns the raw messages, or ``None`` when every attempt failed. A
+        single timeout used to abort the whole batch; a short Telegram outage
+        then wiped out every package that happened to start during it, so the
+        failure is now retried and, if it persists, contained to this package.
+        """
+
+        for attempt in range(1, self.refetch_attempts + 1):
+            try:
+                async with self.gate.download_permit():
+                    return await asyncio.wait_for(
+                        self.client.get_messages(
+                            int(descriptor.source_chat_id), message_ids
+                        ),
+                        timeout=self.refetch_timeout_sec,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                LOGGER.error(
+                    "Telegram refetch timed out for package %s after %.0fs "
+                    "(attempt %d/%d)",
+                    descriptor.package_id,
+                    self.refetch_timeout_sec,
+                    attempt,
+                    self.refetch_attempts,
+                )
+            except Exception:  # noqa: BLE001 - contained to one package
+                LOGGER.exception(
+                    "Telegram refetch failed for channel package %s "
+                    "(attempt %d/%d)",
+                    descriptor.package_id,
+                    attempt,
+                    self.refetch_attempts,
+                )
+            if attempt < self.refetch_attempts:
+                await self.sleep(REFETCH_RETRY_BACKOFF_SEC * attempt)
+        return None
+
+    def _auto_retry_transient_batch(self, batch_id: int) -> bool:
+        """Requeue one batch that a transient Telegram fault knocked out.
+
+        Only ever fires once per batch per process: a genuinely broken batch
+        must not spin through the download slots forever.
+        """
+
+        if self._stopping or self.owner_loop is None:
+            return False
+        if batch_id in self._auto_retried_batch_ids:
+            return False
+        batch = self.store.get_download_batch(batch_id)
+        if batch is None or batch["status"] not in RETRYABLE_DOWNLOAD_BATCH_STATUSES:
+            return False
+        # 批次表不记录失败原因，逐个包看。只有当所有可重试的包都是因为
+        # 网络瞬时故障才重试；掺了磁盘容量、内容缺失等原因就不碰。
+        errors = {
+            str(package.get("last_error") or "")
+            for package in batch["packages"]
+            if package["status"] in RETRYABLE_DOWNLOAD_ATTEMPT_STATUSES
+        }
+        if not errors or not errors <= TRANSIENT_DOWNLOAD_ERROR_CODES:
+            return False
+        try:
+            retried = self.store.retry_download_batch(batch_id)
+        except KeyError:
+            return False
+        if retried is None:
+            return False
+        self._auto_retried_batch_ids.add(batch_id)
+        LOGGER.warning(
+            "Auto-retrying channel download batch %s after transient errors %s",
+            batch_id,
+            sorted(errors),
+        )
+        return self._schedule_download_batch_owned(batch_id)
+
     async def _run_download_batch_owned(self, batch_id: int) -> list[Any]:
         """Serially download one committed immutable batch snapshot.
 
@@ -1230,28 +1327,12 @@ class ChannelLibraryService:
                 for item in item_snapshots
             ]
             fetch_error: Optional[str] = None
-            try:
-                async with self.gate.download_permit():
-                    raw_messages = await asyncio.wait_for(
-                        self.client.get_messages(
-                            int(descriptor.source_chat_id), message_ids
-                        ),
-                        timeout=self.refetch_timeout_sec,
-                    )
-            except asyncio.TimeoutError:
-                LOGGER.error(
-                    "Telegram refetch timed out for package %s after %.0fs",
-                    descriptor.package_id,
-                    self.refetch_timeout_sec,
-                )
-                raise
-            except Exception:  # noqa: BLE001 - contained to one package
+            raw_messages = await self._refetch_package_messages(
+                descriptor, message_ids
+            )
+            if raw_messages is None:
                 raw_messages = []
                 fetch_error = "telegram_refetch_failed"
-                LOGGER.exception(
-                    "Telegram refetch failed for channel package %s",
-                    descriptor.package_id,
-                )
             found_by_id = {
                 int(message.id): message
                 for message in normalize_messages(raw_messages)

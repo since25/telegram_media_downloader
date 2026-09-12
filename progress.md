@@ -4664,3 +4664,60 @@ Changed files:
 
 Rollback:
 - `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 69390d7 && systemctl restart tg-downloader.service'`（69390d7 为本次修复上线前的版本）。
+
+## 2026-09-12 - Task: 修复 Telegram 连接闪断导致的成片下载包报废
+
+### What was done
+
+- 排查上次修复后两天的运行情况：整机静默停滞没有再复发，服务连续跑了近 3 天
+  零重启，两天完成 15,748 个文件下载。但仍然丢了 36 个包（约 87 GB），
+  全部集中在 9/10 和 9/11 两次 Telegram 连接闪断的窗口里。
+- 修好两个让「网络抖一下就永久丢内容」的缺陷：
+  1. **刷新超时太短，一次不成就判死**：下载每个包之前要向 Telegram 重新拉
+     一遍消息，超时只有 120 秒且只试一次，超时就把整批全判失败。现在超时放宽
+     到 300 秒、失败自动重试 3 次（退避 5 秒、10 秒），三次加起来能扛过约
+     15 分钟的连接中断——比线上实际观测到的窗口还长一点。重试全部用完后也不再
+     连累同批其它包，只让这一个包失败。
+  2. **失败后没有自动重来**：包一旦被判失败就永久停在那里，只能人工重新发起。
+     现在网络类原因导致的失败会自动重排一次；每个批次每次运行只自动重来一次，
+     坏包不会无限循环占用下载通道；掺了磁盘容量、内容缺失等非网络原因的批次
+     不会被自动重试；服务关停过程中也不触发。
+- 更新运维文档 `docs/download-throughput-recovery.md`，写清两个缺陷的成因、
+  三个可调参数、以及下次成片失败时该查哪条命令。
+
+### Testing
+
+- 全量测试套件：`.venv/bin/python -m pytest tests/ -q`
+  → **845 passed, 1 skipped, 0 failed**（改动前 838，新增 7 条）。
+- 新增 7 条回归测试并逐条做了变异验证，改回旧写法就会失败：
+  - 去掉「只认网络类错误」的白名单 → `test_non_transient_batch_failure_is_not_retried` 失败。
+  - 去掉「只自动重试一次」的限制 → `test_transient_batch_failure_is_retried_once` 失败。
+  - 刷新改回只试一次 → 4 条刷新相关用例失败。
+- 原有的 `test_run_download_batch_contains_refetch_error_to_affected_package`
+  改成让第一个包耗尽全部重试，继续守住「失败只影响该包」「异常详情不落库」
+  两条不变量。
+- `mypy`（Makefile 全部 18 个受检模块）→ Success，零告警；
+  `pylint --errors-only`（全部 23 个受检模块）→ 退出码 0。
+  `channel_library_service.py` 与 `app.py` 的 30 条 mypy 提示改动前后完全一致，
+  且这两个文件不在 Makefile 的类型检查清单内，本次未新增。
+- 线上证据：9/11 12:20–12:40 EDT 的 16 个失败包，`journalctl` 里对应成片的
+  `Telegram refetch timed out` 与 `OSError: Connection lost`；
+  这些包在库里 `has_successful_attempt=0`，即一个字节都没落地。
+
+### Notes
+
+Changed files:
+- `module/app.py`: 刷新超时默认值 120→300 秒；新增 `channel_library_refetch_attempts`
+  配置项（默认 3 次）。
+- `module/channel_library_service.py`: 新增 `_refetch_package_messages()`
+  把刷新改成「重试 + 退避 + 耗尽后限制在单个包」；新增
+  `_auto_retry_transient_batch()` 对网络类失败的批次自动重排一次，
+  挂在批次任务的 done 回调里执行。
+- `tests/module/test_channel_library_service.py`: 新增 7 条回归测试。
+- `tests/test_channel_library_download.py`: 原「刷新失败只影响单个包」用例改为耗尽重试。
+- `docs/download-throughput-recovery.md`: 新增第三章。
+- `progress.md`: 本条记录。
+
+Rollback:
+- `git revert <本次 commit>` 后重新部署；或
+- `ssh rn 'cd /root/telegram_media_downloader && git reset --hard 5c90504 && systemctl restart tg-downloader.service'`（5c90504 为本次修复上线前的版本）。

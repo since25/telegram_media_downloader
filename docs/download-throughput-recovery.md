@@ -204,3 +204,123 @@ EOF
 出现 `waiting_for_disk_space` 就是卡在 `acquire()`。再用
 `py-spy dump --pid $(pgrep -f media_downloader.py)` 确认调用栈里有
 `download_admission`。正常情况下这个等待最多 600 秒就会自行了断。
+
+---
+
+# Telegram 连接闪断成片废掉下载包（2026-09-12）
+
+## 背景
+
+磁盘配额闸门修好之后连续跑了三天，整机静默没有再复发。但两天里仍然丢了
+36 个下载包（约 87 GB），全部集中在两个时间窗口：
+
+- 2026-09-10 15:40 EDT，10 个包同时失败；
+- 2026-09-11 12:20–12:40 EDT，16 个包同时失败。
+
+日志证据是 `journalctl` 里成片的
+`Telegram refetch timed out` 与 `OSError: Connection lost`。
+`log/tdl.log` 看不到原因——pyrogram 自己的异常只走 stdout。
+
+失败的包在 `channel_download_batch_packages` 里都是
+`status='failed'`、`last_error='download_failed'`，
+库里对应的 `channel_packages.has_successful_attempt` 仍是 0，
+也就是这些内容一个字节都没落地。
+
+## 两个缺陷
+
+### 1. 刷新超时太短，且一次不成就判死
+
+`prepare_package()` 在下载每个包之前会向 Telegram 重新拉一遍消息对象。
+这一步的超时是 120 秒，**只试一次**，超时就直接 `raise`。
+
+异常一路抛到 `_run_download_batch_owned()` 最外层的 `except Exception`，
+那里会把整批里所有 `queued`/`downloading` 的包一次性判成
+`failed / download_failed`。线上一个批次就是一个包，所以表现为
+「连接抖动 20 分钟 → 那 20 分钟里开始的包全废」。
+
+现在：
+- 默认超时 120 秒 → **300 秒**（`channel_library_refetch_timeout_sec`）；
+- 失败后重试，默认 3 次（`channel_library_refetch_attempts`），
+  退避 5 秒、10 秒（`REFETCH_RETRY_BACKOFF_SEC` 的 1 倍、2 倍）；
+- 重试全部耗尽后**不再抛异常**，改为返回 `None`，由调用方转成
+  `fetch_error='telegram_refetch_failed'`——失败被限制在这一个包，
+  同批其它包照常下载。
+
+三次 300 秒加退避，覆盖约 15 分钟的连接中断，比线上观测到的窗口略长。
+
+### 2. 瞬时故障没有自动重试
+
+包被判失败后就永久停在那里，只能人工重新发起。
+
+现在 `_auto_retry_transient_batch()` 会在批次任务结束时自动重来一次：
+
+- 只认 `TRANSIENT_DOWNLOAD_ERROR_CODES`
+  （`telegram_refetch_failed`、`download_failed`）这两种网络类原因；
+  批次里只要掺了别的原因（磁盘容量、内容缺失）就不重试；
+- 每个批次**每进程只重试一次**，记在 `_auto_retried_batch_ids` 里，
+  坏批次不会无限循环占用下载槽位；
+- 关停中（`self._stopping`）不触发；
+- 复用已有的 `store.retry_download_batch()`，它只把
+  `completed_with_errors / failed / not_found` 的包放回队列，
+  已经下好的包保持 `completed`，不会重复下载。
+
+重试挂在 `_schedule_download_batch_owned()` 的 done 回调里执行，
+不能提前——任务还没从 `_download_batch_tasks` 摘掉时，
+`_schedule_download_batch_owned()` 会认为该批次已在运行而直接返回 False。
+
+## 可调参数
+
+| 配置项 | 默认 | 作用 |
+| --- | --- | --- |
+| `channel_library_refetch_timeout_sec` | 300 | 单次刷新超时 |
+| `channel_library_refetch_attempts` | 3 | 刷新总尝试次数（含首次） |
+| `channel_library_batch_timeout_sec` | 21600 | 单批次总超时，未改动 |
+
+## 怎么验证
+
+`tests/module/test_channel_library_service.py` 新增 7 条：
+
+- 刷新在第 3 次成功 → 返回消息，退避序列为 `[5.0, 10.0]`；
+- 刷新全部失败 → 返回 `None` 而不是抛异常（失败被限制在单个包）；
+- `OSError`（连接中断）同样走重试；
+- `refetch_attempts` 可配置，设成 1 就只试一次；
+- 瞬时失败的批次自动重排一次，第二次不再重排；
+- 非瞬时原因（如磁盘容量）不重排；
+- 关停中不重排。
+
+`tests/test_channel_library_download.py` 里原有的
+`test_run_download_batch_contains_refetch_error_to_affected_package`
+改成让第一个包耗尽全部重试，继续守住两条不变量：
+失败只影响该包、异常详情不落库。
+
+逐条做过变异验证：改回旧写法（去掉错误白名单、去掉只重试一次的限制、
+刷新只试一次）对应的用例都会失败。
+
+## 排障入口
+
+**又出现成片包失败时**，先确认是不是网络原因：
+
+```bash
+journalctl -u tg-downloader.service --since '-2 days' \
+  | grep -E 'Telegram refetch|Connection lost|Auto-retrying'
+```
+
+看到 `Auto-retrying channel download batch ... after transient errors`
+说明自动重试已经生效。如果同一批次反复出现却始终失败，那就是重试也救不回来，
+需要人工介入。
+
+统计近期失败的包和体积：
+
+```bash
+./.venv/bin/python - <<'EOF'
+import sqlite3
+db = sqlite3.connect("file:channel_library.sqlite3?mode=ro", uri=True)
+for r in db.execute("""
+    select status, last_error, count(*), round(sum(known_total_size)/1e9, 2)
+    from channel_download_batch_packages
+    where status not in ('completed','queued','downloading')
+    group by 1, 2 order by 3 desc
+"""):
+    print(r)
+EOF
+```
