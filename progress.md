@@ -4766,3 +4766,27 @@ Rollback:
 - 撤销代码修复：`ssh rn 'cd /root/telegram_media_downloader && git reset --hard 5c90504 && systemctl restart tg-downloader.service'`（5c90504 为本次修复上线前的版本）。
 - 撤销重新排队：删除幂等键以 `manual-redownload-2026-09-12` 开头的批次及其包记录后重启服务；或直接恢复备份
   `ssh rn 'cd /root/telegram_media_downloader && systemctl stop tg-downloader.service && cp channel_library.sqlite3.bak-2026-09-12 channel_library.sqlite3 && systemctl start tg-downloader.service'`。
+
+## 2026-10-31 - Task: 部署 18x_v2 下载器集成配套的 RN 运行端
+
+### What was done
+
+- RN 代码仓库在部署前无功能代码改动；服务器 checkout 从 detached `54eec5b` 快进到 `origin/master` 的 `1bca9da`（进度记录提交）。
+- 按 systemd 流程停止并重新启动 `tg-downloader.service`；下载器进程恢复运行。
+- 未修改 Telegram 配置、凭证、队列或数据库业务数据。
+
+### Testing
+
+- 服务器侧备份的 `channel_library.sqlite3`、`web_tasks.sqlite3`、`resource_bot.sqlite3` 均通过 `PRAGMA integrity_check = ok`。
+- `.venv/bin/python check_imports.py`、目标模块 `py_compile`、`.venv/bin/pip check` 通过。
+- `systemctl is-active tg-downloader.service` → `active`；Web 配置端口为 `80`，`GET /` → `302`，`GET /login` → `200`。
+- 首次探测误用了旧的 `5000` 端口，确认配置后按 `80` 端口复测通过；未改变服务配置。
+
+### Notes
+
+Changed files:
+- `progress.md`：本条部署记录。
+
+Rollback:
+- 代码回退到部署前 `54eec5b31fedefb14e8b2ad9577a5df978722fff` 后重启 `tg-downloader.service`。
+- 运行态备份：`backups/deploy-20261031-100922-1bca9da-final`；恢复 SQLite 或配置前先停止服务并完成完整性检查。
