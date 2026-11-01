@@ -47,3 +47,27 @@ Changed files:
 
 Rollback:
 - Remove the added `AGENTS.md` and this progress entry/file.
+
+## 2026-11-01 Deployment
+
+### What was done
+
+- Committed and pushed `4122bf0` (`fix: harden file cleanup and RN deployment`).
+- Fast-forwarded RN `/root/telegram_media_downloader` to `4122bf0` and ran `scripts/deploy_rn.sh`.
+- Restarted `tg-downloader.service` after creating the deployment backup.
+
+### Testing
+
+- RN backup integrity: `channel_library.sqlite3`, `web_tasks.sqlite3`, and `resource_bot.sqlite3` all returned `ok`.
+- RN service: `systemctl is-active tg-downloader.service` → `active`.
+- RN backup rotation: one `*.bak` retained.
+- Startup journal: file reconciliation reported `temp_files=0`, `temp_dirs=0`, `uploaded_files=0`, `failures=0`; downloader workers and runtime reached ready state without traceback.
+
+### Notes
+
+Changed files:
+- `progress/2026-11-01-disk-retention-audit.md`
+
+Rollback:
+- Code rollback point: `7e5d64b`.
+- Restore the RN backup `backups/deploy-20261101T141810Z-4122bf0.bak` only after stopping the service and verifying its database integrity.
