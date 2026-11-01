@@ -22,6 +22,7 @@ from flask_login import LoginManager, UserMixin, login_required, login_user, log
 import utils
 from module.app import Application, TaskNode
 from module.channel_library_store import (
+    NoIncrementalItemsError,
     PackageFilter,
     RedownloadRequiredError,
     SQLITE_MAX_INTEGER,
@@ -683,6 +684,7 @@ def _batch_summary(batch: dict) -> dict:
         "task_id": batch["task_id"],
         "status": batch["status"],
         "dispatch_status": batch["dispatch_status"],
+        "download_mode": batch.get("download_mode", "full"),
         "channel_title": batch["channel_title"],
         "package_count": len(packages),
         "item_count": sum(len(package.get("items", [])) for package in packages),
@@ -1228,7 +1230,14 @@ def set_aggregate_package_selection(package_id: int):
 def create_aggregate_package_download_batch(package_id: int):
     """Persist and schedule one exact aggregate package without changing selection."""
 
-    _require_empty_command_input()
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict) or set(payload) - {"mode"}:
+        _invalid_request()
+    mode = payload.get("mode", "full")
+    if mode not in {"full", "incremental"}:
+        _invalid_request("mode must be full or incremental")
     idempotency_key = request.headers.get("Idempotency-Key", "").strip()
     if not idempotency_key or len(idempotency_key) > 160:
         _invalid_request("Idempotency-Key is required")
@@ -1240,6 +1249,8 @@ def create_aggregate_package_download_batch(package_id: int):
         batch, created = service.create_download_batch_result(
             int(package["library_id"]),
             idempotency_key,
+            redownload=mode == "incremental",
+            download_mode=mode,
             package_ids=[package_id],
         )
     except RedownloadRequiredError:
@@ -1248,6 +1259,8 @@ def create_aggregate_package_download_batch(package_id: int):
             "redownload_required",
             "Package requires explicit redownload confirmation",
         )
+    except NoIncrementalItemsError:
+        return jsonify({"batch": None, "created": False, "reason": "no_new_items", "mode": mode}), 200
     except ValueError:
         raise _ChannelApiError(
             409,

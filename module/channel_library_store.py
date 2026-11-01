@@ -16,7 +16,7 @@ import pytz
 from croniter import croniter
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 LIBRARY_STATUSES = frozenset(
     {"new", "indexing", "ready", "partial", "paused", "stopped", "failed"}
@@ -87,6 +87,10 @@ SIGNED_CURSOR_KEYS = frozenset({"start_message_id", "message_id"})
 
 class RedownloadRequiredError(ValueError):
     """The selected snapshot requires explicit historical-download consent."""
+
+
+class NoIncrementalItemsError(ValueError):
+    """The current package revision has no media absent from completed attempts."""
 
 
 ALLOWED_SCAN_TRANSITIONS = {
@@ -554,6 +558,8 @@ class ChannelLibraryStore:
                             'pending_dispatch', 'dispatched'
                         )),
                     status TEXT NOT NULL DEFAULT 'queued',
+                    download_mode TEXT NOT NULL DEFAULT 'full'
+                        CHECK (download_mode IN ('full', 'incremental')),
                     allow_redownload INTEGER NOT NULL DEFAULT 0
                         CHECK (allow_redownload IN (0, 1)),
                     last_error TEXT,
@@ -870,6 +876,18 @@ class ChannelLibraryStore:
                     "PRAGMA table_info(channel_download_batches)"
                 )
             }
+            if "download_mode" not in batch_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE channel_download_batches
+                    ADD COLUMN download_mode TEXT NOT NULL DEFAULT 'full'
+                        CHECK (download_mode IN ('full', 'incremental'))
+                    """
+                )
+                connection.execute(
+                    "INSERT OR IGNORE INTO schema_meta (version, applied_at) VALUES (9, ?)",
+                    (time.time(),),
+                )
             if "source_chat_id" not in batch_columns:
                 connection.execute(
                     "ALTER TABLE channel_download_batches ADD COLUMN source_chat_id INTEGER"
@@ -2764,6 +2782,7 @@ class ChannelLibraryStore:
         idempotency_key: str,
         task_id: str,
         allow_redownload: bool = False,
+        download_mode: str = "full",
         package_ids: Optional[Sequence[int]] = None,
         auto_download_rule_key: Optional[str] = None,
         matched_keywords: Sequence[str] = (),
@@ -2777,6 +2796,7 @@ class ChannelLibraryStore:
             idempotency_key,
             task_id,
             allow_redownload=allow_redownload,
+            download_mode=download_mode,
             package_ids=package_ids,
             auto_download_rule_key=auto_download_rule_key,
             matched_keywords=matched_keywords,
@@ -2791,6 +2811,7 @@ class ChannelLibraryStore:
         idempotency_key: str,
         task_id: str,
         allow_redownload: bool = False,
+        download_mode: str = "full",
         package_ids: Optional[Sequence[int]] = None,
         auto_download_rule_key: Optional[str] = None,
         matched_keywords: Sequence[str] = (),
@@ -2802,6 +2823,8 @@ class ChannelLibraryStore:
         key = str(idempotency_key or "").strip()
         if not key:
             raise ValueError("Idempotency key is required")
+        if download_mode not in {"full", "incremental"}:
+            raise ValueError("Invalid download mode")
         requested_package_ids = None
         monitor_hits: dict[tuple[int, int], list[str]] = {}
         for value in keyword_monitor_hits:
@@ -2934,7 +2957,7 @@ class ChannelLibraryStore:
                         raise ValueError(
                             "Selected package is in an active download batch"
                         )
-                    if (
+                    if download_mode == "full" and (
                         package["has_successful_attempt"] == 1
                         or package["current_download_status"] == "outdated"
                     ) and not allow_redownload:
@@ -2942,12 +2965,58 @@ class ChannelLibraryStore:
                             "Explicit redownload confirmation is required"
                         )
 
+                item_rows_by_package = {}
+                for package in selected:
+                    package_id = int(package["id"])
+                    item_rows = connection.execute(
+                        """
+                        SELECT i.*, m.source_chat_id, m.source_message_id
+                        FROM channel_package_items AS i
+                        JOIN channel_media_messages AS m
+                          ON m.library_id = i.library_id
+                         AND m.message_id = i.message_id
+                        WHERE i.library_id = ? AND i.package_id = ?
+                        ORDER BY i.ordinal, i.message_id
+                        """,
+                        (library_id, package_id),
+                    ).fetchall()
+                    if download_mode == "incremental":
+                        completed_rows = connection.execute(
+                            """
+                            SELECT DISTINCT item.message_id
+                            FROM channel_download_batch_items AS item
+                            JOIN channel_download_batch_packages AS previous
+                              ON previous.batch_id = item.batch_id
+                             AND previous.package_id = item.package_id
+                             AND previous.library_id = item.library_id
+                            WHERE item.library_id = ?
+                              AND item.package_id = ?
+                              AND previous.status = 'completed'
+                              AND previous.package_revision < ?
+                            """,
+                            (library_id, package_id, int(package["index_revision"])),
+                        ).fetchall()
+                        completed_ids = {int(row[0]) for row in completed_rows}
+                        item_rows = [
+                            row
+                            for row in item_rows
+                            if int(row["message_id"]) not in completed_ids
+                        ]
+                        if not item_rows:
+                            raise NoIncrementalItemsError(
+                                f"Package {package_id} has no new media items"
+                            )
+                    if not item_rows:
+                        raise ValueError("Selected package has no media items")
+                    item_rows_by_package[package_id] = item_rows
+
                 cursor = connection.execute(
                     """
                     INSERT INTO channel_download_batches (
                         library_id, source_chat_id, task_id, idempotency_key,
-                        channel_title, allow_redownload, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        channel_title, download_mode, allow_redownload,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         library_id,
@@ -2955,6 +3024,7 @@ class ChannelLibraryStore:
                         task_id,
                         key,
                         library["title"],
+                        download_mode,
                         1 if allow_redownload else 0,
                         now,
                         now,
@@ -2991,16 +3061,7 @@ class ChannelLibraryStore:
                             now,
                         ),
                     )
-                    item_rows = connection.execute(
-                        """
-                        SELECT * FROM channel_package_items
-                        WHERE library_id = ? AND package_id = ?
-                        ORDER BY ordinal, message_id
-                        """,
-                        (library_id, package_id),
-                    ).fetchall()
-                    if not item_rows:
-                        raise ValueError("Selected package has no media items")
+                    item_rows = item_rows_by_package[package_id]
                     # Insert this package's items in one round-trip: for a large
                     # selection a per-row loop holds the write lock long enough to
                     # time out a concurrent scan commit.
@@ -3031,18 +3092,7 @@ class ChannelLibraryStore:
                                 item["original_caption"],
                                 item["inherited_caption"],
                             )
-                            for item in connection.execute(
-                                """
-                                SELECT i.*, m.source_chat_id, m.source_message_id
-                                FROM channel_package_items AS i
-                                JOIN channel_media_messages AS m
-                                  ON m.library_id = i.library_id
-                                 AND m.message_id = i.message_id
-                                WHERE i.library_id = ? AND i.package_id = ?
-                                ORDER BY i.ordinal, i.message_id
-                                """,
-                                (library_id, package_id),
-                            ).fetchall()
+                            for item in item_rows
                         ],
                     )
                     connection.execute(

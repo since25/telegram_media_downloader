@@ -9,6 +9,7 @@ from module.channel_library_store import (
     SCHEMA_VERSION,
     ChannelLibraryConfig,
     ChannelLibraryStore,
+    NoIncrementalItemsError,
 )
 from module.channel_library_workflow import comment_storage_message_id
 
@@ -104,6 +105,47 @@ def comment_media_row(post_id, comment_id, discussion_group_id=-2001):
     return row
 
 
+def make_versioned_download_package(store, item_ids=(1, 2), revision=1):
+    library = make_library(store, chat_id=-3000 - revision)
+    now = float(revision)
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready', index_revision = ?, updated_at = ? WHERE id = ?",
+            (revision, now, library["id"]),
+        )
+        connection.execute(
+            """
+            INSERT INTO channel_packages (
+                library_id, package_kind, source_chat_id, start_message_id,
+                end_message_id, title, published_at, boundary_status, media_count,
+                known_total_size, current_download_status, index_revision,
+                created_at, updated_at
+            ) VALUES (?, 'channel', ?, ?, ?, 'Versioned Foo', ?, 'stable', ?, ?, 'never', ?, ?, ?)
+            """,
+            (library["id"], library["chat_id"], min(item_ids), max(item_ids), "2026-10-31", len(item_ids), len(item_ids) * 100, revision, now, now),
+        )
+        package_id = int(connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+        for ordinal, message_id in enumerate(item_ids):
+            connection.execute(
+                """
+                INSERT INTO channel_media_messages (
+                    library_id, message_id, message_date, media_type, file_name,
+                    file_size, raw_fingerprint, first_seen_at, updated_at
+                ) VALUES (?, ?, ?, 'video', ?, 100, ?, ?, ?)
+                """,
+                (library["id"], message_id, "2026-10-31", f"{message_id}.mp4", f"fp-{message_id}", now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO channel_package_items (
+                    library_id, package_id, message_id, ordinal, media_type
+                ) VALUES (?, ?, ?, ?, 'video')
+                """,
+                (library["id"], package_id, message_id, ordinal),
+            )
+    return library, package_id
+
+
 def make_partial_job_with_failures(store):
     job = make_full_job(store, snapshot_max_id=40)
     store.transition_job(job["id"], "running", now=1.0)
@@ -150,6 +192,95 @@ def test_existing_and_default_libraries_use_message_only_scan_mode(store):
     library = make_library(store)
 
     assert library["scan_mode"] == "messages"
+
+
+def test_incremental_batch_contains_only_messages_added_after_completed_revision(store):
+    library, package_id = make_versioned_download_package(store)
+    first, created = store.create_download_batch_result(
+        library["id"],
+        "full-v1",
+        "task-full-v1",
+        package_ids=(package_id,),
+        now=2.0,
+    )
+    assert created is True
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_download_batch_packages SET status = 'completed' WHERE batch_id = ? AND package_id = ?",
+            (first["id"], package_id),
+        )
+        connection.execute(
+            """
+            UPDATE channel_packages
+            SET current_download_status = 'outdated', has_successful_attempt = 1,
+                completed_revision = 1, index_revision = 2, media_count = 20,
+                updated_at = 3
+            WHERE id = ?
+            """,
+            (package_id,),
+        )
+        for ordinal, message_id in enumerate(range(3, 21), start=2):
+            connection.execute(
+                """
+                INSERT INTO channel_media_messages (
+                    library_id, message_id, message_date, media_type, file_name,
+                    file_size, raw_fingerprint, first_seen_at, updated_at
+                ) VALUES (?, ?, ?, 'video', ?, 100, ?, 3, 3)
+                """,
+                (library["id"], message_id, "2026-10-31", f"{message_id}.mp4", f"fp-{message_id}"),
+            )
+            connection.execute(
+                """
+                INSERT INTO channel_package_items (
+                    library_id, package_id, message_id, ordinal, media_type
+                ) VALUES (?, ?, ?, ?, 'video')
+                """,
+                (library["id"], package_id, message_id, ordinal),
+            )
+
+    incremental, created = store.create_download_batch_result(
+        library["id"],
+        "incremental-v2",
+        "task-incremental-v2",
+        package_ids=(package_id,),
+        download_mode="incremental",
+        now=4.0,
+    )
+
+    assert created is True
+    assert incremental["download_mode"] == "incremental"
+    assert len(incremental["packages"][0]["items"]) == 18
+    assert [item["message_id"] for item in incremental["packages"][0]["items"]] == list(range(3, 21))
+
+
+def test_incremental_batch_rejects_revision_without_new_messages(store):
+    library, package_id = make_versioned_download_package(store)
+    first, _created = store.create_download_batch_result(
+        library["id"],
+        "full-v1",
+        "task-full-v1",
+        package_ids=(package_id,),
+        now=2.0,
+    )
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_download_batch_packages SET status = 'completed' WHERE batch_id = ? AND package_id = ?",
+            (first["id"], package_id),
+        )
+        connection.execute(
+            "UPDATE channel_packages SET has_successful_attempt = 1, completed_revision = 1, current_download_status = 'outdated', index_revision = 2 WHERE id = ?",
+            (package_id,),
+        )
+
+    with pytest.raises(NoIncrementalItemsError):
+        store.create_download_batch_result(
+            library["id"],
+            "incremental-v2",
+            "task-incremental-v2",
+            package_ids=(package_id,),
+            download_mode="incremental",
+            now=4.0,
+        )
 
 
 def test_comment_package_keeps_source_ids_and_download_group(store):
@@ -327,8 +458,8 @@ def test_v1_migration_is_idempotent_and_preserves_existing_rows(tmp_path):
             (job["id"],),
         ).fetchone()[0]
 
-    assert SCHEMA_VERSION == 8
-    assert versions == [1, 2, 3, 8]
+    assert SCHEMA_VERSION == 9
+    assert versions == [1, 2, 3, 9]
     assert "control_requested" in columns
     assert "channel_title" in batch_columns
     assert {"rule_key", "matched_keywords", "batch_id"} <= trigger_columns
@@ -369,7 +500,7 @@ def test_v5_database_adds_keyword_monitor_tables_without_losing_rows(tmp_path):
         "keyword_monitor_terms",
         "keyword_monitor_history",
     } <= tables
-    assert versions >= {5, 8}
+    assert versions >= {5, 9}
     assert migrated.get_library(library["id"])["title"] == "Demo"
 
 

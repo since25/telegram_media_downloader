@@ -1295,6 +1295,54 @@ def test_aggregate_single_package_download_preserves_existing_selection(web_env)
     assert [item["package_id"] for item in batch["packages"]] == [target_package]
 
 
+def test_aggregate_single_package_incremental_mode_submits_only_new_items(web_env):
+    env = web_env
+    library, job = create_library(env, chat_id=-1001, title="Incremental")
+    package_id = insert_package(env.store, library["id"], 10, title="Incremental Foo", media_count=1)
+    insert_package_item(env.store, library["id"], package_id, 10)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET status = 'ready' WHERE id = ?", (library["id"],)
+        )
+        connection.execute(
+            "UPDATE channel_scan_jobs SET status = 'completed' WHERE id = ?", (job["id"],)
+        )
+    env.service.schedule_download_batch_threadsafe = lambda _batch_id: None
+    headers = {**csrf_headers(env), "Idempotency-Key": "incremental-v1"}
+    first = env.client.post(
+        f"/api/packages/{package_id}/download-batch", json={}, headers=headers
+    )
+    first_batch_id = first.get_json()["batch"]["id"]
+    insert_package_item(env.store, library["id"], package_id, 11, ordinal=1)
+    with env.store.connect() as connection:
+        connection.execute(
+            """
+            UPDATE channel_download_batch_packages SET status = 'completed'
+            WHERE batch_id = ? AND package_id = ?
+            """,
+            (first_batch_id, package_id),
+        )
+        connection.execute(
+            """
+            UPDATE channel_packages
+            SET current_download_status = 'outdated', has_successful_attempt = 1,
+                completed_revision = 1, index_revision = 2, media_count = 2
+            WHERE id = ?
+            """,
+            (package_id,),
+        )
+    second = env.client.post(
+        f"/api/packages/{package_id}/download-batch",
+        json={"mode": "incremental"},
+        headers={**csrf_headers(env), "Idempotency-Key": "incremental-v2"},
+    )
+
+    assert first.status_code == 202
+    assert second.status_code == 202
+    assert second.get_json()["batch"]["download_mode"] == "incremental"
+    assert second.get_json()["batch"]["item_count"] == 1
+
+
 def test_channel_task_packages_api_returns_exact_package_progress(web_env):
     env = web_env
     library, job = create_library(env, chat_id=-1001, title="Alpha")
