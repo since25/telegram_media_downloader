@@ -4916,3 +4916,28 @@ Changed files:
 
 Rollback:
 - Revert the cleanup commit before deployment; no schema migration is required.
+
+## 2026-11-01 - Task: Deploy invalid resource package cleanup
+
+### What was done
+
+- Pushed `9125f81` (`feat(web): clean invalid resource packages`) to `origin/master`.
+- Fast-forwarded RackNerd to `9125f81cf2ac68dfc85f6c02010b71701f0fd444`.
+- Created production backup `backups/deploy-20261101-080833-9125f81` before restarting `tg-downloader.service`.
+
+### Testing
+
+- Backup integrity: `channel_library.sqlite3`, `web_tasks.sqlite3`, and `resource_bot.sqlite3` all returned `ok`.
+- Production service: `systemctl is-active tg-downloader.service` → `active`.
+- Public smoke checks: `/` → `302` to `/login?next=%2F`; `/login` → `200`.
+- Production databases remain mode `600` with `journal=wal`.
+- Startup journal shows the downloader workers and Web runtime started without traceback.
+
+### Notes
+
+Changed files:
+- `progress.md`
+
+Rollback:
+- Code rollback point: `0e5c44a7ad2e14eb4e435bc10ebbacfba0fb6aec`.
+- Restore runtime files only after stopping the service and verifying the backup at `backups/deploy-20261101-080833-9125f81`.
