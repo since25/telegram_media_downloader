@@ -70,6 +70,8 @@ to `completed_with_errors` so the upload-only retry remains available.
 
 Prescan mode scans a bounded message window, writes package summaries to the Web state, and waits for the user to include packages before `Start`. Selected packages are downloaded serially through the existing prescan download path. The scan window is configurable per submission via `max_messages` (default 2000, capped at 10000).
 
+While a prescan is waiting for confirmation, the candidate package panel can remove the currently selected candidates with `POST /api/prescans/<task_id>/packages/delete-selected`. The operation updates the package and media counts and is rejected after confirmation, when the download snapshot is immutable.
+
 Confirming a prescan keeps its package list in Web state instead of discarding it, so `GET /api/prescans/<task_id>/packages` keeps returning `200` (with each package's `selected` flag as of confirmation time) while the download is in progress, which is what backs the prescan download detail view. Cancelling a prescan, or clearing/clear-completing its task once it reaches a terminal state, drops the retained package list so it does not linger in memory.
 
 Confirmation submits an immutable snapshot of the selected package IDs and package list

@@ -767,6 +767,50 @@ class WebTestCase(unittest.TestCase):
             self.assertEqual(clear_all.get_json()["selected_count"], 0)
             self.assertEqual(missing.status_code, 404)
 
+    def test_prescan_delete_selected_candidates(self):
+        def make_pkg(pid):
+            return SimpleNamespace(
+                package_id=pid,
+                title="Pack %d" % pid,
+                start_message_id=100 + pid,
+                end_message_id=105 + pid,
+                media_count=pid,
+                messages=[],
+                failed_message_ids=[],
+            )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            app = build_web_test_app(tmp_dir)
+            self.web_module._current_app = app
+            self.web_module._flask_app.config["LOGIN_DISABLED"] = True
+            self.web_module._pending_web_prescans["web-prescan-delete"] = {
+                "packages": [make_pkg(1), make_pkg(2), make_pkg(3)],
+                "selected_package_ids": {1, 3},
+            }
+            client = self._csrf_client()
+
+            deleted = client.post(
+                "/api/prescans/web-prescan-delete/packages/delete-selected"
+            )
+            packages = client.get(
+                "/api/prescans/web-prescan-delete/packages"
+            )
+
+            self.assertEqual(deleted.status_code, 200)
+            self.assertEqual(deleted.get_json()["deleted_count"], 2)
+            self.assertEqual(deleted.get_json()["total"], 1)
+            self.assertEqual(deleted.get_json()["selected_count"], 0)
+            self.assertEqual(packages.get_json()["total"], 1)
+            self.assertEqual(packages.get_json()["items"][0]["package_id"], 2)
+
+            self.web_module._pending_web_prescans["web-prescan-delete"][
+                "confirmed"
+            ] = True
+            rejected = client.post(
+                "/api/prescans/web-prescan-delete/packages/delete-selected"
+            )
+            self.assertEqual(rejected.status_code, 409)
+
     def test_confirm_prescan_schedules_selected_download(self):
         package = SimpleNamespace(package_id=1, messages=[], failed_message_ids=[])
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -4829,3 +4829,35 @@ Changed files:
 Rollback:
 - 代码回退到 `3fad1b5` 后重启 `tg-downloader.service`。新增的两列留在库里不影响旧代码。
 - 部署前需要备份 `channel_library.sqlite3`。
+
+## 2026-11-01 - Task: Add prescan candidate deletion
+
+### What was done
+
+- Added a waiting-confirmation-only API to remove selected prescan candidate packages.
+- Added a “删除所选” action beside the candidate package selection controls, with confirmation and disabled state when nothing is selected.
+- Updated the Web console documentation and API list.
+
+### Testing
+
+- `pytest tests/module/test_web.py -q`
+- Result: 40 passed.
+- `pytest tests/test_web_prescan_retention.py tests/test_web_clear_download_list.py -q`
+- Result: 11 passed.
+- Extracted the inline scripts from `module/templates/index.html` and ran `node --check`; syntax check passed.
+- `git diff --check`; passed.
+- `./.venv/bin/python -m pytest tests/ -q`
+- Result: 851 passed, 1 skipped.
+
+### Notes
+
+Changed files:
+- `module/web.py`
+- `module/templates/index.html`
+- `tests/module/test_web.py`
+- `docs/web-control-console.md`
+- `docs/design/frontend-redesign/README.md`
+- `progress.md`
+
+Rollback:
+- Revert the changed files from this entry; the in-memory candidate list and new endpoint are removed together.

@@ -1162,6 +1162,7 @@
       const selMedia = items.filter(p=>p.selected).reduce((a,p)=>a+p.media_count,0);
       ctrl.innerHTML = `<button class="btn btn-secondary" data-pact="all">全选</button>
         <button class="btn btn-ghost" data-pact="none">清空</button>
+        <button class="btn btn-secondary" data-pact="delete" ${selCount?'':'disabled'}>删除所选</button>
         <span class="text-muted nums">已选 ${selCount} / ${total} 包 · ${selMedia} 媒体</span>
         <button class="btn btn-primary blueprint" data-pact="confirm" style="margin-left:auto"><i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>下载所选</button>`;
       if (!items.length){
@@ -1179,7 +1180,7 @@
           <td style="padding-right:16px;text-align:right"><button class="btn ${p.selected?'btn-secondary':'btn-primary blueprint'}" data-toggle="${p.package_id}" data-sel="${p.selected?0:1}">${p.selected?'':'<i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>'}${p.selected?'排除':'加入'}</button></td>
         </tr>`).join('')}</tbody></table></div>`;
     }
-    // controls (全选/清空/下载所选) + task action + per-row toggle + expand
+    // controls (全选/清空/删除所选/下载所选) + task action + per-row toggle + expand
     $('#task_detail').addEventListener('click', async e => {
       const id = state.selectedTaskId;
       const actionBtn = e.target.closest('button[data-act]');
@@ -1190,6 +1191,12 @@
       if (c){ const a=c.dataset.pact;
         if (a==='all') await postJSON(`/api/prescans/${id}/packages/select-all`, {selected:true});
         if (a==='none') await postJSON(`/api/prescans/${id}/packages/select-all`, {selected:false});
+        if (a==='delete'){
+          const selectedCount = (state.prescanRows[id] || []).filter(p=>p.selected).length;
+          if (!selectedCount || !confirm(`删除已选的 ${selectedCount} 个候选包？删除后需要重新扫描才能恢复。`)) return;
+          const result = await postJSON(`/api/prescans/${id}/packages/delete-selected`);
+          if (result.error){ alert(result.error); return; }
+        }
         if (a==='confirm'){ const r=await postJSON(`/api/tasks/${id}/confirm`); if(r.error) alert(r.error); }
         return renderDetail(state.lastTasksById[id]); }
       const t = e.target.closest('[data-toggle]');

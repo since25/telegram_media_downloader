@@ -3032,6 +3032,65 @@ def select_all_prescan_packages(task_id: str):
     )
 
 
+@_flask_app.route(
+    "/api/prescans/<task_id>/packages/delete-selected", methods=["POST"]
+)
+@login_required
+@_require_csrf
+def delete_selected_prescan_packages(task_id: str):
+    """Remove selected candidates from a Web prescan awaiting confirmation."""
+
+    with _web_task_state_lock:
+        prescan = _pending_web_prescans.get(task_id)
+        if not prescan:
+            return jsonify({"ok": False, "error": "prescan not found"}), 404
+        if prescan.get("confirmed"):
+            return (
+                jsonify(
+                    {
+                        "ok": False,
+                        "error": "prescan has already been confirmed",
+                    }
+                ),
+                409,
+            )
+
+        packages = tuple(prescan.get("packages") or ())
+        selected_ids = set(prescan.get("selected_package_ids") or ())
+        remaining = [
+            package
+            for package in packages
+            if int(getattr(package, "package_id", 0) or 0) not in selected_ids
+        ]
+        deleted_count = len(packages) - len(remaining)
+        remaining_ids = {
+            int(getattr(package, "package_id", 0) or 0) for package in remaining
+        }
+        selected_ids.intersection_update(remaining_ids)
+        prescan["packages"] = remaining
+        prescan["selected_package_ids"] = selected_ids
+        media_count = sum(
+            int(getattr(package, "media_count", 0) or 0) for package in remaining
+        )
+        selected_count = len(selected_ids)
+
+    get_task_store().update_task(task_id, total_count=len(remaining))
+    get_task_store().update_workflow(
+        task_id,
+        media_count=media_count,
+        selected_count=selected_count,
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "task_id": task_id,
+            "deleted_count": deleted_count,
+            "total": len(remaining),
+            "selected_count": selected_count,
+        }
+    )
+
+
 def _active_app() -> Application:
     """Return the web-bound application or fail with a JSON-friendly error."""
 
