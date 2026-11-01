@@ -2104,3 +2104,93 @@ def test_inherited_caption_snapshot_reconstructs_text_zero_and_one(tmp_path):
         assert captured == [False, True]
     finally:
         loop.close()
+
+
+def test_channel_private_refetch_records_reason_on_package_files_and_channel(
+    tmp_path,
+):
+    from pyrogram import errors
+
+    class PrivateChannelClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def get_messages(self, _chat_id, _message_ids):
+            self.calls += 1
+            raise errors.ChannelPrivate()
+
+    client = PrivateChannelClient()
+    service, library, loop = make_download_service(tmp_path, client=client)
+
+    async def _no_backoff(_delay):
+        return None
+
+    service.sleep = _no_backoff
+    try:
+        batch = service.create_download_batch(library["id"], "channel-private")
+
+        async def fake_download_prescan_packages(
+            packages,
+            channel=None,
+            parent_node=None,
+            selected_package_ids=None,
+            on_package_started=None,
+            on_package_finished=None,
+            prepare_package=None,
+            **_kwargs,
+        ):
+            from media_downloader import PackageDownloadResult, PackageMessageResult
+
+            results = []
+            for descriptor in packages:
+                package = await prepare_package(descriptor)
+                await on_package_started(package.attempt_id, package)
+                # 模拟真实下载器：拿不到的消息只标失败，不写原因
+                for message_id in package.failed_message_ids:
+                    service.task_store.upsert_file(
+                        batch["task_id"], message_id, status=FileStatus.FAILED
+                    )
+                message_results = {
+                    message_id: PackageMessageResult(message_id, "failed", "")
+                    for message_id in package.failed_message_ids
+                }
+                await on_package_finished(package.attempt_id, message_results)
+                results.append(
+                    PackageDownloadResult(
+                        package.attempt_id,
+                        package.package_id,
+                        "failed",
+                        tuple(message_results),
+                        message_results,
+                    )
+                )
+            return results
+
+        with patch(
+            "media_downloader.download_prescan_packages",
+            new=fake_download_prescan_packages,
+        ):
+            loop.run_until_complete(service.run_download_batch(batch["id"]))
+
+        # 频道不可访问不再重试：每个包只请求一次
+        assert client.calls == 2
+        stored = service.store.get_download_batch(batch["id"])
+        assert [package["last_error"] for package in stored["packages"]] == [
+            "channel_unavailable",
+            "channel_unavailable",
+        ]
+        task = service.task_store.get_task(batch["task_id"])
+        assert task.files
+        assert {item.error for item in task.files.values()} == {"channel_unavailable"}
+        assert service.store.get_library(library["id"])["last_error"] == (
+            "channel_unavailable"
+        )
+        packages = service.store.list_packages_aggregate([], PackageFilter()).items
+        assert {item["channel_last_error"] for item in packages} == {
+            "channel_unavailable"
+        }
+        assert {item["last_download_error"] for item in packages} == {
+            "channel_unavailable"
+        }
+    finally:
+        loop.close()

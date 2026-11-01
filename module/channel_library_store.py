@@ -77,6 +77,7 @@ DOWNLOAD_ERROR_CODES = frozenset(
         "not_found",
         "unknown_package_size",
         "package_exceeds_disk_capacity",
+        "channel_unavailable",
     }
 )
 DEFAULT_PAGE_SIZE = 50
@@ -908,6 +909,17 @@ class ChannelLibraryStore:
                     connection.execute(
                         "ALTER TABLE channel_download_batch_packages "
                         f"ADD COLUMN {column_sql}"
+                    )
+            # 频道级错误（如频道被封、不可访问），供外部集成判断频道是否失效
+            library_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(channel_libraries)")
+            }
+            for column_sql in ("last_error TEXT", "last_error_at REAL"):
+                column_name = column_sql.split()[0]
+                if column_name not in library_columns:
+                    connection.execute(
+                        f"ALTER TABLE channel_libraries ADD COLUMN {column_sql}"
                     )
             batch_item_columns = {
                 row[1]
@@ -2262,6 +2274,13 @@ class ChannelLibraryStore:
                 f"""
                 SELECT p.*, l.chat_id, l.title AS channel_title,
                        l.username AS channel_username,
+                       l.last_error AS channel_last_error,
+                       l.last_error_at AS channel_last_error_at,
+                       (SELECT bp.last_error
+                        FROM channel_download_batch_packages AS bp
+                        JOIN channel_download_batches AS b ON b.id = bp.batch_id
+                        WHERE b.task_id = p.last_download_task_id
+                          AND bp.package_id = p.id) AS last_download_error,
                        s.package_revision AS selection_revision,
                        s.selected AS stored_selected,
                        s.invalidation_reason AS stored_invalidation_reason
@@ -3915,6 +3934,32 @@ class ChannelLibraryStore:
                 """
             ).fetchone()
         return row is not None
+
+    def set_library_error(self, library_id: int, code: str) -> None:
+        """记录频道级错误码；同一错误重复出现时只刷新时间。"""
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE channel_libraries
+                SET last_error = ?, last_error_at = ?
+                WHERE id = ?
+                """,
+                (str(code), time.time(), int(library_id)),
+            )
+
+    def clear_library_error(self, library_id: int) -> None:
+        """频道恢复可访问后清除频道级错误。"""
+
+        with self.connect() as connection:
+            connection.execute(
+                """
+                UPDATE channel_libraries
+                SET last_error = NULL, last_error_at = NULL
+                WHERE id = ? AND last_error IS NOT NULL
+                """,
+                (int(library_id),),
+            )
 
     def list_scheduled_incremental_libraries(self) -> list[dict]:
         """Return full-scanned libraries without recoverable scan work."""

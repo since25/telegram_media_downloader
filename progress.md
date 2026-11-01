@@ -4790,3 +4790,42 @@ Changed files:
 Rollback:
 - 代码回退到部署前 `54eec5b31fedefb14e8b2ad9577a5df978722fff` 后重启 `tg-downloader.service`。
 - 运行态备份：`backups/deploy-20261031-100922-1bca9da-final`；恢复 SQLite 或配置前先停止服务并完成完整性检查。
+
+## 2026-11-01 - Task: 记录频道不可访问的失败原因并暴露给外部集成
+
+### What was done
+
+- 问题：频道被封后，重新获取消息报 `CHANNEL_PRIVATE`。这个错误只写进了日志，任务文件的 `error` 为空，包的失败原因只记成 `telegram_refetch_failed`。零点增量扫描对这个频道连续多天报同样的错，也只写了日志，频道状态一直是 `ready`，外部看不出频道已失效。
+- `module/channel_library_service.py`：
+  - 新增错误码 `channel_unavailable`，对应 `ChannelPrivate`、`ChannelInvalid`、`ChannelBanned`、`ChatForbidden`。
+  - 重新获取消息遇到这类错误时立即放弃剩余重试，把错误码记到包上，同时写到频道上。这个错误码不在自动重试名单里。
+  - 包结束后，用包的失败原因码补齐本包下没有原因的失败文件（新增 `_label_failed_files`）。
+  - 定时增量清扫遇到频道不可访问时，把错误记到频道上；频道再次检查成功后清除。
+- `module/channel_library_store.py`：
+  - `channel_libraries` 新增 `last_error`、`last_error_at` 两列。按列是否存在决定是否补列，属于增量改动，旧库启动时自动补上。
+  - 新增 `set_library_error` 和 `clear_library_error`。
+  - `channel_unavailable` 加入可保存的错误码白名单。
+  - `/api/packages` 聚合列表新增三个字段：`channel_last_error`、`channel_last_error_at`，以及 `last_download_error`（该包最近一次下载批次的失败原因）。
+
+### Testing
+
+- 新增 `test_channel_private_refetch_records_reason_on_package_files_and_channel`：
+  - 每个包只请求一次。
+  - 包、文件、频道上都记录了 `channel_unavailable`。
+  - 聚合列表能返回这两个错误字段。
+- 新增 `test_scheduled_incremental_marks_private_channel_and_clears_on_recovery`：清扫时给频道打上错误标记，恢复访问后清除。
+- 在 Spark 上用与生产相同的依赖版本（Python 3.11）跑全量 `pytest tests`：850 passed，1 skipped。
+  - 例外：`PyTgCrypto` 在 Spark（ARM）上没有 1.2.6，改装了最新版。
+
+### Notes
+
+Changed files:
+- `module/channel_library_service.py`
+- `module/channel_library_store.py`
+- `tests/test_channel_library_download.py`
+- `tests/module/test_channel_library_service.py`
+- `progress.md`
+
+Rollback:
+- 代码回退到 `3fad1b5` 后重启 `tg-downloader.service`。新增的两列留在库里不影响旧代码。
+- 部署前需要备份 `channel_library.sqlite3`。

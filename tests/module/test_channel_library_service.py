@@ -398,6 +398,45 @@ async def test_scheduled_incremental_queues_new_tail_for_each_eligible_channel(
 
 
 @async_test
+async def test_scheduled_incremental_marks_private_channel_and_clears_on_recovery(
+    tmp_path,
+):
+    class PrivateHistoryClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self.private_chats = {-1002}
+
+        async def get_chat_history(self, chat_id, limit=1):
+            if chat_id in self.private_chats:
+                raise errors.ChannelPrivate()
+            async for message in super().get_chat_history(chat_id, limit=limit):
+                yield message
+
+    service, first, _sleep = make_service(tmp_path, client=PrivateHistoryClient())
+    finish_full_scan(service, first, snapshot_max=40)
+    second, _ = service.store.create_or_get_library(
+        -1002, "channel", "two", "Two", "https://t.me/two/1"
+    )
+    finish_full_scan(service, second, snapshot_max=40)
+    service.client.latest_message_id = 45
+    service.owner_loop = asyncio.get_running_loop()
+
+    queued = await service.queue_scheduled_incrementals()
+
+    assert [job["library_id"] for job in queued] == [first["id"]]
+    assert service.store.get_library(first["id"])["last_error"] is None
+    assert service.store.get_library(second["id"])["last_error"] == (
+        "channel_unavailable"
+    )
+    assert service.store.get_library(second["id"])["last_error_at"] is not None
+
+    service.client.private_chats.clear()
+    await service.queue_incremental(second["id"], skip_if_unchanged=True)
+
+    assert service.store.get_library(second["id"])["last_error"] is None
+
+
+@async_test
 async def test_scheduled_incremental_sweep_yields_to_any_recoverable_full_scan(
     tmp_path,
 ):

@@ -65,6 +65,26 @@ REFETCH_RETRY_BACKOFF_SEC = 5.0
 TRANSIENT_DOWNLOAD_ERROR_CODES = frozenset(
     {"telegram_refetch_failed", "download_failed"}
 )
+# 频道被封或不可访问：重试没有意义，记为该错误码并写到频道上。
+CHANNEL_UNAVAILABLE_ERROR = "channel_unavailable"
+_CHANNEL_UNAVAILABLE_EXCEPTIONS = tuple(
+    error_type
+    for error_type in (
+        getattr(errors, name, None)
+        for name in (
+            "ChannelPrivate",
+            "ChannelInvalid",
+            "ChannelBanned",
+            "ChatForbidden",
+        )
+    )
+    if isinstance(error_type, type)
+)
+
+
+def _is_channel_unavailable(error: BaseException) -> bool:
+    return isinstance(error, _CHANNEL_UNAVAILABLE_EXCEPTIONS)
+
 _DOWNLOAD_BATCH_RUNNERS: set[tuple[str, int]] = set()
 
 
@@ -1193,7 +1213,7 @@ class ChannelLibraryService:
                     attempt,
                     self.refetch_attempts,
                 )
-            except Exception:  # noqa: BLE001 - contained to one package
+            except Exception as error:  # noqa: BLE001 - contained to one package
                 LOGGER.exception(
                     "Telegram refetch failed for channel package %s "
                     "(attempt %d/%d)",
@@ -1201,9 +1221,32 @@ class ChannelLibraryService:
                     attempt,
                     self.refetch_attempts,
                 )
+                if _is_channel_unavailable(error):
+                    # 频道不可访问不是瞬时故障，直接放弃剩余重试
+                    descriptor.refetch_error = CHANNEL_UNAVAILABLE_ERROR
+                    return None
             if attempt < self.refetch_attempts:
                 await self.sleep(REFETCH_RETRY_BACKOFF_SEC * attempt)
         return None
+
+    def _label_failed_files(
+        self, task_id: Any, batch_id: int, package_id: int, error_code: str
+    ) -> None:
+        """给没有原因的失败文件补上包级错误码，便于 Web 和外部集成展示。"""
+
+        task = self.task_store.get_task(task_id)
+        if task is None:
+            return
+        for item in self.store.get_download_batch_package_items(batch_id, package_id):
+            message_id = str(item.get("source_message_id") or item["message_id"])
+            file_snapshot = task.files.get(message_id)
+            if (
+                file_snapshot is None
+                or file_snapshot.status != FileStatus.FAILED
+                or file_snapshot.error
+            ):
+                continue
+            self.task_store.upsert_file(task_id, message_id, error=error_code)
 
     def _auto_retry_transient_batch(self, batch_id: int) -> bool:
         """Requeue one batch that a transient Telegram fault knocked out.
@@ -1334,7 +1377,14 @@ class ChannelLibraryService:
             )
             if raw_messages is None:
                 raw_messages = []
-                fetch_error = "telegram_refetch_failed"
+                fetch_error = (
+                    getattr(descriptor, "refetch_error", None)
+                    or "telegram_refetch_failed"
+                )
+                if fetch_error == CHANNEL_UNAVAILABLE_ERROR:
+                    self.store.set_library_error(
+                        int(batch["library_id"]), fetch_error
+                    )
             found_by_id = {
                 int(message.id): message
                 for message in normalize_messages(raw_messages)
@@ -1531,7 +1581,7 @@ class ChannelLibraryService:
                             error=PACKAGE_EXCEEDS_DISK_CAPACITY,
                         )
                 elif attempt_errors.get(attempt_id):
-                    last_error = "telegram_refetch_failed"
+                    last_error = attempt_errors[attempt_id]
                     self._cleanup_package_local_files(
                         batch, attempt_packages[attempt_id]
                     )
@@ -1547,6 +1597,13 @@ class ChannelLibraryService:
                     status,
                     last_error=last_error,
                 )
+                if last_error:
+                    self._label_failed_files(
+                        batch["task_id"],
+                        batch_id,
+                        attempt_packages[attempt_id],
+                        last_error,
+                    )
             finally:
                 reservation = reservations.pop(str(attempt_id), None)
                 if reservation is not None:
@@ -1790,6 +1847,7 @@ class ChannelLibraryService:
                 if message is not None and getattr(message, "id", None) is not None:
                     snapshot_max = int(message.id)
                     break
+        self.store.clear_library_error(library_id)
         start_message_id = int(library["fetched_through_message_id"]) + 1
         if (
             skip_if_unchanged
@@ -1833,11 +1891,15 @@ class ChannelLibraryService:
                     library["id"],
                 )
                 continue
-            except Exception:  # noqa: BLE001 - isolate one channel from the sweep
+            except Exception as error:  # noqa: BLE001 - isolate one channel from the sweep
                 LOGGER.exception(
                     "Scheduled incremental scan check failed for library %s",
                     library["id"],
                 )
+                if _is_channel_unavailable(error):
+                    self.store.set_library_error(
+                        int(library["id"]), CHANNEL_UNAVAILABLE_ERROR
+                    )
                 continue
             if job is not None:
                 queued.append(job)
