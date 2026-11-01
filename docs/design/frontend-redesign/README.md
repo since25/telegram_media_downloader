@@ -117,6 +117,7 @@
 - **提交任务**：`POST /api/tasks {link, mode}`；预扫描加 `max_messages`。成功后选中该任务、刷新看板。失败显示 `error`。
 - **任务动作**：开始=`POST /api/tasks/<id>/confirm`；取消=`POST /api/tasks/<id>/cancel`；清除=`POST /api/tasks/<id>/clear`；清空已完成=`POST /api/tasks/clear-completed`。
 - **预扫描选择**：`POST /api/prescans/<id>/packages/<pkg>/select {selected}`；`.../select-all {selected}`；`.../delete-selected`（待确认时删除已选候选包）；分页 `GET /api/prescans/<id>/packages?page&page_size`。「下载所选」= confirm（至少选 1 个，否则 400）。
+- **资源包清理**：资源包页「清理失效包」调用 `POST /api/packages/cleanup-invalid`；频道不可访问、最新尝试为 `not_found` 的包会从列表移除，排队/下载中的包保留。
 - **状态开关**：`POST set_download_state?state=...`。
 - **轮询**：见「全局框架」。进度条 `width` 随进度更新，`.transition: width .3s`。
 - **响应式**：桌面优先；`.app` 固定 1240，窄屏时表格可横向滚动、汇总卡降为 2 列（参考原 `index.css` 的 760px 断点）。

@@ -294,6 +294,7 @@
             <span class="nums" id="aggregate_selection_text">已选 0 包 · 0 个频道 · 0 个媒体 · 0 B</span>
             <div class="channel-library-selection-actions">
               <button type="button" class="btn btn-secondary" id="aggregate_select_filtered">全选筛选结果</button>
+              <button type="button" class="btn btn-ghost" id="aggregate_cleanup_invalid">清理失效包</button>
               <button type="button" class="btn btn-ghost" id="aggregate_clear_selection">清空选择</button>
               <button type="button" class="btn btn-primary" id="aggregate_download_selection" disabled>下载所选</button>
             </div>
@@ -2033,6 +2034,18 @@
     $('#aggregate_clear_selection').addEventListener('click',async()=>{
       try {
         await channelApiWrite('POST','/api/packages/selection/clear',{});
+        await Promise.all([loadAggregatePackages(),loadAggregateSelection()]);
+      } catch (error){ showAggregateNotice(error.message,'error'); }
+    });
+    $('#aggregate_cleanup_invalid').addEventListener('click',async()=>{
+      const filters = readAggregateFilters();
+      const scope = filters.library_ids.length ? `${filters.library_ids.length} 个已选频道` : '全部频道';
+      if (!confirm(`清理${scope}中已确认失效的资源包？正在下载或排队中的包会保留。`)) return;
+      try {
+        const result = await channelApiWrite('POST','/api/packages/cleanup-invalid',{
+          library_ids: filters.library_ids,
+        });
+        showAggregateNotice(`已清理 ${Number(result.removed_count)||0} 个失效包；保留历史 ${Number(result.retired_count)||0} 个。`);
         await Promise.all([loadAggregatePackages(),loadAggregateSelection()]);
       } catch (error){ showAggregateNotice(error.message,'error'); }
     });

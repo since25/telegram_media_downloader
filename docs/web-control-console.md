@@ -146,6 +146,13 @@ downloads packages across all indexed channels. Each package retains its `librar
 channel title, and Telegram `chat_id`; channels are optional multi-select filters rather
 than the parent navigation required to reach a package.
 
+The Resources toolbar also provides `POST /api/packages/cleanup-invalid`. It removes
+packages from the resource list when their channel is marked `channel_unavailable` or
+their latest download attempt is `not_found`; queued or downloading packages are kept.
+Packages referenced by download history are retired as `superseded` so historical batch
+records remain readable, while unreferenced packages are deleted with their dependent
+selection and media-item rows.
+
 Open the Channels tab to submit any accessible message link from a channel or supergroup.
 The link identifies the conversation; the initial scan snapshots the latest visible
 message ID and indexes the complete visible ID range. Each library has a scan mode:

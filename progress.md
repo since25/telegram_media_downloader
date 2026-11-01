@@ -4887,3 +4887,32 @@ Changed files:
 Rollback:
 - Code rollback point: `f246bba91755da923b243ce76ff95d43f799b9d8`.
 - Restore runtime files only after stopping the service and verifying the backup at `backups/deploy-20261101-073547-466713f`.
+
+## 2026-11-01 - Task: Clean invalid resource packages
+
+### What was done
+
+- Added the Resources page “清理失效包” action and `POST /api/packages/cleanup-invalid`.
+- Cleanup targets packages whose channel is marked `channel_unavailable` or whose latest download attempt is `not_found`.
+- Queued/downloading packages are skipped. Unreferenced invalid packages are deleted; packages referenced by download history are retired as `superseded` so historical batch records remain valid.
+
+### Testing
+
+- `./.venv/bin/python -m pytest tests/module/test_channel_library_queries.py tests/module/test_channel_library_web.py -q` → 140 passed.
+- `./.venv/bin/python -m pytest tests/ -q` → 853 passed, 1 skipped.
+- Inline JavaScript `node --check` and `git diff --check` passed.
+
+### Notes
+
+Changed files:
+- `module/channel_library_store.py`
+- `module/web.py`
+- `module/templates/index.html`
+- `tests/module/test_channel_library_queries.py`
+- `tests/module/test_channel_library_web.py`
+- `docs/web-control-console.md`
+- `docs/design/frontend-redesign/README.md`
+- `progress.md`
+
+Rollback:
+- Revert the cleanup commit before deployment; no schema migration is required.

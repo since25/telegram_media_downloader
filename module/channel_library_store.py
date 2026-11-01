@@ -1658,6 +1658,133 @@ class ChannelLibraryStore:
         self._resource_distribution_cache.pop(int(library_id), None)
         return library_dict
 
+    def cleanup_invalid_packages(
+        self, library_ids: Sequence[int] = ()
+    ) -> dict[str, int]:
+        """Remove packages proven unavailable while preserving download history.
+
+        Packages with no historical batch reference are deleted. Packages that
+        are referenced by a download batch are retired as ``superseded`` so
+        foreign-key history remains readable and the package leaves the normal
+        resource listing.
+        """
+
+        normalized_ids = tuple(dict.fromkeys(int(value) for value in library_ids))
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            parameters: list[object] = []
+            scope_sql = ""
+            if normalized_ids:
+                placeholders = ", ".join("?" for _ in normalized_ids)
+                scope_sql = f" AND p.library_id IN ({placeholders})"
+                parameters.extend(normalized_ids)
+            rows = connection.execute(
+                f"""
+                SELECT p.id, p.library_id, l.last_error AS channel_last_error,
+                       (
+                           SELECT bp.status
+                           FROM channel_download_batch_packages AS bp
+                           WHERE bp.library_id = p.library_id
+                             AND bp.package_id = p.id
+                           ORDER BY bp.updated_at DESC, bp.batch_id DESC
+                           LIMIT 1
+                       ) AS latest_attempt_status,
+                       (
+                           SELECT bp.last_error
+                           FROM channel_download_batch_packages AS bp
+                           WHERE bp.library_id = p.library_id
+                             AND bp.package_id = p.id
+                           ORDER BY bp.updated_at DESC, bp.batch_id DESC
+                           LIMIT 1
+                       ) AS latest_attempt_error
+                FROM channel_packages AS p
+                JOIN channel_libraries AS l ON l.id = p.library_id
+                WHERE p.boundary_status != 'superseded'{scope_sql}
+                """,
+                parameters,
+            ).fetchall()
+            deleted_count = 0
+            retired_count = 0
+            skipped_active_count = 0
+            for row in rows:
+                invalid = row["channel_last_error"] == "channel_unavailable"
+                invalid = invalid or row["latest_attempt_status"] == "not_found"
+                invalid = invalid or row["latest_attempt_error"] in {
+                    "not_found",
+                    "channel_unavailable",
+                }
+                if not invalid:
+                    continue
+                package_key = (int(row["library_id"]), int(row["id"]))
+                active = connection.execute(
+                    """
+                    SELECT 1
+                    FROM channel_download_batch_packages
+                    WHERE library_id = ? AND package_id = ?
+                      AND status IN ('queued', 'downloading')
+                    LIMIT 1
+                    """,
+                    package_key,
+                ).fetchone()
+                if active is not None:
+                    skipped_active_count += 1
+                    continue
+                referenced = connection.execute(
+                    """
+                    SELECT 1
+                    FROM channel_download_batch_packages
+                    WHERE library_id = ? AND package_id = ?
+                    LIMIT 1
+                    """,
+                    package_key,
+                ).fetchone()
+                referenced_by_revision = connection.execute(
+                    """
+                    SELECT 1
+                    FROM channel_packages
+                    WHERE library_id = ? AND superseded_by_package_id = ?
+                    LIMIT 1
+                    """,
+                    package_key,
+                ).fetchone()
+                if referenced is None and referenced_by_revision is None:
+                    connection.execute(
+                        """
+                        DELETE FROM channel_packages
+                        WHERE library_id = ? AND id = ?
+                        """,
+                        package_key,
+                    )
+                    deleted_count += 1
+                else:
+                    connection.execute(
+                        """
+                        UPDATE channel_packages
+                        SET boundary_status = 'superseded',
+                            superseded_by_package_id = NULL,
+                            updated_at = ?
+                        WHERE library_id = ? AND id = ?
+                        """,
+                        (time.time(), *package_key),
+                    )
+                    retired_count += 1
+                connection.execute(
+                    """
+                    UPDATE channel_package_selections
+                    SET selected = 0,
+                        invalidation_reason = 'package_not_stable',
+                        updated_at = ?
+                    WHERE library_id = ? AND package_id = ?
+                    """,
+                    (time.time(), *package_key),
+                )
+        return {
+            "removed_count": deleted_count + retired_count,
+            "deleted_count": deleted_count,
+            "retired_count": retired_count,
+            "skipped_active_count": skipped_active_count,
+        }
+
     @staticmethod
     def _page_size(limit: int) -> int:
         if type(limit) is not int or limit < 1:

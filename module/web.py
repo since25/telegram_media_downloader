@@ -1312,6 +1312,19 @@ def clear_aggregate_selection():
     return jsonify({"cleared_count": cleared})
 
 
+@_flask_app.route("/api/packages/cleanup-invalid", methods=["POST"])
+@login_required
+@_channel_api
+@_require_csrf
+def cleanup_invalid_aggregate_packages():
+    """Remove unavailable package candidates while preserving active history."""
+
+    payload = _json_object(frozenset({"library_ids"}))
+    library_ids = _library_ids_from_payload(payload)
+    result = _channel_service().store.cleanup_invalid_packages(library_ids)
+    return jsonify(result)
+
+
 @_flask_app.route("/api/packages/selection")
 @login_required
 @_channel_api

@@ -452,6 +452,74 @@ def test_non_stable_package_cannot_be_selected_individually(store, library):
         store.set_package_selected(library["id"], package_id, True)
 
 
+def test_cleanup_invalid_packages_deletes_unreferenced_and_retires_history(
+    store, library
+):
+    unavailable_id = insert_package(store, library["id"], 10)
+    referenced_id = insert_package(store, library["id"], 20)
+    active_id = insert_package(store, library["id"], 30)
+    with store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET last_error = 'channel_unavailable' WHERE id = ?",
+            (library["id"],),
+        )
+        batch_id = connection.execute(
+            """
+            INSERT INTO channel_download_batches (
+                library_id, task_id, idempotency_key, channel_title,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (library["id"], "cleanup-task", "cleanup-key", "Query Demo", 1, 1),
+        ).lastrowid
+        for package_id, status in (
+            (referenced_id, "not_found"),
+            (active_id, "downloading"),
+        ):
+            connection.execute(
+                """
+                INSERT INTO channel_download_batch_packages (
+                    batch_id, library_id, package_id, package_revision, title,
+                    start_message_id, end_message_id, ordinal, status,
+                    last_error, created_at, updated_at
+                )
+                SELECT ?, p.library_id, p.id, p.index_revision, p.title,
+                       p.start_message_id, p.end_message_id, ?, ?, ?, ?, ?
+                FROM channel_packages AS p
+                WHERE p.library_id = ? AND p.id = ?
+                """,
+                (
+                    batch_id,
+                    package_id,
+                    status,
+                    "not_found" if status == "not_found" else None,
+                    1,
+                    1,
+                    library["id"],
+                    package_id,
+                ),
+            )
+
+    result = store.cleanup_invalid_packages()
+
+    assert result == {
+        "removed_count": 2,
+        "deleted_count": 1,
+        "retired_count": 1,
+        "skipped_active_count": 1,
+    }
+    with store.connect() as connection:
+        rows = connection.execute(
+            "SELECT id, boundary_status FROM channel_packages WHERE library_id = ?",
+            (library["id"],),
+        ).fetchall()
+    assert {int(row["id"]): row["boundary_status"] for row in rows} == {
+        referenced_id: "superseded",
+        active_id: "stable",
+    }
+    assert unavailable_id not in {int(row["id"]) for row in rows}
+
+
 @pytest.mark.parametrize(
     "package_filter",
     [

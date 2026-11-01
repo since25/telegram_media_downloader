@@ -244,6 +244,7 @@ def test_all_channel_routes_require_existing_login(web_env):
         ("PUT", "/api/channel-libraries/1/selection/packages/1"),
         ("POST", "/api/channel-libraries/1/selection/select-filtered"),
         ("POST", "/api/channel-libraries/1/selection/clear"),
+        ("POST", "/api/packages/cleanup-invalid"),
         ("GET", "/api/channel-libraries/1/selection"),
         ("POST", "/api/channel-libraries/1/download-batches"),
         ("POST", "/api/packages/1/download-batch"),
@@ -268,6 +269,7 @@ def test_mutating_routes_require_session_bound_csrf(web_env):
         ("PUT", "/api/channel-libraries/1/selection/packages/1"),
         ("POST", "/api/channel-libraries/1/selection/select-filtered"),
         ("POST", "/api/channel-libraries/1/selection/clear"),
+        ("POST", "/api/packages/cleanup-invalid"),
         ("POST", "/api/channel-libraries/1/download-batches"),
         ("POST", "/api/packages/1/download-batch"),
     ]
@@ -1038,6 +1040,34 @@ def test_versioned_delete_checks_confirmation_version_and_active_work(web_env):
     assert wrong_confirm.status_code == 400
     assert deleted.status_code == 200
     assert env.client.get(f"/api/channel-libraries/{library['id']}").status_code == 404
+
+
+def test_cleanup_invalid_packages_removes_unavailable_candidates(web_env):
+    env = web_env
+    library, job = create_library(env)
+    env.service.stop_job(job["id"])
+    package_id = insert_package(env.store, library["id"], 10)
+    insert_package_item(env.store, library["id"], package_id, 10)
+    with env.store.connect() as connection:
+        connection.execute(
+            "UPDATE channel_libraries SET last_error = 'channel_unavailable' WHERE id = ?",
+            (library["id"],),
+        )
+
+    response = env.client.post(
+        "/api/packages/cleanup-invalid",
+        json={},
+        headers=csrf_headers(env),
+    )
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "removed_count": 1,
+        "deleted_count": 1,
+        "retired_count": 0,
+        "skipped_active_count": 0,
+    }
+    assert env.client.get("/api/packages").get_json()["items"] == []
 
 
 def test_versioned_delete_rejects_terminal_parent_with_active_child_attempt(web_env):
@@ -2175,6 +2205,7 @@ def test_aggregate_package_and_keyword_monitor_tabs_have_complete_dom_contracts(
         "aggregate_package_rows",
         "aggregate_selection_text",
         "aggregate_select_filtered",
+        "aggregate_cleanup_invalid",
         "aggregate_download_selection",
         "tab_keyword-monitor",
         "keyword_group_rows",
