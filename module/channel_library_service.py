@@ -36,6 +36,7 @@ from module.channel_library_workflow import (
     extract_media_row,
     extract_source_post_row,
 )
+from module.cloud_drive import defer_local_file_delete
 from module.comment_workflow import (
     build_message_package_workflow_request,
     filter_media_comments,
@@ -45,6 +46,7 @@ from module.download_operations import (
     DownloadOperations,
     get_compatibility_operations,
 )
+from module.file_cleanup import remove_uploaded_source
 from module.telegram_activity import get_telegram_activity_gate
 from module.task_state import (
     FileStatus,
@@ -771,7 +773,8 @@ class ChannelLibraryService:
                 error="",
             )
             try:
-                uploaded = await self.app.upload_file(file_path)
+                with defer_local_file_delete():
+                    uploaded = await self.app.upload_file(file_path)
             except Exception:  # noqa: BLE001 - persist a safe retry state
                 LOGGER.exception("Upload retry failed for %s", file_path)
                 uploaded = False
@@ -782,6 +785,14 @@ class ChannelLibraryService:
                     status=FileStatus.UPLOADED,
                     error="",
                 )
+                if getattr(
+                    self.app.cloud_drive_config,
+                    "after_upload_file_delete",
+                    False,
+                ):
+                    remove_uploaded_source(
+                        os.path.realpath(self.app.save_path), file_path, LOGGER
+                    )
                 retried_message_ids.append(message_id)
             else:
                 self.task_store.upsert_file(

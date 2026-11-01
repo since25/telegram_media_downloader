@@ -109,6 +109,15 @@ def run_application(application, client, runtime: DownloadRuntime) -> None:
             runtime_health.mark_starting()
         application.pre_run()
         runtime.initialize_task_store()
+        try:
+            from module.file_cleanup import reconcile_download_files
+            from module.task_state import get_task_store
+
+            reconcile_download_files(application, get_task_store(), runtime.logger)
+        except Exception as error:
+            # File cleanup must be observable but cannot prevent the downloader
+            # from starting when one stale path is inaccessible.
+            runtime.logger.warning(f"startup file reconciliation failed: {error}")
         if application.enable_web:
             web_server = runtime.init_web(application, client, runtime.operations)
         else:

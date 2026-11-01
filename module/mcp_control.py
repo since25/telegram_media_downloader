@@ -225,6 +225,7 @@ def system_status():
     import shutil
 
     from module.download_stat import get_download_state, get_total_download_speed
+    from module.file_cleanup import collect_storage_metrics
     from module.task_state import get_task_store
 
     health = getattr(_current_app, "runtime_health", None)
@@ -243,6 +244,7 @@ def system_status():
             "disk_total": int(usage.total),
             "active_task_count": dashboard["active_task_count"],
             "completed_task_count": dashboard["completed_task_count"],
+            **collect_storage_metrics(_current_app),
         }
     )
 

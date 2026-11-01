@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Optional
 
 from module.app import DownloadStatus
+from module.cloud_drive import defer_local_file_delete
+from module.file_cleanup import remove_uploaded_source
 from module.progress_persistence import download_progress_persistence
 from module.task_state import FileStatus, TaskStatus, terminal_safe_task_updates
 from module.transfer_progress import transfer_key
@@ -195,11 +197,12 @@ async def run_upload_phase(
                     "save_path": file_name,
                 },
             )
-        upload_result = await runtime.app.upload_file(
-            file_name,
-            runtime.update_cloud_upload_stat,
-            (node, message_id, ui_file_name),
-        )
+        with defer_local_file_delete():
+            upload_result = await runtime.app.upload_file(
+                file_name,
+                runtime.update_cloud_upload_stat,
+                (node, message_id, ui_file_name),
+            )
         if upload_result:
             node.upload_success_count += 1
             if getattr(node, "task_id", None):
@@ -215,6 +218,10 @@ async def run_upload_phase(
                         "filename": file_name,
                         "save_path": file_name,
                     },
+                )
+            if runtime.app.cloud_drive_config.after_upload_file_delete:
+                remove_uploaded_source(
+                    os.path.realpath(runtime.app.save_path), file_name, runtime.logger
                 )
             runtime.logger.info(
                 "download_task: 文件上传成功 - "

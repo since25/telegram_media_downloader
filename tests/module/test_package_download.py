@@ -112,6 +112,67 @@ def test_external_transfer_cancellation_is_not_retried(tmp_path):
     asyncio.run(run_scenario())
 
 
+def test_final_failed_attempt_removes_temp_file(tmp_path):
+    async def run_scenario():
+        temp_path = tmp_path / "temp.bin"
+
+        class FailingClient:
+            async def download_media(self, *_args, **_kwargs):
+                temp_path.write_bytes(b"partial")
+                raise RuntimeError("download failed")
+
+        async def fetch_message(_client, message):
+            return message
+
+        async def get_media_meta(*_args, **_kwargs):
+            return (
+                str(tmp_path / "final.bin"),
+                str(temp_path),
+                "octet-stream",
+            )
+
+        runtime = TransferRuntime(
+            app=SimpleNamespace(loop=asyncio.get_running_loop(), hide_file_name=False),
+            logger=Mock(),
+            translate=lambda value: value,
+            fetch_message=fetch_message,
+            get_media_meta=get_media_meta,
+            record_message_marker=lambda *_args: None,
+            can_download=lambda *_args: True,
+            is_file=lambda _path: False,
+            check_download_finish=lambda *_args: None,
+            move_to_download_path=lambda *_args: None,
+            retry_timed_out=lambda *_args: False,
+            update_download_status=lambda *_args: None,
+            remove_download_result=lambda *_args: None,
+            retry_timeout=0,
+            stall_timeout=600,
+            progress_tracker=TransferProgressTracker(),
+        )
+        message = SimpleNamespace(
+            id=102,
+            empty=False,
+            document=SimpleNamespace(file_size=10),
+        )
+        node = SimpleNamespace(chat_id=-100, skip_not_found_download_task=0)
+
+        status, path = await transfer_media(
+            FailingClient(),
+            message,
+            ["document"],
+            {"document": ["all"]},
+            node,
+            None,
+            runtime,
+        )
+
+        assert status is DownloadStatus.FailedDownload
+        assert path is None
+        assert not temp_path.exists()
+
+    asyncio.run(run_scenario())
+
+
 def test_flood_wait_uses_server_delay_then_retries(tmp_path):
     async def run_scenario():
         class FloodWaitClient:

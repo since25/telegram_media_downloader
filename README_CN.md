@@ -229,6 +229,8 @@ bot 会从这条消息开始慢速向后扫描，识别多个连续资源包，�
 
 * [v2.2.0](https://github.com/since25/telegram_media_downloader/issues/2)
 
+RN 生产部署、备份轮换和回滚必须遵循 [`docs/deployment-rn.md`](docs/deployment-rn.md)，每次最多保留两个 `.bak` 备份。
+
 ## 安装
 
 对于具有 `make` 可用性的 *nix 操作系统发行版

@@ -1693,6 +1693,8 @@ def get_download_speed():
 @login_required
 def system_metrics():
     """Return CPU / memory / disk / throughput for the monitor card."""
+    from module.file_cleanup import collect_storage_metrics
+
     app = _active_app()
     save_path = getattr(app, "save_path", None) or "/"
     try:
@@ -1710,6 +1712,7 @@ def system_metrics():
             "disk_free": int(usage.free),
             "download_speed": format_byte(get_total_download_speed()) + "/s",
             "upload_speed": format_byte(get_total_upload_speed()) + "/s",
+            **collect_storage_metrics(app),
         }
     )
 

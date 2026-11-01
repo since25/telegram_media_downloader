@@ -20,6 +20,11 @@ def test_system_status_reports_state_without_secrets(env):
         "disk_total",
         "active_task_count",
         "completed_task_count",
+        "temp_bytes",
+        "temp_files",
+        "save_path_bytes",
+        "save_path_files",
+        "storage_scan_failures",
     }
     assert "super-secret-hash" not in response.get_data(as_text=True)
 

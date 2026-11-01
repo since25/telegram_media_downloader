@@ -224,6 +224,7 @@ async def transfer_media(
 
     file_name = ""
     temp_file_name = ""
+    last_download_path = ""
     ui_file_name = ""
     task_start_time = time.time()
     media_size = 0
@@ -397,6 +398,11 @@ async def transfer_media(
                     )
                 )
                 temp_download_path = await download_task
+                last_download_path = (
+                    temp_download_path
+                    if isinstance(temp_download_path, str)
+                    else ""
+                )
                 if temp_download_path and isinstance(temp_download_path, str):
                     runtime.check_download_finish(
                         media_size, temp_download_path, ui_file_name
@@ -503,3 +509,22 @@ async def transfer_media(
     finally:
         runtime.progress_tracker.clear(progress_key)
         runtime.remove_download_result(node, message_id)
+        # The retry loop cleans the previous attempt before starting the next
+        # one, but there is no next iteration after the final failure or an
+        # external cancellation. Remove only paths owned by this transfer and
+        # never remove the completed destination file.
+        destination = os.path.abspath(file_name) if file_name else ""
+        candidates = {temp_file_name, last_download_path}
+        for candidate in candidates:
+            if not candidate:
+                continue
+            try:
+                if os.path.abspath(candidate) == destination:
+                    continue
+                if os.path.isfile(candidate):
+                    os.remove(candidate)
+            except OSError as error:
+                runtime.logger.warning(
+                    f"Message[{message_id}] failed to remove temp file "
+                    f"{candidate}: {error}"
+                )

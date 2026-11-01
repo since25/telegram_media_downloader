@@ -1,6 +1,8 @@
 """provide upload cloud drive"""
 
 import asyncio
+import contextlib
+import contextvars
 import importlib
 import inspect
 import os
@@ -12,6 +14,22 @@ from zipfile import ZipFile
 from loguru import logger
 
 from utils import platform
+
+
+_DEFER_LOCAL_FILE_DELETE = contextvars.ContextVar(
+    "defer_local_file_delete", default=False
+)
+
+
+@contextlib.contextmanager
+def defer_local_file_delete():
+    """Defer source deletion until the caller persists upload success."""
+
+    token = _DEFER_LOCAL_FILE_DELETE.set(True)
+    try:
+        yield
+    finally:
+        _DEFER_LOCAL_FILE_DELETE.reset(token)
 
 
 # pylint: disable = R0902
@@ -223,7 +241,10 @@ class CloudDrive:
 
             logger.info(f"upload file {local_file_path} success")
             drive_config.total_upload_success_file_count += 1
-            if drive_config.after_upload_file_delete:
+            if (
+                drive_config.after_upload_file_delete
+                and not _DEFER_LOCAL_FILE_DELETE.get()
+            ):
                 os.remove(local_file_path)
             if drive_config.before_upload_file_zip:
                 os.remove(zip_file_path)
@@ -277,7 +298,10 @@ class CloudDrive:
 
             if len(res) > 0:
                 drive_config.total_upload_success_file_count += len(res)
-                if drive_config.after_upload_file_delete:
+                if (
+                    drive_config.after_upload_file_delete
+                    and not _DEFER_LOCAL_FILE_DELETE.get()
+                ):
                     os.remove(local_file_path)
 
                 if drive_config.before_upload_file_zip:

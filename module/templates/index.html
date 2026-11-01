@@ -839,7 +839,9 @@
       $('#sys_ul').textContent = sys.upload_speed;
       const diskPct = sys.disk_total ? Math.round(sys.disk_used / sys.disk_total * 100) : 0;
       $('#sys_disk_track').firstElementChild.style.width = diskPct + '%';
-      $('#sys_disk_text').textContent = `已用 ${gb(sys.disk_used)} GB / ${gb(sys.disk_total)} GB · 剩 ${gb(sys.disk_free)} GB`;
+      const storageDetail = ` · 临时 ${gb(sys.temp_bytes || 0)} GB/${Number(sys.temp_files || 0)} 个`
+                           + ` · 下载 ${gb(sys.save_path_bytes || 0)} GB/${Number(sys.save_path_files || 0)} 个`;
+      $('#sys_disk_text').textContent = `已用 ${gb(sys.disk_used)} GB / ${gb(sys.disk_total)} GB · 剩 ${gb(sys.disk_free)} GB${storageDetail}`;
       const warn = $('#sys_disk_warn');
       warn.hidden = diskPct <= 80;
       warn.innerHTML = `${icon('alert',11)} 偏满 ${diskPct}%`;

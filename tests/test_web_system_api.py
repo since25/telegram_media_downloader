@@ -53,7 +53,7 @@ def test_system_metrics_remain_login_protected():
 
 
 def test_system_metrics_shape(monkeypatch):
-    fake_app = SimpleNamespace(save_path="/tmp")
+    fake_app = SimpleNamespace(save_path="/tmp", temp_save_path="/tmp")
     monkeypatch.setattr(web, "_current_app", fake_app, raising=False)
     monkeypatch.setattr(web, "get_total_download_speed", lambda: 7215000)
     monkeypatch.setattr(web, "get_total_upload_speed", lambda: 1024)
@@ -79,6 +79,11 @@ def test_system_metrics_shape(monkeypatch):
         "disk_free",
         "download_speed",
         "upload_speed",
+        "temp_bytes",
+        "temp_files",
+        "save_path_bytes",
+        "save_path_files",
+        "storage_scan_failures",
     ):
         assert key in body, f"missing {key}"
     assert isinstance(body["disk_total"], int) and body["disk_total"] > 0
