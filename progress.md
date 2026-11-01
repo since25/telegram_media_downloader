@@ -4861,3 +4861,29 @@ Changed files:
 
 Rollback:
 - Revert the changed files from this entry; the in-memory candidate list and new endpoint are removed together.
+
+## 2026-11-01 - Task: Deploy prescan candidate deletion
+
+### What was done
+
+- Pushed `466713f` (`feat(web): add prescan candidate deletion`) to `origin/master`.
+- Fast-forwarded the RackNerd checkout from `f246bba91755da923b243ce76ff95d43f799b9d8` to `466713f92ca112de74eedef2b2bb535d7d741f9c`.
+- Stopped and restarted `tg-downloader.service` after creating the production backup.
+
+### Testing
+
+- Local full suite: `851 passed, 1 skipped`.
+- Production backup: `backups/deploy-20261101-073547-466713f`; `channel_library.sqlite3`, `web_tasks.sqlite3`, and `resource_bot.sqlite3` each passed `PRAGMA integrity_check = ok`.
+- Production service: `systemctl is-active tg-downloader.service` → `active`.
+- Public smoke checks: `/` → `302` to `/login?next=%2F`; `/login` → `200`.
+- Production databases remain mode `600` with `journal=wal`.
+- `python3 -m py_compile module/web.py` passed. `check_imports.py` still reports the pre-existing system-Python gap `No module named 'pyrogram'` for `module.bot`; the systemd runtime started normally and no startup traceback was observed.
+
+### Notes
+
+Changed files:
+- `progress.md`
+
+Rollback:
+- Code rollback point: `f246bba91755da923b243ce76ff95d43f799b9d8`.
+- Restore runtime files only after stopping the service and verifying the backup at `backups/deploy-20261101-073547-466713f`.
